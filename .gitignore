@@ -36,6 +36,10 @@ data/
 *.sqlite3-journal
 token.key
 
+# ── 測試工具產出 ──────────────────────────────────
+# Playwright MCP 會把快照、截圖與 console log 丟在這裡
+.playwright-mcp/
+
 # ── 作業系統與編輯器 ───────────────────────────────
 .DS_Store
 .idea/
