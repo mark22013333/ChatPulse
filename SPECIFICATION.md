@@ -5,6 +5,15 @@
 > **前一版**：[`SPECIFICATION.v1.md`](./SPECIFICATION.v1.md)（v1.0，已封存）
 > **領域語彙**：[`CONTEXT.md`](./CONTEXT.md)（本文所有粗體術語以該檔為準）
 > **架構決策**：[`docs/adr/`](./docs/adr/)
+>
+> **關於本文的 `檔案:行號` 錨點**：v2.0 撰寫時（2026-09-04）以行號標注每個事實的位置，
+> 那是刻意的——它讓「這句話有沒有依據」變成可查的事。但 Phase 0／1／2 的實作
+> （2026-09-05）改寫了 `core/`、`dashboard/`、`mcp_app/` 的多數檔案，**第二節與各缺陷
+> 表格裡的行號多已失效**。
+>
+> 處理原則：**描述「當時盤點到什麼」的錨點原樣保留**（那是歷史紀錄，改成現在的行號會
+> 讓它變成假的）；**描述「現在如何運作」的地方改為只指檔案與符號名**，因為行號一定會再漂。
+> 要找當前位置請用符號名 grep，不要照行號跳。
 
 ---
 
@@ -43,6 +52,10 @@ ChatPulse 服務於一個具體場景，而不是一組泛用能力：
 
 ## 二、系統現況（既有資產盤點）
 
+> ⚠️ **本節是 2026-09-04 的快照，不是現況。** Phase 0／1／2 已於 2026-09-05 完成，
+> 本節所有行號與行數都指向改寫前的檔案。保留它的理由是「當初從什麼狀態出發」本身
+> 就是規格的一部分——第三節之後的每個決策都是相對這個起點做的。現況請看第十三節的驗收條件。
+
 改寫這份文件時實際盤點過整個 repo，程式碼與設定共 18 個檔案（不含本文件與後續新增的 `CONTEXT.md`、`docs/adr/`）。**以下功能是現在就能運作的**，規劃時不應把它們當成待開發項目：
 
 ### 2.1 MCP Server（v1.0 完全沒提到）
@@ -66,7 +79,10 @@ ChatPulse 服務於一個具體場景，而不是一組泛用能力：
 
 ### 2.3 前端（單檔 HTML，**不是** React）
 
-`dashboard/frontend/index.html`（21,599 bytes，搬移前為 `web/index.html`）為手寫單檔，無 `package.json`、無建置流程；樣式以 Tailwind CDN 引入（`dashboard/frontend/index.html:8`）——這對 Phase 1 是好消息，重寫為 React + Tailwind 時既有樣式規則可沿用，不必從零重畫。SSE 以 `fetch` + `response.body.getReader()` 消費（`:342`、`:351`、`:364`），**不是** `EventSource`——這在工程上是正確的（端點是 POST，而 `EventSource` 只支援 GET），錯的是 v1.0 的架構圖。
+`dashboard/frontend/index.html`（盤點時 21,599 bytes、493 行，搬移前為 `web/index.html`）為手寫單檔，無 `package.json`、無建置流程；樣式以 Tailwind CDN 引入——這對 Phase 1 是好消息，重寫為 React + Tailwind 時既有樣式規則可沿用，不必從零重畫。SSE 以 `fetch` + `response.body.getReader()` 消費，**不是** `EventSource`——這在工程上是正確的（端點是 POST，而 `EventSource` 只支援 GET），錯的是 v1.0 的架構圖。
+
+> Phase 1 的 React 重寫把 `dashboard/frontend/index.html` 覆蓋成 Vite 的開發入口
+> （只剩十幾行），所以本小節原有的行號引用已一併移除——單檔版的內容可從 git 歷史取回。
 
 ### 2.4 其他既有資產（v1.0 均未提及）
 
@@ -124,7 +140,7 @@ graph TD
 | 元件 | v1.0 | v2.0 | 原因 |
 | :--- | :--- | :--- | :--- |
 | DuckDB | 核心元件 | **移除** | 其唯一用途是跨群向量檢索，已由「手動選 Reference Space」取代（ADR-0003） |
-| ZPlanner | 外部整合服務 | **移除** | 四處定位互斥，且實作只是前端剪貼簿（`dashboard/frontend/index.html:433-445`） |
+| ZPlanner | 外部整合服務 | **移除** | 四處定位互斥，且實作只是前端剪貼簿（單檔前端裡的一段 handler，已隨 Phase 1 重寫消失） |
 | Bot / Chat App | 隱含存在 | **不存在** | 全部改走使用者 OAuth（ADR-0001） |
 | APScheduler | 核心元件 | **移除** | Phase 1、2 沒有任何定時需求；Mention 輪詢由後端常駐工作處理 |
 | MCP Server | 未提及 | **一級入口** | 它是既有主體 |
@@ -136,14 +152,16 @@ graph TD
 沿用既有實作。原生 async、內建 SSE 支援、可直接托管前端建置產物。實際執行版本為 3.12（盤點時由 `__pycache__` 中的 `*.cpython-312.pyc` 確認），非 v1.0 所寫的 3.11。
 
 **AI｜`gemini-3.6-flash`**
-與現有程式碼一致（`core/config.py:18`）。輸入上限 1,048,576 tokens（官方文件），足以吞下數百則對話。
-兩點須知：(a) 官方已將其標為 previous-generation，較新的是 `gemini-3.8-flash` 與 `gemini-3.7-flash`，升級只需改 `core/config.py:18` 一行；(b) 導入期定價至 2026-12-31，2027-01-01 起改標準定價，**本文未逐項核對官方 pricing 頁**。
+與現有程式碼一致（`core/config.py` 的 `GEMINI_MODEL`）。輸入上限 1,048,576 tokens（官方文件），足以吞下數百則對話。
+兩點須知：(a) 官方已將其標為 previous-generation，較新的是 `gemini-3.8-flash` 與 `gemini-3.7-flash`，升級只需改 `core/config.py` 的 `GEMINI_MODEL` 一行，或直接設 `CHATPULSE_GEMINI_MODEL` 環境變數；(b) 導入期定價至 2026-12-31，2027-01-01 起改標準定價，**本文未逐項核對官方 pricing 頁**。
 
 **儲存｜僅 SQLite（WAL 模式）**
 不引入第二套資料庫。重要的是**不落地的東西**：對話全文不寫入資料庫，Mention 只存識別資訊與狀態，內容於顯示時即時向 Google Chat 取回。詳見第九節。
 
 **前端｜React 19 + Vite + Tailwind + Shadcn + Zustand**
-這是 v2.0 中唯一「規格領先實作」的部分。Phase 1 將以此重寫現有前端，功能面不增不減。建置產物交由 FastAPI 靜態托管，維持單一啟動指令。
+這原是 v2.0 中唯一「規格領先實作」的部分。**2026-09-05 已完成**：`dashboard/frontend/` 為 React 19 + TypeScript + Vite 8 + Tailwind v4（`@tailwindcss/vite` plugin，非 CDN）+ Shadcn 元件 + Zustand（auth／spaces／summary／mentions／draft 五個 store），共 46 個原始檔。建置產物 `dist/` 交由 FastAPI 靜態托管（`/assets` 掛載 ＋ SPA fallback），維持單一啟動指令。436 個 Space 以虛擬滾動處理。
+
+> 一併補上 v2.0 原本沒定義的兩份文件：[`docs/api-contract.md`](./docs/api-contract.md)（前後端的 API 契約，含 SSE 事件與錯誤碼對照）與 [`docs/R1-findings.md`](./docs/R1-findings.md)（R-1 實測報告）。E2E 測試在 `tests/e2e/`，用 `run_all.py` 一次跑完五套。
 
 ### 3.3 專案結構
 
@@ -161,7 +179,7 @@ ChatG-Bot/                    github.com/mark22013333/ChatG-Bot（private）
 │   └── setup_wizard.py         OAuth 授權精靈
 ├── dashboard/                儀表板——內部使用
 │   ├── api/server.py           FastAPI
-│   └── frontend/               Phase 1 重寫為 React 19
+│   └── frontend/               React 19 + Vite（Phase 1 已重寫，產物在 dist/）
 ├── config/                   憑證（.gitignore，不進版控）
 ├── docs/adr/                 架構決策
 ├── scripts/                  啟動與安裝腳本
@@ -173,7 +191,7 @@ ChatG-Bot/                    github.com/mark22013333/ChatG-Bot（private）
 
 #### 為什麼是 `mcp_app/` 而不是 `mcp/`
 
-`mcp` 是 MCP SDK 自身的套件名。程式啟動時會把專案根目錄插入 `sys.path[0]`（`mcp_app/mcp_server.py:4-6`），若目錄命名為 `mcp/`，`from mcp.server.mcpserver import MCPServer` 會解析到專案自己的目錄而不是 SDK，import 直接失敗。這個坑沒有錯誤訊息會告訴你原因，只會說找不到 `MCPServer`。
+`mcp` 是 MCP SDK 自身的套件名。程式啟動時會把專案根目錄插入 `sys.path[0]`（見 `mcp_app/mcp_server.py` 開頭的 `BASE_DIR` 那幾行），若目錄命名為 `mcp/`，`from mcp.server.mcpserver import MCPServer` 會解析到專案自己的目錄而不是 SDK，import 直接失敗。這個坑沒有錯誤訊息會告訴你原因，只會說找不到 `MCPServer`。
 
 `summarizer.py` 歸入 `mcp_app/`：它與 MCP 工具同樣是單人使用的入口，功能也重疊（單群摘要＋可選推播）。MCP 入口保留 `mcp_server.py` 檔名，避免與 `dashboard/api/server.py` 混淆——本文其他處出現的 `server.py` 一律指儀表板後端。
 
@@ -191,22 +209,48 @@ ChatG-Bot/                    github.com/mark22013333/ChatG-Bot（private）
 | `config/client_secret.json` | 明文 OAuth client secret | 已列入 `.gitignore`；由安裝精靈引導各自取得 |
 | `core/config.py:17` 的 Gemini key | 硬編碼為 fallback 預設值（缺陷 D-2） | **已移除**，改為純讀 `GOOGLE_API_KEY`；缺少時由 `GeminiClient.__init__` 拋出明確錯誤 |
 
-> 關於該金鑰是否外洩：經查證，本 repo 自建立起始終為空、從未 push，本機此前也不是 git repo，因此該金鑰**未曾離開本機**。移除硬編碼屬預防措施，是否更換金鑰由持有者自行決定。
+> **關於該金鑰是否外洩（2026-09-05 收斂結論，取代原本兩處互斥的說法）**
+>
+> v2.0 原文在兩個地方給了相反的建議：這裡寫「未曾離開本機、換不換隨你」，
+> 十一節 D-2 卻寫「應視為已洩漏、立即作廢重發」。讀者無法判斷該不該換金鑰，
+> 而這是唯一有實際後果的一句，所以在此收斂：
+>
+> **建議更換**，理由是這把金鑰目前散佈在本機的多個位置，且其中兩處不受本 repo 控制：
+> 1. `~/.claude.json` 與 `~/Library/Application Support/Claude/claude_desktop_config.json`
+>    的 MCP `env` 區塊裡是**明文**（Claude Desktop 是 GUI 程式、不讀 `~/.zshrc`，所以這是必要的）。
+> 2. 2026-09-05 發現的一個實際洩漏管道：`gemini_client.py` 原本把金鑰放在
+>    `?key=` query string，於是任何含 URL 的錯誤訊息都會把它整把印出來——
+>    當天 D-3 測試撞到 429 時，`raise_for_status()` 就把金鑰印在終端上，
+>    也就進了 shell 歷史與這次 session 的紀錄。**該寫法已改為 `x-goog-api-key` 標頭**，
+>    但已經印出去的那幾次收不回來。
+>
+> 「repo 從未 push」這件事仍為真——**金鑰沒有離開這台機器**，所以這不是緊急事故。
+> 但既然它已經進過終端輸出，成本最低的處置就是換一把；換金鑰只需改上述兩個設定檔
+> 與 shell 環境變數，不需要動程式碼。
 
 `.gitignore` **必須列具體檔名，不可寫成 `*.json`**——那會連 React 前端必須進版控的 `package.json` 與 `package-lock.json` 一起排除掉。實際採用的內容（已建立於 repo 根）：
 
+下列為 repo 根 `.gitignore` 的**憑證與本機資料**相關條目（完整檔案另含 Python、前端、
+作業系統三段，以及 2026-09-05 新增的 `data/`——那個目錄放 SQLite 與加密金鑰）：
+
 ```gitignore
+# 憑證與金鑰
 google_chat_token.json
 client_secret.json
 *secret*.json
 token*.json
+credentials.json
 .env
-__pycache__/
-*.py[cod]
-node_modules/
+.env.*
+!.env.example
+
+# 本機資料（data/ 內含 chatpulse.db 與 token.key）
+data/
 *.db
+*.db-wal
+*.db-shm
 *.sqlite3
-dist/
+token.key
 ```
 
 #### MCP 註冊路徑
@@ -234,7 +278,7 @@ v1.0 完全沒有這一章，卻在 `v1:80` 要求 SQLite 儲存「使用者偏�
 
 ### 4.2 OAuth Scope
 
-以「使用者驗證」取得，三項（與 `core/config.py:10-14` 現況一致）：
+以「使用者驗證」取得，三項（與 `core/config.py` 的 `CHAT_SCOPES` 一致）：
 
 | Scope | 用途 |
 | :--- | :--- |
@@ -245,6 +289,8 @@ v1.0 完全沒有這一章，卻在 `v1:80` 要求 SQLite 儲存「使用者偏�
 Phase 2 另需 `userinfo.profile`，用於取得 Viewer 自己的 user id（見 8.2）。
 
 **不需要**：Marketplace 相容的 OAuth client、Workspace 管理員一次性核准、把 Bot 加進任何群組。這是 ADR-0001 的直接收益。
+
+> 範圍說明：這三項「不需要」在 `@intumit.com` 的 `markcheng00806` 帳號上已實測成立（三個 chat scope 下可列 Space、讀訊息、發訊息，全程未經任何管理員核准流程）。**其他 Workspace 組態下未必成立**——若網域對第三方 OAuth client 設了白名單，第一位使用者授權時仍可能被擋。發給團隊前建議先找一位同事實測一次。
 
 ### 4.3 多 Viewer 與產出物可見性
 
@@ -271,7 +317,7 @@ Phase 2 另需 `userinfo.profile`，用於取得 Viewer 自己的 user id（見 
 
 ### 5.3 Action Items 萃取
 
-摘要中的待辦轉為可勾選項目，支援複製為 Markdown。**ZPlanner 相關功能於 v2.0 移除**，前端 `dashboard/frontend/index.html:187-188`、`:433-445` 的按鈕與 handler 一併刪除。
+摘要中的待辦轉為可勾選項目，支援複製為 Markdown。**ZPlanner 相關功能於 v2.0 移除**：Phase 1 重寫前端時未搬移該按鈕與 handler。驗證方式是在 `dashboard/frontend/src` 與 `dist` 全庫 grep `ZPlanner`／`zplanner`，2026-09-05 實測 0 命中。
 
 ### 5.4 推播回 Google Chat
 
@@ -309,9 +355,13 @@ annotations[].userMention.user.name == "users/{Viewer 自己的 id}"
 
 ### 6.2 採集策略（可替換實作）
 
-採集器定義為一個介面，兩種實作可互換，以避免在帳號等級未確認前就把架構賭進去：
+採集器定義為一個介面，兩種實作可互換，以避免在帳號等級未確認前就把架構賭進去。
 
-**實作 A（首選）— 跨群搜尋**
+> **2026-09-05 實測結論（R-1 已結案）：實作 A 不可用，正式採用實作 B。**
+> 完整證據見 [`docs/R1-findings.md`](./docs/R1-findings.md)。以下兩小節保留原始評估，
+> 並在各自結尾標注實測結果——因為「當初為什麼以為 A 是首選」本身是有用的紀錄。
+
+**實作 A（原評估為首選；實測不可用）— 跨群搜尋**
 
 ```
 POST https://chat.googleapis.com/v1/spaces/-/messages:search
@@ -325,18 +375,33 @@ POST https://chat.googleapis.com/v1/spaces/-/messages:search
 一次呼叫取得所有 Space 的 Mention。`parent` 必須是 `spaces/-`，僅支援使用者驗證。
 
 > **風險 R-1**：官方指南的前置條件寫明需要 **Business 或 Enterprise 版 Google Workspace**。`@intumit.com` 是 Workspace 帳號，但版本等級未經確認。**Phase 2 的第一件事就是實測這個端點**，不是寫程式。
+>
+> **實測結果（2026-09-05）：不可用，但失敗形態不是權限錯誤。** 端點回 **HTTP 200 而非 403**，卻**恆回 0 筆**且每次都附一個 `nextPageToken`（往下追 15 頁全空）。決定性的證據是正對照：先在暫存群組發一則 `<users/{我}>` 的訊息（回應確認 annotation 含 `USER_MENTION`／`MENTION`），30 秒內反覆搜 6 次仍是 0 筆；再把 filter 換成官方語法 `space.name = "spaces/AAAAxLxqJxY"` 去搜同一個確定有數百則訊息的 Space，也是 0 筆——排除了「filter 寫錯」與「真的沒有 Mention」兩種解釋，這個帳號的搜尋索引本身沒有內容。
+>
+> 附帶測到的語法事實：mention 條件只能用 `:`（用 `=` 回 400）；**任何含 `createTime` 的 filter 一律回 400**（連單獨使用、加括號、改小數秒、改時區位移都一樣，與官方文件列出的 `<`／`>=` 不符）；`orderBy` 只接受 `createTime DESC`；`is_unread()` 需要 `chat.users.readstate.readonly` scope。
+>
+> 實作保留在 `core/mentions.py` 的 `SearchCollector`，可用 `CHATPULSE_COLLECTOR=search` 一行切回去重測，預設不啟用。
 
-**實作 B（退路）— 逐群輪詢**
+**實作 B（原評估為退路；正式採用）— 逐群輪詢**
 
 `spaces.list` → 逐 Space 呼叫 `spaces.messages.list`（帶 `filter=createTime > 上次輪詢時間`）→ 本地比對 `annotations[]`。
 
-`spaces.messages.list` 的 `filter` 只支援 `createTime` 與 `thread.name` 兩個欄位，**沒有任何 mention 相關條件**，故過濾必須在本地做。
+`spaces.messages.list` 的 `filter` 只支援 `createTime` 與 `thread.name` 兩個欄位，**沒有任何 mention 相關條件**，故過濾必須在本地做。（實測補充：`createTime` 只接受 `>`，`>=` 回 400——與 search 端點完全不接受 `createTime` 恰好相反。）
 
-> ⚠️ **實測 436 個 Space 之後，這條退路的可行性下降了。** 原估算以 100 個 Space 為基礎（一輪 15~40 秒）；實際規模下，光是配額下限就要 `436 ÷ 15 讀/秒 ≈ 29 秒`，序列執行含網路往返約 2 分鐘，且每輪吃掉每分鐘配額的 **48%**（436 ÷ 900）。這意味著**實作 B 撐不起 30~60 秒的輪詢間隔**，退路一旦啟用就必須同時調整：把間隔拉長到 2 分鐘以上，或只輪詢近期有活動的 Space 子集。因此 R-1 的實測結果比原先預期更關鍵。
+> ⚠️ **原本的擔憂：實測 436 個 Space 之後，這條退路的可行性下降了。** 原估算以 100 個 Space 為基礎（一輪 15~40 秒）；實際規模下，光是配額下限就要 `436 ÷ 15 讀/秒 ≈ 29 秒`，序列執行含網路往返約 2 分鐘，且每輪吃掉每分鐘配額的 **48%**（436 ÷ 900）。這意味著實作 B 撐不起 30~60 秒的輪詢間隔。
+>
+> ✅ **這個擔憂已被推翻。** 它建立在「每輪要掃全部 436 個 Space」的前提上，而實測找到兩個可以拿掉這個前提的事實：
+>
+> 1. **`spaces.list` 回傳 `lastActiveTime`**，且 `pageSize=1000` 一頁就取回全部 436 個（436/436 都帶這個欄位）。活躍分佈極度集中：近 1 小時 **2 個**、近 24 小時 **13 個**、近 7 天 26 個、近 30 天 38 個（8.7%）。所以每輪只需輪詢「`lastActiveTime` 晚於上次輪詢時間」的那幾個。
+> 2. **`messages.list` 的 `createTime` filter 可用**，所以候選 Space 只取回新訊息，而不是最近 N 則。
+>
+> 實測成本：每輪 = 1 次 `spaces.list` ＋ 每個活躍 Space 各 1 次 `messages.list`。後者的數量隨當時有多少 Space 活躍而變，所以**每輪呼叫次數不是固定值**——多次 E2E 實測落在 **2~3 次呼叫、0.9~1.1 秒**之間（`api_calls` 會記在採集器的 `last_run_stats` 裡，可從 `GET /api/v1/me` 讀到當下的實際值）。以 45 秒間隔、每輪 3 次計，每分鐘配額佔用約 **0.4%**（原估 48%）。首次全量掃描 436 個 Space（16 併發）實測 **18 秒**。
+>
+> 因此 6.3 的「30~60 秒一次」**維持不變**，不需要放寬到 2 分鐘。另外為了防範 `lastActiveTime` 更新不及時，實作每 20 輪做一次較寬的掃描（往回看 24 小時的活躍 Space）作為保險。
 
 ### 6.3 輪詢頻率
 
-30~60 秒一次。不採用 Google Workspace Events API + Cloud Pub/Sub 的推送方案（ADR-0004）——那需要一個啟用計費的 GCP 專案，且訂閱最長 7 天即過期自動刪除，續訂失敗不會報錯、只會安靜地停止收訊。以本專案的使用情境（坐下來處理 PM 的提問），分鐘級延遲沒有實質差別。
+30~60 秒一次（實作預設 45 秒，可用 `CHATPULSE_POLL_INTERVAL` 調整）。不採用 Google Workspace Events API + Cloud Pub/Sub 的推送方案（ADR-0004）——那需要一個啟用計費的 GCP 專案，且訂閱最長 7 天即過期自動刪除，續訂失敗不會報錯、只會安靜地停止收訊。以本專案的使用情境（坐下來處理 PM 的提問），分鐘級延遲沒有實質差別。
 
 ### 6.4 狀態模型
 
@@ -402,14 +467,18 @@ Google Chat 的 space id 形如 `spaces/AAAAxLxqJxY`——**內含斜線**。v1.
 所有串流端點共用同一組事件。每個 frame 為單行 JSON：
 
 ```
-data: {"type":"meta","space":"1.BU2-PG","message_count":50}
+data: {"type":"meta","space":"1.BU2-PG","space_id":"spaces/AAAAJL3-P4M","message_count":50,"style":"general"}
 
 data: {"type":"chunk","text":"本週討論集中在"}
 
 data: {"type":"chunk","text":"WAF 攔截問題…"}
 
-data: {"type":"done"}
+data: {"type":"done","summary_id":12}
 ```
+
+`meta` 與 `done` 的欄位依端點而異（摘要端點的 `done` 帶 `summary_id`，
+Draft Reply 端點帶 `draft_id`）；`chunk` 與 `error` 兩種事件的形狀所有端點一致。
+逐端點的完整欄位以 [`docs/api-contract.md`](./docs/api-contract.md) 為準。
 
 錯誤以事件傳遞，**不中斷連線**（HTTP 200 已送出，無法再改狀態碼）：
 
@@ -418,7 +487,7 @@ data: {"type":"error","code":"GEMINI_QUOTA_EXCEEDED","message":"Gemini 配額已
 ```
 
 - 前端以 `fetch` + `body.getReader()` 消費（非 `EventSource`，因端點為 POST）
-- 回應標頭固定含 `Cache-Control: no-cache` 與 `X-Accel-Buffering: no`（沿用 `dashboard/api/server.py:184-192`）
+- 回應標頭固定含 `Cache-Control: no-cache` 與 `X-Accel-Buffering: no`（實作在 `dashboard/api/server.py` 的 `SSE_HEADERS`）
 - 收到 `type:"done"` 或 `type:"error"` 後關閉讀取
 
 ### 8.4 錯誤規格（v1.0 完全未定義）
@@ -434,7 +503,7 @@ data: {"type":"error","code":"GEMINI_QUOTA_EXCEEDED","message":"Gemini 配額已
 | 400 | `INVALID_PARAMETER` | 參數格式錯誤、limit 超出 1~1000 |
 | 401 | `NOT_AUTHENTICATED` | 未登入或 session 過期 |
 | 403 | `SPACE_FORBIDDEN` | Viewer 不是該 Space 成員 |
-| 404 | `SPACE_NOT_FOUND` / `MENTION_NOT_FOUND` | 目標不存在 |
+| 404 | `SPACE_NOT_FOUND` / `MENTION_NOT_FOUND` / `ROUTE_NOT_FOUND` | 目標不存在；`ROUTE_NOT_FOUND` 專指 API 路徑打錯 |
 | 429 | `CHAT_RATE_LIMITED` / `GEMINI_QUOTA_EXCEEDED` | 上游限流，回應帶 `Retry-After` |
 | 502 | `CHAT_API_ERROR` / `GEMINI_API_ERROR` | 上游非預期回應 |
 
@@ -495,17 +564,19 @@ SQLite（WAL 模式），單一檔案。**對話全文不落地。**
 
 ## 十一、已知缺陷（現在就是壞的）
 
-以下四項與規格無關，是現行程式碼的實際問題，全部排入 Phase 1。
+以下各項與規格無關，是現行程式碼的實際問題。v2.0 撰寫時列出 D-1~D-5 五項（原文寫「四項」，與表格列數不符）；Phase 1 實作期間又實測發現 **D-6、D-7** 兩項，一併列入並修復。**全部七項的處置狀態都標在下表**。
 
 | ID | 位置 | 問題 | 後果 |
 | :--- | :--- | :--- | :--- |
 | ~~**D-1**~~ **已修復** | `core/chat_client.py` `list_spaces()` | `spaces().list(pageSize=100)` 未處理 `nextPageToken`（同檔的訊息抓取倒是有寫翻頁迴圈） | **實測影響：帳號共 436 個 Space，其中 336 個永遠讀不到**，含「北市府-第八次異動開發」等實際工作群組。且失敗形態是搜尋回報「找不到」而非報錯。2026-09-04 改為自動翻頁（`pageSize=1000` ＋ 50 頁安全閥），修復後實測取得 436 個 |
-| **D-2** | `core/config.py:17` | Gemini API key 以明文硬編碼為環境變數的 fallback 預設值 | repo 要交給團隊使用，等於把金鑰一併發出。**該金鑰應視為已洩漏，立即作廢重發，不要等 Phase 1 改完程式碼**。修法：讀不到 `GOOGLE_API_KEY` 就啟動失敗，不提供內建值 |
-| **D-3** | `core/gemini_client.py:50`、`dashboard/api/server.py:162` | `maxOutputTokens: 2048` | 500 則對話的結構化摘要會被截斷。v1.0 拿「100 萬 token 輸入窗口」當賣點（`v1:76-77`），但輸入窗口大與輸出夠用是兩件事。調整為 16384 |
-| **D-4** | `dashboard/api/server.py:48` | `SummarizeRequest.style` 定義後從未被讀取 | UI 有下拉選單、API 有欄位、行為不存在。Phase 1 實作為 prompt 分歧 |
-| **D-5** | `config/google_chat_token.json`、`config/client_secret.json` | OAuth token（access + refresh）與 client secret 皆以明文 JSON 存放於檔案系統 | 拆分後 MCP repo 要發給團隊，這兩個檔一旦進版控等同交出帳號授權。Phase 1 列入 `.gitignore`；Phase 2 隨多 Viewer 支援改存 `credentials` 表並加密（第九節） |
+| ~~**D-2**~~ **程式面已修復；金鑰建議更換** | `core/config.py`（舊 `:17`） | Gemini API key 以明文硬編碼為環境變數的 fallback 預設值 | repo 要交給團隊使用，等於把金鑰一併發出。**程式面已修**：`core/config.py` 純讀 `GOOGLE_API_KEY`，無 fallback 值，缺少時由 `GeminiClient.__init__` 拋 `CONFIGURATION_ERROR`。**金鑰本身建議更換**，理由與處置見 3.3「憑證絕對不進 repo」下方的收斂結論——不是因為 repo 洩漏（repo 從未 push），而是因為它進過終端輸出。附帶修掉一個實際洩漏管道：金鑰原本放在 Gemini endpoint 的 `?key=` query string，任何含 URL 的錯誤訊息都會把它印出來，已改為 `x-goog-api-key` 標頭 |
+| ~~**D-3**~~ **已修復** | `core/gemini_client.py`、`dashboard/api/server.py` | `maxOutputTokens: 2048` | 500 則對話的結構化摘要會被截斷。v1.0 拿「100 萬 token 輸入窗口」當賣點（`v1:76-77`），但輸入窗口大與輸出夠用是兩件事。**已調整為 16384**。實測補充：真正的機制不是「摘要比 2048 長」，而是 **`maxOutputTokens` 把 thinking token 一起算進去**——同一份 483 則對話，2048 那次 `thoughtsTokenCount` 就吃掉 1,962，只剩 82 token 寫正文（`finishReason=MAX_TOKENS`、三個章節全部缺）；16384 那次思考 2,622＋正文 1,160＝3,782，`finishReason=STOP`、章節齊全。證據見 `tests/e2e/test_d3_truncation.py` |
+| ~~**D-4**~~ **已修復** | `dashboard/api/server.py` | `SummarizeRequest.style` 定義後從未被讀取 | UI 有下拉選單、API 有欄位、行為不存在。**已實作為 prompt 分歧**（`core/prompts.py`）：三種風格的輸出**章節結構不同**，不是同一份 prompt 後面加一句「請寫技術一點」。實測同一批 50 則對話：general 1,224 字（脈絡＋決議＋待辦）、technical 3,439 字（含「已排除的假設與排查過程」）、action_only 493 字（只有待辦章節） |
+| ~~**D-5**~~ **已修復** | `config/google_chat_token.json`、`config/client_secret.json` | OAuth token（access + refresh）與 client secret 皆以明文 JSON 存放於檔案系統 | 拆分後 MCP repo 要發給團隊，這兩個檔一旦進版控等同交出帳號授權。**版控面已於 Phase 0 處理**（`.gitignore`）；**加密面已完成**：Phase 2 的憑證存於 `credentials.encrypted_token`（Fernet，`core/crypto.py`），金鑰在 `data/token.key`（0600）且不與資料庫同檔。舊的單人 token 檔保留供 `POST /api/v1/auth/bootstrap` 匯入 |
+| **D-6**（本次新發現） | `core/chat_client.py` `fetch_recent_messages()` | 呼叫 `spaces.messages.list` **沒有帶 `orderBy`**，而該端點的預設是 **`createTime ASC`（最舊優先）** | **「最近 N 則」實際抓的是「最舊的 N 則」。** 舊程式碼註解寫「Google 回傳通常是由新到舊」，與官方預設相反。實測證據：修復前的 MCP 工具 `fetch_chat_messages(limit=3)` 對暫存群組回傳的是 **2023-05-12／2023-05-19** 三則，而該群組最新訊息是 2026-09-04。也就是說**過去每一份摘要摘的都是三年前的對話**。已改為 `orderBy=createTime desc` 取回後再反轉為時間正序 |
+| **D-7**（本次新發現） | 全部四個入口的對話組裝 | 取 `sender.displayName` 當發言者名稱，但**本專案用到的 `spaces.messages.list` 在使用者驗證下不回傳這個欄位** | 每一位發言者都變成「未知成員」，模型無法區分誰說了什麼，摘要與 Draft Reply 品質被拖垮。官方 `User` 資源文件明載「當 Chat app 以使用者身分驗證時，只填 `name` 與 `type`」；實測 `spaces.messages.list`（以及 `messages.create` 的回應）回的每個 `sender` 都只有 `{"name":"users/…","type":"HUMAN"}`。想拿 `spaces.members.list` 交叉驗證會撞 403（缺 `chat.memberships.readonly` scope），所以「其他端點是否也不回傳」**未驗證**——本專案不使用那些端點，不影響結論。**修法不需要新 scope**：`USER_MENTION` annotation 同時給出 `userMention.user.name` 與該提及在文字中的 `startIndex`／`length`，而那段文字正是 `@王小明`，因此每則「有人被 @」的訊息都是一筆 id→名字的對照，累積進 `user_directory` 表（`core/directory.py`）。名錄會隨使用持續累積（2026-09-05 一天的測試就自動學到 43 人）；查不到的退回 `成員…8641` 這種**穩定可區分**的代號，而非全部同名 |
 
-另有一項非缺陷但需補齊：**專案沒有任何依賴宣告檔**（無 `requirements.txt`／`pyproject.toml`／`Pipfile`）。Phase 1 補上。
+另有一項非缺陷但需補齊：**專案沒有任何依賴宣告檔**（無 `requirements.txt`／`pyproject.toml`／`Pipfile`）。**已補上並鎖定版本**（8 個套件，`==` 版本取自 `.venv` 實際安裝結果）。
 
 ---
 
@@ -513,22 +584,38 @@ SQLite（WAL 模式），單一檔案。**對話全文不落地。**
 
 | ID | 風險 | 影響 | 處置 |
 | :--- | :--- | :--- | :--- |
-| **R-1** | `spaces.messages.search` 需要 Business/Enterprise 版 Workspace，`@intumit.com` 的版本等級未確認 | 決定 Mention 採集走實作 A 或 B | **Phase 2 第一個工作項**就是實測，不先寫程式。⚠️ 實測 436 個 Space 後此風險**權重上升**：退路（6.2 實作 B）一輪需約 2 分鐘、吃掉 48% 配額，撐不起 30~60 秒間隔，啟用時須一併調整輪詢策略 |
-| **R-2** | `gemini-3.6-flash` 的實際計費與導入期定價（至 2026-12-31）未逐項核對 | 團隊共用後成本可能高於預期 | Phase 1 加入每日 token 用量記錄，累積兩週後再評估 |
+| ~~**R-1**~~ **已結案** | `spaces.messages.search` 需要 Business/Enterprise 版 Workspace，`@intumit.com` 的版本等級未確認 | 決定 Mention 採集走實作 A 或 B | **已於 2026-09-05 實測（先於開發）**：實作 A 回 200 但恆 0 筆（正對照亦搜不到），**不可用**；改採實作 B，並以 `lastActiveTime` 預篩把每輪成本壓到 2 次呼叫／0.91 秒／0.3% 配額，因此輪詢間隔不需放寬。完整證據見 [`docs/R1-findings.md`](./docs/R1-findings.md) |
+| **R-2** | `gemini-3.6-flash` 的實際計費與導入期定價（至 2026-12-31）未逐項核對 | 團隊共用後成本可能高於預期 | **記錄機制已完成**（`token_usage` 表 ＋ `GET /api/v1/usage`，記 prompt／output／total 與呼叫次數）。**定價仍未逐項核對**——要等累積兩週實際用量後才評估，現在無法結案。實測補充兩個會影響估算的事實，見下方 R-2 補充 |
+| **R-4**（本次新發現） | 目前這把 Gemini API key 在**免費層**，`gemini-3.6-flash` 的上限是**每天 20 次請求** | **團隊共用在免費層完全不可行**，也直接限制了 E2E 測試的可重複性 | 錯誤原文：`quotaId: GenerateRequestsPerDayPerProjectPerModel-FreeTier, quotaValue: 20`。本次測試在數小時內就把 20 次用完（15 次經儀表板 ＋ 5 次測試腳本直呼），之後所有摘要與草稿都回 `GEMINI_QUOTA_EXCEEDED`。**程式的處理是正確的**（照 8.3 送 error 事件、不中斷連線、不噴 traceback），但功能等於停擺。上線前必須先決定：升級到付費層、或改接公司 GCP 專案的 Vertex AI（10.2 已列的替代路徑，程式改動限於 `gemini_client.py` 的認證與 endpoint）。模型可用 `CHATPULSE_GEMINI_MODEL` 一個環境變數換掉 |
 | **R-3** | v1.0 `v1:163-164` 標「已驗證」的兩項未附證據 | 見下方澄清 | 已於本版如實重寫 |
+
+**R-2 補充（2026-09-05 實測）**
+
+1. **這個模型會產生 thinking token**，單次摘要實測 1,962~2,772 個。它們算在 `maxOutputTokens` 的預算內（這正是 D-3 的根因），也會出現在 `usageMetadata.thoughtsTokenCount`。
+2. **`totalTokenCount` 不等於 prompt ＋ output**：差額是思考與隱式快取（實測某次 `promptTokenCount=24,200`、`candidatesTokenCount=1,160`、`totalTokenCount=28,143`，另有 `cachedContentTokenCount=16,363`）。估成本時不能只看 output，也不能只看 prompt。
+
+本次 session 經儀表板產生的累計用量：15 次呼叫、prompt 40,256、output 6,907、total 78,435 tokens（資料在 `token_usage` 表，`GET /api/v1/usage` 可讀）。
 
 **關於「已驗證」的澄清**（取代 `v1:163-164` 的無憑打勾）：
 
 - **Google Chat 憑證與空間讀取**：有實證。`config/google_chat_token.json` 存在真實取得過的 token（scope 與 `config.py:10-14` 逐字相符），且 `mcp_server.py` 已註冊為 MCP server 並在實際 session 中連線成功、四個工具名稱一一對應。
-- **Gemini 長文本摘要邏輯**：程式碼結構完整（`core/gemini_client.py:16-63` 含 system instruction、prompt 組裝、generationConfig、錯誤處理、回應解析），**但沒有實際 API 呼叫紀錄可佐證它跑得起來**。狀態應記為「已實作，未實跑驗證」。
+- **Gemini 長文本摘要邏輯**：程式碼結構完整（`core/gemini_client.py` 含 system instruction、prompt 組裝、generationConfig、錯誤處理、回應解析），**但沒有實際 API 呼叫紀錄可佐證它跑得起來**。狀態應記為「已實作，未實跑驗證」。
+  **2026-09-05 更新：已實跑驗證。** 非串流與 SSE 串流兩條路徑都跑過真實 API——單群摘要三種風格各一次（general／technical／action_only，見 D-4 的字數）、483 則對話的長文本摘要兩次（2048 與 16384 的正負對照）、Draft Reply 兩次（有／無 Reference Space）。`token_usage` 表留有每次呼叫的 token 數作為紀錄。
 
 ---
 
 ## 十三、實施計畫
 
+> ⚠️ **下面這張 Gantt 是 2026-09-04 寫下的原始計畫，不是實際執行紀錄。**
+> 實際上 Phase 0 收尾、Phase 1、Phase 2 都在 **2026-09-05 一天內**完成，
+> 因此圖上的日期（Phase 1 起於 9/08）與本節驗收清單的勾選狀態、以及十二節
+> 「R-1 已於 2026-09-05 實測（先於開發）」在時間上不相容——**以驗收清單為準**。
+> 保留這張圖是因為它記錄了當初的工作拆分與相依關係（例如「R-1 實測先於開發」
+> 這個順序要求確實被遵守了，只是整條線都提前了）。
+
 ```mermaid
 gantt
-    title ChatPulse v2.0 開發計畫
+    title ChatPulse v2.0 開發計畫（2026-09-04 的原始估算，實際已提前完成）
     dateFormat YYYY-MM-DD
     excludes weekends
 
@@ -562,37 +649,56 @@ gantt
 - [x] `.gitignore` 建立，憑證檔排除且未誤排除 `package.json`（D-5 之版控面）
 - [x] `core/config.py:17` 硬編碼金鑰移除，改為缺少即拋錯（D-2）
 - [x] `requirements.txt` 建立
-- [ ] MCP 註冊路徑更新，`mcp__google-chat__*` 四個工具在新路徑下仍可連線
+- [x] MCP 註冊路徑更新，`mcp__google-chat__*` 四個工具在新路徑下仍可連線
+      —— 2026-09-05 驗證：`/Users/cheng/.claude.json` 與 `claude_desktop_config.json` 兩處都已指向 `mcp_app/mcp_server.py`，且四個工具在實際 session 中逐一呼叫成功（`list_chat_spaces`／`fetch_chat_messages`／`summarize_chat_space`／`send_chat_message`，後者只發到暫存群組）
 
 **Phase 1（約 2 週）— 地基**
 
 功能面**零新增**。結束時你手上的東西和現在幾乎一樣，差別在底下換過了。這個取捨是刻意的：既然確定要重寫前端，先重寫再加新功能，新功能只需實作一次。
 
-驗收條件：
-- [ ] React 版可完成現有全部操作（列 Space、摘要串流、Action Items、推播）
+驗收條件（勾選者皆有 2026-09-05 的實跑輸出為證，測試腳本在 `tests/e2e/`）：
+- [x] React 版可完成現有全部操作（列 Space、摘要串流、Action Items、推播）
+      —— 瀏覽器實測：436 個 Space 虛擬滾動、摘要 SSE 逐字串流、Action Items 萃取 3 項可勾選並複製、推播二次確認後訊息實際送達 Google Chat。這一輪是用 Playwright 驅動真實瀏覽器對真後端操作，期間 `browser_console_messages` 查詢回報 0 則錯誤與 0 則警告——**該輸出未落檔**，重驗需重跑一次瀏覽器流程
 - [x] ~~加入超過 100 個 Space 時，第 101 個之後仍讀得到（D-1）~~ **已於 Phase 0 完成**：修復後實測取得 436 個 Space（修復前 100 個）
-- [ ] 500 則對話的摘要不被截斷（D-3）
-- [ ] 切換摘要風格會產生不同結果（D-4）
-- [ ] `limit` 傳 0、1001、非數值時回 400 `INVALID_PARAMETER`，四個入口行為一致（5.5）
-- [ ] SQLite schema 已建立，`summaries` 與 `preferences` 可寫入並讀回，重啟後資料仍在
-- [ ] `pip install -r requirements.txt` 可在乾淨環境重建（屆時應鎖定版本）
+- [x] 500 則對話的摘要不被截斷（D-3）
+      —— 483 則對話（29,611 字）實跑正負對照：2048 → `finishReason=MAX_TOKENS`、三章節全缺；16384 → `finishReason=STOP`、三章節齊全（`tests/e2e/test_d3_truncation.py`）
+- [x] 切換摘要風格會產生不同結果（D-4）
+      —— 同一批 50 則對話：general 1,224 字／technical 3,439 字／action_only 493 字，章節結構各異且 action_only 確實不含「核心討論主題」
+- [x] `limit` 傳 0、1001、非數值時回 400 `INVALID_PARAMETER`，四個入口行為一致（5.5）
+      —— REST 與 SSE 兩個 HTTP 入口實測皆回 400＋`INVALID_PARAMETER`；MCP 與 CLI 共用同一個 `validate_limit()`，CLI 四種非法輸入（0／1001／abc／-5）皆印同一組中文訊息並 exit 1
+- [x] SQLite schema 已建立，`summaries` 與 `preferences` 可寫入並讀回，重啟後資料仍在
+      —— WAL 模式確認；重啟服務後透過 API 讀回 3 份 Summary 與已修改的偏好（limit=120／technical）
+- [x] `pip install -r requirements.txt` 可在乾淨環境重建（屆時應鎖定版本）
+      —— 8 個套件全部 `==` 鎖版（含新增的 `cryptography`）；`uv pip install --dry-run` 回報 Audited 8 packages / no changes
 
 **Phase 2（約 3 週）— 核心價值**
 
 你真正要的功能在這裡。
 
-驗收條件：
-- [ ] R-1 已實測，採集器實作 A 或 B 之一確定可用
-- [ ] 兩位 Viewer 各自登入，各自只看到自己的 Space 與 Summary
-- [ ] 有人 @ 你之後 60 秒內出現在收件匣
-- [ ] 「某人被加進群組」不會被誤判為 Mention
-- [ ] Draft Reply 能引用 Reference Space 的內容（測法：答案只存在於參考群組，被 @ 的群組裡沒有）
-- [ ] 送出需二次確認，送出後該 Mention 自動標記已處理
-- [ ] 送出的訊息在 Chat 中顯示為 Viewer 本人，且落在原討論串
+驗收條件（勾選者皆有 2026-09-05 的實跑輸出為證，測試腳本在 `tests/e2e/`）：
+- [x] R-1 已實測，採集器實作 A 或 B 之一確定可用
+      —— 實作 A 不可用（回 200 恆 0 筆，正對照證實），**實作 B 確定可用**：一輪 2~3 次 API 呼叫、約 1 秒（隨當時活躍 Space 數而變）。證據見 `docs/R1-findings.md`
+- [x] 兩位 Viewer 各自登入，各自只看到自己的 Space 與 Summary
+      —— **部分以模擬達成，需說明**：手上只有一個 Google 帳號，所以第二位 Viewer 是直接在資料庫建立 viewer 列與 session，再用該 session 走 HTTP 層驗證。結果：對方 `GET /summaries` 與 `GET /mentions` 都是 0 筆（我方分別 3 筆與 5 筆），`GET /spaces` 回 401（他沒有自己的憑證）。**驗到的是 ChatPulse 的授權邏輯**；「兩個真人 Google 帳號各自 OAuth」這一段未驗
+- [x] 有人 @ 你之後 60 秒內出現在收件匣
+      —— 在暫存群組發出 `<users/{我}>` 訊息後手動觸發採集，**0.91 秒**內入庫並可在收件匣讀到（輪詢間隔設定為 45 秒，符合 60 秒內的要求）。另外採集器在真實資料上找到 **2 則**非測試的工作 Mention（ILOOP2601 的爬蟲清單確認、TPE01P2601 北市府新案的圖文選單需求），證明它在真實資料上有效，不是只認得測試造出來的訊息
+- [x] 「某人被加進群組」不會被誤判為 Mention
+      —— 掃過 60 個近期活躍 Space（每個最多 200 則）找到 **123 筆真實的非 MENTION 樣本**，分兩種形態、分別斷言：
+      **(a) 帶 `user.name` 的 10 筆**，全部是 `userMention.type == "ADD"`（真實案例：兩個機器人被加進暫存群組）——對「被指到的那個人」判定，10 筆全部正確排除，這是 6.1 警語直接針對的情境；
+      **(b) 不帶 `user.name` 的 113 筆**，是 `@全部` 廣播（`userMention` 連 `type` 與 `user` 都沒有）——這批沒有「被指到的人」可比對，改以「不算任何人的 Mention」斷言，113 筆 × 6 個候選 id 全部正確排除。這一批值得單獨驗，因為若實作只看 `annotations[].type == "USER_MENTION"`，每則 `@全部` 都會湧進每個人的收件匣。
+      另有 11 個結構化樣本涵蓋真實資料掃不到的分支（`TYPE_UNSPECIFIED`、`SLASH_COMMAND`、`RICH_LINK`、同一則訊息中 ADD 別人＋MENTION 我、MENTION 別人＋ADD 我）。全量樣本存於測試產出的 `add_samples.json`。
+- [x] Draft Reply 能引用 Reference Space 的內容（測法：答案只存在於參考群組，被 @ 的群組裡沒有）
+      —— 用一個猜不到的專案代號當標記：討論串只有提問那 1 則、問題本身不含答案。**不勾參考群組**時草稿明確寫「對話紀錄中完全沒有相關資訊」；**勾選參考群組**後草稿寫出 `FIA01P2401`／`SmartKMS`。同一則 Mention、同一份討論串，唯一變數是 Reference Space
+- [x] 送出需二次確認，送出後該 Mention 自動標記已處理
+      —— 瀏覽器實測：確認框寫明「將以**你本人的身分**送出，並回到原討論串（0.暫存）。送出後這則 Mention 會自動變成已處理」；確認後收件匣計數由 待處理 3／已處理 3 變為 待處理 2／已處理 4
+- [x] 送出的訊息在 Chat 中顯示為 Viewer 本人，且落在原討論串
+      —— 回讀 Google Chat：`sender.name` 為本人 user id（非 Bot），且該回話與原 Mention 同在 `spaces/AAAAxLxqJxY/threads/Zo3-n97vFe4` 這一串（該串共 2 則）
 
 ### 估時的但書
 
-上列為工作日估算，不含行政等待與需求變更。Phase 1 的 4 天「既有功能搬移」是整份計畫中最不確定的一項——SSE 串流解析在現有實作中已經調校過（`dashboard/frontend/index.html:342-364`），搬到 React 需要重新處理一次串流狀態與 unmount 清理。
+上列為工作日估算，不含行政等待與需求變更。Phase 1 的 4 天「既有功能搬移」原是整份計畫中最不確定的一項——SSE 串流解析在單檔實作中已經調校過，搬到 React 需要重新處理一次串流狀態與 unmount 清理。
+
+實際結果：這一項比預估順利。新實作在 `dashboard/frontend/src/lib/sse.ts`，以 buffer 累積後按 `\n\n` 切 frame（處理 chunk 跨邊界）、`TextDecoder({stream:true})` 處理 UTF-8 跨邊界、`AbortController` 負責 unmount 清理，並有針對跨邊界的單元測試。
 
 ---
 
@@ -600,17 +706,17 @@ gantt
 
 **Must Have（Phase 1）**
 - [x] Google Chat 憑證與 Space 讀取（有實證，見第十二節）
-- [x] MCP server 四工具（`mcp_app/mcp_server.py:17`、`:38`、`:71`、`:115`）
-- [x] Gemini 摘要邏輯與 SSE 串流（已實作，未實跑驗證）
-- [ ] React 儀表板（重寫既有功能）
-- [ ] 缺陷 D-1 ~ D-4 修復
-- [ ] SQLite 資料層與依賴宣告
+- [x] MCP server 四工具（`mcp_app/mcp_server.py`）——四個工具全部保留，並改吃 core 的共用常數與新增 `style` 參數
+- [x] Gemini 摘要邏輯與 SSE 串流（**已實跑驗證**，見第十二節的更新）
+- [x] React 儀表板（重寫既有功能）
+- [x] 缺陷 D-1 ~ D-4 修復（另修了實作期間新發現的 D-6、D-7；D-5 的加密面也一併完成）
+- [x] SQLite 資料層與依賴宣告
 
 **Must Have（Phase 2）**
-- [ ] 多 Viewer OAuth 與 Session
-- [ ] Mention 收件匣（採集、狀態、介面）
-- [ ] Draft Reply 與 Reference Space
-- [ ] 以 Viewer 身分送出，含二次確認
+- [x] 多 Viewer OAuth 與 Session（OAuth 登入流程、session cookie、憑證加密存放皆完成；「兩個真人帳號」的部分見 Phase 2 驗收條件的說明）
+- [x] Mention 收件匣（採集、狀態、介面）
+- [x] Draft Reply 與 Reference Space
+- [x] 以 Viewer 身分送出，含二次確認
 
 **Won't Have（v2.0 明確不做）**
 - 自動發言：任何未經 Viewer 確認的訊息送出
