@@ -77,7 +77,7 @@ ChatPulse 服務於一個具體場景，而不是一組泛用能力：
 - **SSE 串流是真的**：`dashboard/api/server.py:139-182` 的 `event_generator()` 逐行 yield `data: {...}\n\n`，上游接 Gemini 的 `:streamGenerateContent?alt=sse`（`:157`），以 `data: [DONE]` 收尾（`:180`）
 - 空間列表有 5 分鐘記憶體快取（`dashboard/api/server.py:36-39`），行程內字典，重啟即失效
 
-### 2.3 前端（單檔 HTML，**不是** React）
+### 2.3 前端（2026-09-04 當時是單檔 HTML，**不是** React；Phase 1 已重寫，見 3.2）
 
 `dashboard/frontend/index.html`（盤點時 21,599 bytes、493 行，搬移前為 `web/index.html`）為手寫單檔，無 `package.json`、無建置流程；樣式以 Tailwind CDN 引入——這對 Phase 1 是好消息，重寫為 React + Tailwind 時既有樣式規則可沿用，不必從零重畫。SSE 以 `fetch` + `response.body.getReader()` 消費，**不是** `EventSource`——這在工程上是正確的（端點是 POST，而 `EventSource` 只支援 GET），錯的是 v1.0 的架構圖。
 
@@ -506,6 +506,15 @@ data: {"type":"error","code":"GEMINI_QUOTA_EXCEEDED","message":"Gemini 配額已
 | 404 | `SPACE_NOT_FOUND` / `MENTION_NOT_FOUND` / `ROUTE_NOT_FOUND` | 目標不存在；`ROUTE_NOT_FOUND` 專指 API 路徑打錯 |
 | 429 | `CHAT_RATE_LIMITED` / `GEMINI_QUOTA_EXCEEDED` | 上游限流，回應帶 `Retry-After` |
 | 502 | `CHAT_API_ERROR` / `GEMINI_API_ERROR` | 上游非預期回應 |
+| 500 | `CONFIGURATION_ERROR` | 伺服器設定不完整（例如缺 `GOOGLE_API_KEY`、加密金鑰檔遺失） |
+| 500 | `INTERNAL_ERROR` | 未預期錯誤的兜底 |
+
+另有兩個 code **只出現在串流事件裡、沒有對應的 HTTP 狀態**（前端要一併處理）：
+
+| code | 情境 |
+| :--- | :--- |
+| `NO_MESSAGES` | 該聊天室在指定範圍內沒有可摘要的對話。串流已經開始，沒有別的方式告知前端 |
+| `INTERNAL_ERROR` | 串流開始之後才發生的未預期錯誤 |
 
 Google Chat 回 429 時採指數退避重試，最多 3 次；仍失敗才向前端拋出。
 
@@ -687,7 +696,7 @@ gantt
       —— 依據是「輪詢間隔 45 秒 ＋ 一輪耗時約 1 秒」，最壞情況約 46 秒 < 60 秒。實測部分：在暫存群組發出 `<users/{我}>` 訊息後手動觸發一輪採集，該 Mention 隨即入庫並可在收件匣讀到。**注意這裡沒有實測「端到端延遲」**——測試是「發訊息→手動觸發採集」，中間的間隔由腳本決定而非系統，所以只能證明「採集邏輯抓得到」與「一輪很快」，不能直接得出一個延遲秒數。另外採集器在真實資料上找到 **2 則**非測試的工作 Mention（ILOOP2601 的爬蟲清單確認、TPE01P2601 北市府新案的圖文選單需求），證明它在真實資料上有效，不是只認得測試造出來的訊息
 - [x] 「某人被加進群組」不會被誤判為 Mention
       —— 掃過 60 個近期活躍 Space（每個最多 200 則）找到 **123 筆真實的非 MENTION 樣本**，分兩種形態、分別斷言：
-      **(a) 帶 `user.name` 的 10 筆**，全部是 `userMention.type == "ADD"`（真實案例：兩個機器人被加進暫存群組）——對「被指到的那個人」判定，10 筆全部正確排除，這是 6.1 警語直接針對的情境；
+      **(a) 帶 `user.name` 的 10 筆**，全部是 `userMention.type == "ADD"`，分佈在 **6 個 Space**：2 筆是機器人被加進暫存群組，另 **8 筆是真人被加進客戶專案群組**（彰化銀行 3、SmartRobot 技術發問區 2、北市府／北富銀／悠遊卡各 1）。對「被指到的那個人」判定，10 筆全部正確排除——這是 6.1 警語直接針對的情境，而後面那 8 筆正好說明漏判的實際後果：每次有人被拉進客戶群組，被拉的那個人就會收到一則假的待回覆；
       **(b) 不帶 `user.name` 的 113 筆**，是 `@全部` 廣播（`userMention` 連 `type` 與 `user` 都沒有）——這批沒有「被指到的人」可比對，改以「不算任何人的 Mention」斷言，113 筆 × 6 個候選 id 全部正確排除。這一批值得單獨驗，因為若實作只看 `annotations[].type == "USER_MENTION"`，每則 `@全部` 都會湧進每個人的收件匣。
       另有 11 個結構化樣本涵蓋真實資料掃不到的分支（`TYPE_UNSPECIFIED`、`SLASH_COMMAND`、`RICH_LINK`、同一則訊息中 ADD 別人＋MENTION 我、MENTION 別人＋ADD 我）。全量樣本存於測試產出的 `add_samples.json`。
 - [x] Draft Reply 能引用 Reference Space 的內容（測法：答案只存在於參考群組，被 @ 的群組裡沒有）

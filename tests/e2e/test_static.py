@@ -14,6 +14,7 @@ from e2e_lib import (  # noqa: E402
     client,
     err_shape,
     info,
+    read_sse,
     section,
     set_report,
     summary,
@@ -196,6 +197,37 @@ def authz_regressions() -> None:
         "舊的單人 token 檔仍是明文（供 bootstrap 匯入），所以權限是唯一的保護；"
         "google-auth 用預設 umask 寫檔會是 0644，因此每次啟動都會重新收斂一次。"
     )
+
+    # (5) 只在串流事件裡出現的 code，要確認它真的會送出——否則就是把
+    #     一個沒人送過的代碼寫進錯誤碼表（獨立審查抓到 NO_MESSAGES 與
+    #     INTERNAL_ERROR 兩個實際會送出卻沒列進表的 code）
+    section("6. 只在 SSE 事件出現的錯誤碼")
+    empty_space = None
+    spaces = c.get("/api/v1/spaces").json()["spaces"]
+    for sp in spaces[:25]:
+        msgs = c.get(
+            "/api/v1/messages", params={"space_id": sp["id"], "limit": 5}
+        ).json()
+        if msgs.get("count") == 0:
+            empty_space = sp
+            break
+    if empty_space is None:
+        blocked("NO_MESSAGES 事件", "找不到「有活動但沒有文字訊息」的 Space 可測")
+    else:
+        res = read_sse(
+            c,
+            "/api/v1/summarize/stream",
+            {"space_id": empty_space["id"], "limit": 5, "style": "general"},
+        )
+        last = res["events"][-1] if res["events"] else {}
+        check(
+            "沒有可摘要對話時送出 NO_MESSAGES 事件（HTTP 仍為 200）",
+            res["status"] == 200
+            and last.get("type") == "error"
+            and last.get("code") == "NO_MESSAGES",
+            f"HTTP {res['status']}，事件 {last}",
+        )
+        info(f"測試用 Space：{empty_space['displayName']}（只有 cardsV2、無文字訊息）")
 
 if __name__ == "__main__":
     sys.exit(main())
