@@ -26,6 +26,14 @@
 | 429 | `CHAT_RATE_LIMITED` / `GEMINI_QUOTA_EXCEEDED` | 上游限流，帶 `Retry-After` |
 | 502 | `CHAT_API_ERROR` / `GEMINI_API_ERROR` | 上游非預期回應 |
 | 500 | `CONFIGURATION_ERROR` | 伺服器設定不完整（例如缺 GOOGLE_API_KEY） |
+| 500 | `INTERNAL_ERROR` | 未預期錯誤的兜底 |
+
+**只出現在 SSE 事件、沒有 HTTP 狀態對應的 code**（前端要一併處理）：
+
+| code | 情境 |
+| :--- | :--- |
+| `NO_MESSAGES` | 該聊天室在指定範圍內沒有可摘要的對話。串流已開始，只能以事件告知 |
+| `INTERNAL_ERROR` | 串流開始之後才發生的未預期錯誤 |
 
 ## SSE 事件格式（8.3）
 
@@ -100,7 +108,7 @@ scope 含 chat 三項 ＋ `openid`/`userinfo.email`/`userinfo.profile`。
 ```json
 { "pinned_space_ids": ["spaces/AAA"], "default_limit": 100, "default_style": "technical" }
 ```
-回傳更新後的 preferences。
+回傳更新後的 preferences，另含 `updated_at`（ISO 8601 UTC）。
 
 ---
 
@@ -129,7 +137,8 @@ scope 含 chat 三項 ＋ `openid`/`userinfo.email`/`userinfo.profile`。
   "space_id": "spaces/AAAAxLxqJxY",
   "space_name": "0.暫存",
   "count": 50,
-  "messages": [ { "name": "spaces/../messages/..", "sender": "鄭浩宇", "time": "2026-09-04 08:53", "text": "..." } ]
+  "messages": [ { "name": "spaces/../messages/..", "sender": "鄭浩宇",
+                 "sender_id": "users/1098272650197...", "time": "2026-09-04 08:53", "text": "..." } ]
 }
 ```
 
@@ -186,6 +195,7 @@ mentions 表**只存識別資訊**，不存內容）。
       "message_name": "spaces/../messages/..",
       "thread_name": "spaces/../threads/..",
       "sender_display": "王小明",
+      "sender_id": "users/1141234...",
       "create_time": "2026-09-05T01:10:00Z",
       "state": "pending",
       "resolved_at": null,
