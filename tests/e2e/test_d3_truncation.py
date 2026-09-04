@@ -162,9 +162,10 @@ def main() -> int:
         f"{len(old['text'])} 字 -> {len(new['text'])} 字",
     )
     # maxOutputTokens 是「思考 + 正文」的總預算，不是只算正文。
-    # 這一點決定了 D-3 的真正根因：2048 那次 thoughtsTokenCount 就吃掉 1965，
-    # 只剩 79 token 寫正文，所以輸出幾乎是空的——不是「摘要太長」，
-    # 而是「思考預算把正文擠掉了」。
+    # 這一點決定了 D-3 的真正根因：2048 那次 thoughtsTokenCount 就吃掉近 2,000，
+    # 只剩幾十個 token 寫正文，所以輸出幾乎是空的——不是「摘要太長」，
+    # 而是「思考預算把正文擠掉了」。實測值見 docs/verification-log.md
+    # （每輪思考長度會變，所以這裡不寫死數字）。
     old_budget = (old["usage"].get("thoughtsTokenCount") or 0) + (
         old["usage"].get("candidatesTokenCount") or 0
     )

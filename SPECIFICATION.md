@@ -395,7 +395,7 @@ POST https://chat.googleapis.com/v1/spaces/-/messages:search
 > 1. **`spaces.list` 回傳 `lastActiveTime`**，且 `pageSize=1000` 一頁就取回全部 436 個（436/436 都帶這個欄位）。活躍分佈極度集中：近 1 小時 **2 個**、近 24 小時 **13 個**、近 7 天 26 個、近 30 天 38 個（8.7%）。所以每輪只需輪詢「`lastActiveTime` 晚於上次輪詢時間」的那幾個。
 > 2. **`messages.list` 的 `createTime` filter 可用**，所以候選 Space 只取回新訊息，而不是最近 N 則。
 >
-> 實測成本：每輪 = 1 次 `spaces.list` ＋ 每個活躍 Space 各 1 次 `messages.list`。後者的數量隨當時有多少 Space 活躍而變，所以**每輪呼叫次數不是固定值**——多次 E2E 實測落在 **2~3 次呼叫、0.9~1.1 秒**之間（`api_calls` 會記在採集器的 `last_run_stats` 裡，可從 `GET /api/v1/me` 讀到當下的實際值）。以 45 秒間隔、每輪 3 次計，每分鐘配額佔用約 **0.4%**（原估 48%）。首次全量掃描 436 個 Space（16 併發）實測 **18 秒**。
+> 實測成本：每輪 = 1 次 `spaces.list` ＋ 每個活躍 Space 各 1 次 `messages.list`。後者的數量隨當時有多少 Space 活躍而變，所以**每輪呼叫次數不是固定值**——多次 E2E 實測落在 **2~3 次呼叫、0.9~1.1 秒**之間（`api_calls` 會記在採集器的 `last_run_stats` 裡，可從 `GET /api/v1/me` 讀到當下的實際值）。以 45 秒間隔、每輪 3 次計，每分鐘配額佔用約 **0.4%**（原估 48%）。首次全量掃描 436 個 Space（16 併發）**外插推算約 18 秒**——這是拿 30 個 Space 的實測（1.26 秒）線性外推的，**未實跑全量**，實際會受配額限流與長尾 Space 影響而更久。
 >
 > 因此 6.3 的「30~60 秒一次」**維持不變**，不需要放寬到 2 分鐘。另外為了防範 `lastActiveTime` 更新不及時，實作每 20 輪做一次較寬的掃描（往回看 24 小時的活躍 Space）作為保險。
 
@@ -570,7 +570,7 @@ SQLite（WAL 模式），單一檔案。**對話全文不落地。**
 | :--- | :--- | :--- | :--- |
 | ~~**D-1**~~ **已修復** | `core/chat_client.py` `list_spaces()` | `spaces().list(pageSize=100)` 未處理 `nextPageToken`（同檔的訊息抓取倒是有寫翻頁迴圈） | **實測影響：帳號共 436 個 Space，其中 336 個永遠讀不到**，含「北市府-第八次異動開發」等實際工作群組。且失敗形態是搜尋回報「找不到」而非報錯。2026-09-04 改為自動翻頁（`pageSize=1000` ＋ 50 頁安全閥），修復後實測取得 436 個 |
 | ~~**D-2**~~ **程式面已修復；金鑰建議更換** | `core/config.py`（舊 `:17`） | Gemini API key 以明文硬編碼為環境變數的 fallback 預設值 | repo 要交給團隊使用，等於把金鑰一併發出。**程式面已修**：`core/config.py` 純讀 `GOOGLE_API_KEY`，無 fallback 值，缺少時由 `GeminiClient.__init__` 拋 `CONFIGURATION_ERROR`。**金鑰本身建議更換**，理由與處置見 3.3「憑證絕對不進 repo」下方的收斂結論——不是因為 repo 洩漏（repo 從未 push），而是因為它進過終端輸出。附帶修掉一個實際洩漏管道：金鑰原本放在 Gemini endpoint 的 `?key=` query string，任何含 URL 的錯誤訊息都會把它印出來，已改為 `x-goog-api-key` 標頭 |
-| ~~**D-3**~~ **已修復** | `core/gemini_client.py`、`dashboard/api/server.py` | `maxOutputTokens: 2048` | 500 則對話的結構化摘要會被截斷。v1.0 拿「100 萬 token 輸入窗口」當賣點（`v1:76-77`），但輸入窗口大與輸出夠用是兩件事。**已調整為 16384**。實測補充：真正的機制不是「摘要比 2048 長」，而是 **`maxOutputTokens` 把 thinking token 一起算進去**——同一份 483 則對話，2048 那次 `thoughtsTokenCount` 就吃掉 1,962，只剩 82 token 寫正文（`finishReason=MAX_TOKENS`、三個章節全部缺）；16384 那次思考 2,622＋正文 1,160＝3,782，`finishReason=STOP`、章節齊全。證據見 `tests/e2e/test_d3_truncation.py` |
+| ~~**D-3**~~ **已修復** | `core/gemini_client.py`、`dashboard/api/server.py` | `maxOutputTokens: 2048` | 500 則對話的結構化摘要會被截斷。v1.0 拿「100 萬 token 輸入窗口」當賣點（`v1:76-77`），但輸入窗口大與輸出夠用是兩件事。**已調整為 16384**。實測補充：真正的機制不是「摘要比 2048 長」，而是 **`maxOutputTokens` 把 thinking token 一起算進去**——同一份 483 則對話（第二輪執行的數字）：2048 那次 `thoughtsTokenCount` 就吃掉 1,962，只剩 82 token 寫正文（`finishReason=MAX_TOKENS`、三個章節全部缺）；16384 那次思考 2,622＋正文 1,160＝3,782，`finishReason=STOP`、章節齊全。**證據等級 B**：這一輪的報告檔已被後續配額耗盡的重跑覆蓋，數字轉抄於 [`docs/verification-log.md`](./docs/verification-log.md)（該檔另列了第一輪的 1,965／79，兩輪都成立、只是思考長度不同）。要取回持久證據需等配額重置後重跑 `tests/e2e/test_d3_truncation.py` |
 | ~~**D-4**~~ **已修復** | `dashboard/api/server.py` | `SummarizeRequest.style` 定義後從未被讀取 | UI 有下拉選單、API 有欄位、行為不存在。**已實作為 prompt 分歧**（`core/prompts.py`）：三種風格的輸出**章節結構不同**，不是同一份 prompt 後面加一句「請寫技術一點」。實測同一批 50 則對話：general 1,224 字（脈絡＋決議＋待辦）、technical 3,439 字（含「已排除的假設與排查過程」）、action_only 493 字（只有待辦章節） |
 | ~~**D-5**~~ **已修復** | `config/google_chat_token.json`、`config/client_secret.json` | OAuth token（access + refresh）與 client secret 皆以明文 JSON 存放於檔案系統 | 拆分後 MCP repo 要發給團隊，這兩個檔一旦進版控等同交出帳號授權。**版控面已於 Phase 0 處理**（`.gitignore`）；**加密面已完成**：Phase 2 的憑證存於 `credentials.encrypted_token`（Fernet，`core/crypto.py`），金鑰在 `data/token.key`（0600）且不與資料庫同檔。舊的單人 token 檔保留供 `POST /api/v1/auth/bootstrap` 匯入 |
 | **D-6**（本次新發現） | `core/chat_client.py` `fetch_recent_messages()` | 呼叫 `spaces.messages.list` **沒有帶 `orderBy`**，而該端點的預設是 **`createTime ASC`（最舊優先）** | **「最近 N 則」實際抓的是「最舊的 N 則」。** 舊程式碼註解寫「Google 回傳通常是由新到舊」，與官方預設相反。實測證據：修復前的 MCP 工具 `fetch_chat_messages(limit=3)` 對暫存群組回傳的是 **2023-05-12／2023-05-19** 三則，而該群組最新訊息是 2026-09-04。也就是說**過去每一份摘要摘的都是三年前的對話**。已改為 `orderBy=createTime desc` 取回後再反轉為時間正序 |
@@ -584,7 +584,7 @@ SQLite（WAL 模式），單一檔案。**對話全文不落地。**
 
 | ID | 風險 | 影響 | 處置 |
 | :--- | :--- | :--- | :--- |
-| ~~**R-1**~~ **已結案** | `spaces.messages.search` 需要 Business/Enterprise 版 Workspace，`@intumit.com` 的版本等級未確認 | 決定 Mention 採集走實作 A 或 B | **已於 2026-09-05 實測（先於開發）**：實作 A 回 200 但恆 0 筆（正對照亦搜不到），**不可用**；改採實作 B，並以 `lastActiveTime` 預篩把每輪成本壓到 2 次呼叫／0.91 秒／0.3% 配額，因此輪詢間隔不需放寬。完整證據見 [`docs/R1-findings.md`](./docs/R1-findings.md) |
+| ~~**R-1**~~ **已結案** | `spaces.messages.search` 需要 Business/Enterprise 版 Workspace，`@intumit.com` 的版本等級未確認 | 決定 Mention 採集走實作 A 或 B | **已於 2026-09-05 實測（先於開發）**：實作 A 回 200 但恆 0 筆（正對照亦搜不到），**不可用**；改採實作 B，並以 `lastActiveTime` 預篩把每輪成本壓到 2~3 次呼叫、約 1 秒、每分鐘配額約 0.4%，因此輪詢間隔不需放寬。完整證據見 [`docs/R1-findings.md`](./docs/R1-findings.md) |
 | **R-2** | `gemini-3.6-flash` 的實際計費與導入期定價（至 2026-12-31）未逐項核對 | 團隊共用後成本可能高於預期 | **記錄機制已完成**（`token_usage` 表 ＋ `GET /api/v1/usage`，記 prompt／output／total 與呼叫次數）。**定價仍未逐項核對**——要等累積兩週實際用量後才評估，現在無法結案。實測補充兩個會影響估算的事實，見下方 R-2 補充 |
 | **R-4**（本次新發現） | 目前這把 Gemini API key 在**免費層**，`gemini-3.6-flash` 的上限是**每天 20 次請求** | **團隊共用在免費層完全不可行**，也直接限制了 E2E 測試的可重複性 | 錯誤原文：`quotaId: GenerateRequestsPerDayPerProjectPerModel-FreeTier, quotaValue: 20`。本次測試在數小時內就把 20 次用完（15 次經儀表板 ＋ 5 次測試腳本直呼），之後所有摘要與草稿都回 `GEMINI_QUOTA_EXCEEDED`。**程式的處理是正確的**（照 8.3 送 error 事件、不中斷連線、不噴 traceback），但功能等於停擺。上線前必須先決定：升級到付費層、或改接公司 GCP 專案的 Vertex AI（10.2 已列的替代路徑，程式改動限於 `gemini_client.py` 的認證與 endpoint）。模型可用 `CHATPULSE_GEMINI_MODEL` 一個環境變數換掉 |
 | **R-3** | v1.0 `v1:163-164` 標「已驗證」的兩項未附證據 | 見下方澄清 | 已於本版如實重寫 |
@@ -592,7 +592,7 @@ SQLite（WAL 模式），單一檔案。**對話全文不落地。**
 **R-2 補充（2026-09-05 實測）**
 
 1. **這個模型會產生 thinking token**，單次摘要實測 1,962~2,772 個。它們算在 `maxOutputTokens` 的預算內（這正是 D-3 的根因），也會出現在 `usageMetadata.thoughtsTokenCount`。
-2. **`totalTokenCount` 不等於 prompt ＋ output**：差額是思考與隱式快取（實測某次 `promptTokenCount=24,200`、`candidatesTokenCount=1,160`、`totalTokenCount=28,143`，另有 `cachedContentTokenCount=16,363`）。估成本時不能只看 output，也不能只看 prompt。
+2. **`totalTokenCount` 不等於 prompt ＋ output**：差額是思考與隱式快取。D-3 測試第一輪的原始 `usageMetadata` 是 `promptTokenCount=24,200`、`candidatesTokenCount=1,171`、`thoughtsTokenCount=2,772`、`totalTokenCount=28,143`、`cachedContentTokenCount=16,363`（**證據等級 B**，見 `docs/verification-log.md`；這組數字**不在資料庫裡**，因為該測試直接打 Gemini、不經儀表板，且 `token_usage` 沒有 cached 欄位）。想從資料庫觀察同一現象，看任一筆經儀表板產生的紀錄即可——prompt＋output 都小於 total。估成本時不能只看 output，也不能只看 prompt。
 
 本次 session 經儀表板產生的累計用量：15 次呼叫、prompt 40,256、output 6,907、total 78,435 tokens（資料在 `token_usage` 表，`GET /api/v1/usage` 可讀）。
 
@@ -656,7 +656,10 @@ gantt
 
 功能面**零新增**。結束時你手上的東西和現在幾乎一樣，差別在底下換過了。這個取捨是刻意的：既然確定要重寫前端，先重寫再加新功能，新功能只需實作一次。
 
-驗收條件（勾選者皆有 2026-09-05 的實跑輸出為證，測試腳本在 `tests/e2e/`）：
+驗收條件（測試腳本在 `tests/e2e/`）。**證據等級**：多數項目可隨時重跑驗證；
+少數依賴 Gemini 的項目當天跑出過真實結果，但報告檔已被後續配額耗盡的重跑覆蓋，
+數字轉抄於 [`docs/verification-log.md`](./docs/verification-log.md) 並標為 B 級——
+**要取回持久證據需等每日配額重置後重跑**（R-4）。
 - [x] React 版可完成現有全部操作（列 Space、摘要串流、Action Items、推播）
       —— 瀏覽器實測：436 個 Space 虛擬滾動、摘要 SSE 逐字串流、Action Items 萃取 3 項可勾選並複製、推播二次確認後訊息實際送達 Google Chat。這一輪是用 Playwright 驅動真實瀏覽器對真後端操作，期間 `browser_console_messages` 查詢回報 0 則錯誤與 0 則警告——**該輸出未落檔**，重驗需重跑一次瀏覽器流程
 - [x] ~~加入超過 100 個 Space 時，第 101 個之後仍讀得到（D-1）~~ **已於 Phase 0 完成**：修復後實測取得 436 個 Space（修復前 100 個）
@@ -675,13 +678,13 @@ gantt
 
 你真正要的功能在這裡。
 
-驗收條件（勾選者皆有 2026-09-05 的實跑輸出為證，測試腳本在 `tests/e2e/`）：
+驗收條件（測試腳本在 `tests/e2e/`；證據等級同 Phase 1，見 [`docs/verification-log.md`](./docs/verification-log.md)）：
 - [x] R-1 已實測，採集器實作 A 或 B 之一確定可用
       —— 實作 A 不可用（回 200 恆 0 筆，正對照證實），**實作 B 確定可用**：一輪 2~3 次 API 呼叫、約 1 秒（隨當時活躍 Space 數而變）。證據見 `docs/R1-findings.md`
 - [x] 兩位 Viewer 各自登入，各自只看到自己的 Space 與 Summary
       —— **部分以模擬達成，需說明**：手上只有一個 Google 帳號，所以第二位 Viewer 是直接在資料庫建立 viewer 列與 session，再用該 session 走 HTTP 層驗證。結果：對方 `GET /summaries` 與 `GET /mentions` 都是 0 筆（我方分別 3 筆與 5 筆），`GET /spaces` 回 401（他沒有自己的憑證）。**驗到的是 ChatPulse 的授權邏輯**；「兩個真人 Google 帳號各自 OAuth」這一段未驗
 - [x] 有人 @ 你之後 60 秒內出現在收件匣
-      —— 在暫存群組發出 `<users/{我}>` 訊息後手動觸發採集，**0.91 秒**內入庫並可在收件匣讀到（輪詢間隔設定為 45 秒，符合 60 秒內的要求）。另外採集器在真實資料上找到 **2 則**非測試的工作 Mention（ILOOP2601 的爬蟲清單確認、TPE01P2601 北市府新案的圖文選單需求），證明它在真實資料上有效，不是只認得測試造出來的訊息
+      —— 依據是「輪詢間隔 45 秒 ＋ 一輪耗時約 1 秒」，最壞情況約 46 秒 < 60 秒。實測部分：在暫存群組發出 `<users/{我}>` 訊息後手動觸發一輪採集，該 Mention 隨即入庫並可在收件匣讀到。**注意這裡沒有實測「端到端延遲」**——測試是「發訊息→手動觸發採集」，中間的間隔由腳本決定而非系統，所以只能證明「採集邏輯抓得到」與「一輪很快」，不能直接得出一個延遲秒數。另外採集器在真實資料上找到 **2 則**非測試的工作 Mention（ILOOP2601 的爬蟲清單確認、TPE01P2601 北市府新案的圖文選單需求），證明它在真實資料上有效，不是只認得測試造出來的訊息
 - [x] 「某人被加進群組」不會被誤判為 Mention
       —— 掃過 60 個近期活躍 Space（每個最多 200 則）找到 **123 筆真實的非 MENTION 樣本**，分兩種形態、分別斷言：
       **(a) 帶 `user.name` 的 10 筆**，全部是 `userMention.type == "ADD"`（真實案例：兩個機器人被加進暫存群組）——對「被指到的那個人」判定，10 筆全部正確排除，這是 6.1 警語直接針對的情境；

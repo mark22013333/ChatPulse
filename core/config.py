@@ -73,7 +73,8 @@ MENTION_RETENTION_DAYS = 90
 # 詳見 docs/R1-findings.md。預設走實作 B（逐群輪詢 + lastActiveTime 預篩）。
 MENTION_COLLECTOR = os.environ.get("CHATPULSE_COLLECTOR", "polling")  # polling | search
 MENTION_POLL_INTERVAL_SECONDS = int(os.environ.get("CHATPULSE_POLL_INTERVAL", "45"))
-MENTION_POLL_WORKERS = 16  # 實測 16 併發掃 436 個 Space 約 18 秒
+# 16 併發掃 30 個 Space 實測 1.26 秒；外插推算全量 436 個約 18 秒（未實跑全量）
+MENTION_POLL_WORKERS = 16
 # 首次採集（無上次輪詢時間）往回看多久
 MENTION_INITIAL_LOOKBACK_HOURS = 24
 
