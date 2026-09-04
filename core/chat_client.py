@@ -23,10 +23,31 @@ class GoogleChatClient:
                 token.write(creds.to_json())
         return build('chat', 'v1', credentials=creds)
 
+    # 單頁上限依 Google Chat API 官方規格：spaces.list 的 pageSize 最大 1000
+    _SPACES_PAGE_SIZE = 1000
+    # 安全閥：避免 nextPageToken 異常時無限迴圈
+    _MAX_PAGES = 50
+
     def list_spaces(self):
-        """列出所有空間"""
-        res = self.service.spaces().list(pageSize=100).execute()
-        return res.get('spaces', [])
+        """列出所有空間（自動翻頁）
+
+        注意：必須處理 nextPageToken。先前只取第一頁，導致加入超過
+        單頁上限的空間後，其餘永遠讀不到，且表現為「查無此群組」而非錯誤。
+        """
+        all_spaces = []
+        page_token = None
+
+        for _ in range(self._MAX_PAGES):
+            res = self.service.spaces().list(
+                pageSize=self._SPACES_PAGE_SIZE,
+                pageToken=page_token
+            ).execute()
+            all_spaces.extend(res.get('spaces', []))
+            page_token = res.get('nextPageToken')
+            if not page_token:
+                break
+
+        return all_spaces
 
     def find_space_by_name(self, name_keyword):
         """依名稱尋找空間"""

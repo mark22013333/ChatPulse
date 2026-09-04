@@ -260,7 +260,7 @@ Phase 2 另需 `userinfo.profile`，用於取得 Viewer 自己的 user id（見 
 ### 5.1 Space 查閱
 
 - 列出 Viewer 已加入的所有 Space，支援名稱模糊搜尋
-- **必須支援 100 個以上**：現行 `core/chat_client.py:28` 只取第一頁且忽略 `nextPageToken`，第 101 個之後永遠讀不到（見第十一節缺陷 D-1）
+- **必須涵蓋全部空間**：實測此帳號共有 **436 個 Space**。`list_spaces()` 原先只取第一頁（`pageSize=100`）且忽略 `nextPageToken`，使 336 個空間永遠讀不到，且表現為「查無此群組」而非錯誤——**已於 2026-09-04 修復為自動翻頁**（缺陷 D-1）
 - 保留 5 分鐘快取與手動強制刷新
 
 ### 5.2 單群組摘要（SSE 串流）
@@ -330,7 +330,9 @@ POST https://chat.googleapis.com/v1/spaces/-/messages:search
 
 `spaces.list` → 逐 Space 呼叫 `spaces.messages.list`（帶 `filter=createTime > 上次輪詢時間`）→ 本地比對 `annotations[]`。
 
-`spaces.messages.list` 的 `filter` 只支援 `createTime` 與 `thread.name` 兩個欄位，**沒有任何 mention 相關條件**，故過濾必須在本地做。100 個 Space 一輪約需 15~40 秒（瓶頸是每使用者 15 讀／秒的配額，非每分鐘 3,000 次）。
+`spaces.messages.list` 的 `filter` 只支援 `createTime` 與 `thread.name` 兩個欄位，**沒有任何 mention 相關條件**，故過濾必須在本地做。
+
+> ⚠️ **實測 436 個 Space 之後，這條退路的可行性下降了。** 原估算以 100 個 Space 為基礎（一輪 15~40 秒）；實際規模下，光是配額下限就要 `436 ÷ 15 讀/秒 ≈ 29 秒`，序列執行含網路往返約 2 分鐘，且每輪吃掉每分鐘配額的 **48%**（436 ÷ 900）。這意味著**實作 B 撐不起 30~60 秒的輪詢間隔**，退路一旦啟用就必須同時調整：把間隔拉長到 2 分鐘以上，或只輪詢近期有活動的 Space 子集。因此 R-1 的實測結果比原先預期更關鍵。
 
 ### 6.3 輪詢頻率
 
@@ -497,7 +499,7 @@ SQLite（WAL 模式），單一檔案。**對話全文不落地。**
 
 | ID | 位置 | 問題 | 後果 |
 | :--- | :--- | :--- | :--- |
-| **D-1** | `core/chat_client.py:28` | `spaces().list(pageSize=100)` 未處理 `nextPageToken`（同檔 `:47-61` 的訊息抓取有寫翻頁迴圈） | 加入第 101 個 Space 之後永遠讀不到。直接推翻 v1.0 講了四次的「100+ 群組」（`v1:11`、`v1:75`、`v1:97`、`v1:112`） |
+| ~~**D-1**~~ **已修復** | `core/chat_client.py` `list_spaces()` | `spaces().list(pageSize=100)` 未處理 `nextPageToken`（同檔的訊息抓取倒是有寫翻頁迴圈） | **實測影響：帳號共 436 個 Space，其中 336 個永遠讀不到**，含「北市府-第八次異動開發」等實際工作群組。且失敗形態是搜尋回報「找不到」而非報錯。2026-09-04 改為自動翻頁（`pageSize=1000` ＋ 50 頁安全閥），修復後實測取得 436 個 |
 | **D-2** | `core/config.py:17` | Gemini API key 以明文硬編碼為環境變數的 fallback 預設值 | repo 要交給團隊使用，等於把金鑰一併發出。**該金鑰應視為已洩漏，立即作廢重發，不要等 Phase 1 改完程式碼**。修法：讀不到 `GOOGLE_API_KEY` 就啟動失敗，不提供內建值 |
 | **D-3** | `core/gemini_client.py:50`、`dashboard/api/server.py:162` | `maxOutputTokens: 2048` | 500 則對話的結構化摘要會被截斷。v1.0 拿「100 萬 token 輸入窗口」當賣點（`v1:76-77`），但輸入窗口大與輸出夠用是兩件事。調整為 16384 |
 | **D-4** | `dashboard/api/server.py:48` | `SummarizeRequest.style` 定義後從未被讀取 | UI 有下拉選單、API 有欄位、行為不存在。Phase 1 實作為 prompt 分歧 |
@@ -511,7 +513,7 @@ SQLite（WAL 模式），單一檔案。**對話全文不落地。**
 
 | ID | 風險 | 影響 | 處置 |
 | :--- | :--- | :--- | :--- |
-| **R-1** | `spaces.messages.search` 需要 Business/Enterprise 版 Workspace，`@intumit.com` 的版本等級未確認 | 決定 Mention 採集走實作 A 或 B | **Phase 2 第一個工作項**就是實測，不先寫程式。退路已備妥（6.2 實作 B），最壞情況是一輪 15~40 秒而非單次呼叫 |
+| **R-1** | `spaces.messages.search` 需要 Business/Enterprise 版 Workspace，`@intumit.com` 的版本等級未確認 | 決定 Mention 採集走實作 A 或 B | **Phase 2 第一個工作項**就是實測，不先寫程式。⚠️ 實測 436 個 Space 後此風險**權重上升**：退路（6.2 實作 B）一輪需約 2 分鐘、吃掉 48% 配額，撐不起 30~60 秒間隔，啟用時須一併調整輪詢策略 |
 | **R-2** | `gemini-3.6-flash` 的實際計費與導入期定價（至 2026-12-31）未逐項核對 | 團隊共用後成本可能高於預期 | Phase 1 加入每日 token 用量記錄，累積兩週後再評估 |
 | **R-3** | v1.0 `v1:163-164` 標「已驗證」的兩項未附證據 | 見下方澄清 | 已於本版如實重寫 |
 
@@ -568,7 +570,7 @@ gantt
 
 驗收條件：
 - [ ] React 版可完成現有全部操作（列 Space、摘要串流、Action Items、推播）
-- [ ] 加入超過 100 個 Space 時，第 101 個之後仍讀得到（D-1）
+- [x] ~~加入超過 100 個 Space 時，第 101 個之後仍讀得到（D-1）~~ **已於 Phase 0 完成**：修復後實測取得 436 個 Space（修復前 100 個）
 - [ ] 500 則對話的摘要不被截斷（D-3）
 - [ ] 切換摘要風格會產生不同結果（D-4）
 - [ ] `limit` 傳 0、1001、非數值時回 400 `INVALID_PARAMETER`，四個入口行為一致（5.5）
