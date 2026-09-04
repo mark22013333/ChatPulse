@@ -26,9 +26,15 @@ dist/
 *.local
 
 # ── 本機資料 ─────────────────────────────────────
+# data/ 內含 chatpulse.db（摘要與草稿明文）、其 WAL/SHM 側檔，
+# 以及 token.key（OAuth token 的加密金鑰）。整個目錄都不進版控。
+data/
 *.db
+*.db-wal
+*.db-shm
 *.sqlite3
 *.sqlite3-journal
+token.key
 
 # ── 作業系統與編輯器 ───────────────────────────────
 .DS_Store

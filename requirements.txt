@@ -1,19 +1,27 @@
-# ChatG-Bot 執行依賴
+# ChatPulse 執行依賴
 #
-# 目前未鎖定版本。Phase 1 的驗收條件之一是「乾淨環境可重建」，
-# 屆時應以 pip freeze 產出鎖定版本（見 SPECIFICATION.md 第十三節）。
+# 版本已鎖定（SPECIFICATION.md 第十三節的驗收條件：乾淨環境可用
+# `pip install -r requirements.txt` 重建）。版本取自本專案 .venv（Python 3.12）
+# 的實際安裝結果，2026-09-05 產出。
+#
+# 重建方式：
+#   uv venv --python 3.12 .venv
+#   uv pip install -r requirements.txt
 #
 # 執行前必須設定環境變數 GOOGLE_API_KEY，否則啟動會失敗並提示。
 
 # --- 共用（core）---
-google-api-python-client
-google-auth-oauthlib
-google-auth-httplib2
-requests
+google-api-python-client==2.200.0
+google-auth-oauthlib==1.4.1
+google-auth-httplib2==0.4.2
+requests==2.34.2
+# core/crypto.py 用 Fernet 對稱加密存進 credentials 表的 OAuth token
+cryptography==50.0.1
 
 # --- MCP server（mcp_app）---
-mcp
+mcp==2.1.1
 
 # --- 儀表板後端（dashboard）---
-fastapi
-uvicorn[standard]
+fastapi==0.141.1
+# [standard] 額外帶入 uvloop／httptools／watchfiles／websockets，SSE 與 --reload 需要
+uvicorn[standard]==0.52.4
