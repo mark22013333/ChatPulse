@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Google Chat MCP 智慧助手 - 團隊上手指南與系統手冊</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;600&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-primary: #0f172a;
+      --bg-secondary: #1e293b;
+      --bg-card: #182234;
+      --border-color: #334155;
+      --text-primary: #f8fafc;
+      --text-secondary: #94a3b8;
+      --accent-blue: #38bdf8;
+      --accent-green: #34d399;
+      --accent-purple: #c084fc;
+      --accent-amber: #fbbf24;
+      --code-bg: #0b1120;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background-color: var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.6;
+      padding: 40px 20px;
+    }
+
+    .container {
+      max-width: 1080px;
+      margin: 0 auto;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 50px;
+      padding-bottom: 30px;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 6px 14px;
+      font-size: 13px;
+      font-weight: 600;
+      border-radius: 9999px;
+      background: rgba(56, 189, 248, 0.15);
+      color: var(--accent-blue);
+      border: 1px solid rgba(56, 189, 248, 0.3);
+      margin-bottom: 16px;
+    }
+
+    h1 {
+      font-size: 2.5rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 12px;
+      background: linear-gradient(135deg, #ffffff 0%, #94a3b8 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    header p {
+      color: var(--text-secondary);
+      font-size: 1.15rem;
+      max-width: 650px;
+      margin: 0 auto;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 24px;
+      margin-bottom: 36px;
+    }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 14px;
+      padding: 26px;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+      transition: transform 0.2s, border-color 0.2s;
+    }
+
+    .card:hover {
+      border-color: rgba(56, 189, 248, 0.5);
+      transform: translateY(-2px);
+    }
+
+    .card h3 {
+      font-size: 1.25rem;
+      margin-bottom: 14px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .section-title {
+      font-size: 1.6rem;
+      font-weight: 600;
+      margin: 40px 0 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--text-primary);
+    }
+
+    .step-box {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 22px;
+      margin-bottom: 20px;
+      position: relative;
+    }
+
+    .step-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      background: var(--accent-blue);
+      color: #000;
+      font-weight: 700;
+      border-radius: 50%;
+      font-size: 14px;
+      margin-right: 10px;
+    }
+
+    .step-header {
+      font-size: 1.2rem;
+      font-weight: 600;
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+    }
+
+    code {
+      font-family: 'Fira Code', monospace;
+      font-size: 0.9em;
+      background: var(--code-bg);
+      padding: 3px 8px;
+      border-radius: 6px;
+      color: var(--accent-blue);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      padding: 18px;
+      overflow-x: auto;
+      margin: 14px 0;
+      font-family: 'Fira Code', monospace;
+      font-size: 0.9rem;
+      color: #e2e8f0;
+      line-height: 1.5;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+      background: var(--bg-card);
+      border-radius: 10px;
+      overflow: hidden;
+      border: 1px solid var(--border-color);
+    }
+
+    th, td {
+      padding: 14px 18px;
+      text-align: left;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    th {
+      background: var(--bg-secondary);
+      color: var(--text-secondary);
+      font-weight: 600;
+      font-size: 0.9rem;
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    .alert {
+      padding: 16px 20px;
+      border-radius: 10px;
+      margin: 20px 0;
+      display: flex;
+      gap: 12px;
+    }
+
+    .alert-tip {
+      background: rgba(52, 211, 153, 0.1);
+      border: 1px solid rgba(52, 211, 153, 0.3);
+      color: #a7f3d0;
+    }
+
+    .alert-warning {
+      background: rgba(251, 191, 36, 0.1);
+      border: 1px solid rgba(251, 191, 36, 0.3);
+      color: #fde68a;
+    }
+
+    ul, ol {
+      padding-left: 24px;
+      margin: 10px 0;
+    }
+
+    li {
+      margin-bottom: 6px;
+      color: var(--text-secondary);
+    }
+
+    li strong {
+      color: var(--text-primary);
+    }
+
+    .btn-copy {
+      display: inline-block;
+      cursor: pointer;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      color: var(--text-primary);
+      padding: 4px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      margin-top: 6px;
+      transition: all 0.2s;
+    }
+
+    .btn-copy:hover {
+      background: var(--border-color);
+    }
+
+    footer {
+      text-align: center;
+      margin-top: 60px;
+      padding-top: 24px;
+      border-top: 1px solid var(--border-color);
+      color: var(--text-secondary);
+      font-size: 0.9rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="badge">Intumit BU2 Engineering Toolkit</div>
+      <h1>Google Chat MCP 智慧助手指南</h1>
+      <p>讓 Claude Desktop 與 Claude Code 直接連通 Google Chat：對話搜尋、100+ 筆上下文萃取與 Gemini 3.6 智慧摘要推播</p>
+    </header>
+
+    <!-- 概念澄清卡片 -->
+    <div class="section-title">🔑 快速搞懂憑證機制（同事分享必讀）</div>
+    <div class="grid-2">
+      <div class="card">
+        <h3 style="color: var(--accent-green);">🏢 client_secret.json（團隊共用）</h3>
+        <p style="color: var(--text-secondary); margin-bottom: 12px;">
+          代表這套「Google Chat 助手應用程式」。代表本專案已在公司 GCP 專案完成登記。
+        </p>
+        <ul>
+          <li><strong>可以分享給同事</strong>：直接提供給同事放進 <code>config/</code> 資料夾。</li>
+          <li><strong>免除繁瑣設定</strong>：同事<strong>不需要</strong>每個人都去開一個 GCP 專案。</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h3 style="color: var(--accent-amber);">👤 google_chat_token.json（個人專屬）</h3>
+        <p style="color: var(--text-secondary); margin-bottom: 12px;">
+          代表使用者的個人身分授權。決定了 AI 能看見哪些私訊與群組空間。
+        </p>
+        <ul>
+          <li><strong>絕不能共用或複製</strong>：複製別人的 Token 會看到別人的私訊！</li>
+          <li><strong>每位同事登入一次</strong>：執行一鍵安裝精靈時會自動跳出瀏覽器完成授權。</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- 新手上路：指令安裝方式 -->
+    <div class="section-title">⚡ 最強推薦：Claude Code 一鍵指令安裝</div>
+    <div class="card" style="border-left: 4px solid var(--accent-green); margin-bottom: 30px;">
+      <h3 style="color: var(--accent-green);">🔥 只要一行指令，自動授權並完成註冊！</h3>
+      <p style="color: var(--text-secondary); margin-bottom: 12px;">
+        就像安裝 Claude Code Plugin 一樣，同事只要把 <code>client_secret.json</code> 放入專案後，在終端機執行這行指令：
+      </p>
+      <pre><code>./scripts/install-claude.sh</code></pre>
+      <p style="color: var(--text-secondary); font-size: 0.95rem;">
+        <strong>這支指令會自動：</strong><br>
+        1. 檢查並自動準備 Python / uv 依賴環境。<br>
+        2. 自動開啟瀏覽器讓同事登入 Google Workspace 帳號。<br>
+        3. 調用 <code>claude mcp add --scope user google-chat</code> 直接將工具註冊進 Claude Code。<br>
+        4. 執行完畢後立即生效（健康檢查狀態：<span style="color: var(--accent-green); font-weight: 600;">✔ Connected</span>）！
+      </p>
+    </div>
+
+    <!-- 新手上路三步驟 -->
+    <div class="section-title">🚀 傳統手動流程（適用 Claude Desktop）</div>
+
+    <div class="step-box">
+      <div class="step-header">
+        <span class="step-badge">1</span>
+        <span>複製專案與放置共用憑證</span>
+      </div>
+      <p style="color: var(--text-secondary); margin-bottom: 8px;">
+        向 Mark（或專案維護者）取得專案與 <code>client_secret.json</code>，放進專案設定目錄：
+      </p>
+      <pre><code># 專案路徑結構
+google-chat-bot/
+└── config/
+    └── client_secret.json   <-- 放置在此處</code></pre>
+    </div>
+
+    <div class="step-box">
+      <div class="step-header">
+        <span class="step-badge">2</span>
+        <span>執行一鍵新手精靈（自動登入授權）</span>
+      </div>
+      <p style="color: var(--text-secondary); margin-bottom: 8px;">
+        在終端機中執行精靈指令，系統將自動開啟瀏覽器跳出 Google Workspace 授權頁面：
+      </p>
+      <pre><code>cd google-chat-bot
+./scripts/setup.sh</code></pre>
+      <div class="alert alert-tip">
+        <div>💡</div>
+        <div>瀏覽器彈出時，請點選您的公司 Google Workspace 帳號並點選「同意授權」。完成後終端機會自動產生專屬您的個人 Token 與 MCP 設定！</div>
+      </div>
+    </div>
+
+    <div class="step-box">
+      <div class="step-header">
+        <span class="step-badge">3</span>
+        <span>設定 Claude Desktop / Claude Code</span>
+      </div>
+      <p style="color: var(--text-secondary); margin-bottom: 8px;">
+        將以下 JSON 內容加入您的 Claude 設定檔中：
+      </p>
+      <pre><code id="mcp-config">{
+  "mcpServers": {
+    "google-chat": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--with", "mcp",
+        "--with", "google-api-python-client",
+        "--with", "google-auth-oauthlib",
+        "--with", "google-auth-httplib2",
+        "--with", "requests",
+        "python3",
+        "/Users/cheng/google-chat-bot/src/mcp_server.py"
+      ]
+    }
+  }
+}</code></pre>
+      <div style="font-size: 0.9rem; color: var(--text-secondary);">
+        <strong>設定檔位置：</strong><br>
+        • <strong>Claude Desktop</strong>: <code>~/Library/Application Support/Claude/claude_desktop_config.json</code><br>
+        • <strong>Claude Code (CLI)</strong>: <code>~/.claude.json</code>
+      </div>
+    </div>
+
+    <!-- MCP 功能清單 -->
+    <div class="section-title">🛠️ MCP 核心工具清單 (AI 可直接調用)</div>
+    <table>
+      <thead>
+        <tr>
+          <th>工具名稱 (Tool Name)</th>
+          <th>功能說明</th>
+          <th>主要參數</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>list_chat_spaces</code></td>
+          <td>列出使用者加入的所有群組與空間</td>
+          <td><code>search</code>（關鍵字篩選，如 'BU2', '北市府'）</td>
+        </tr>
+        <tr>
+          <td><code>fetch_chat_messages</code></td>
+          <td>抓取指定空間的對話列表（由舊到新排序）</td>
+          <td><code>space_name_or_id</code>, <code>limit</code> (預設 30, 可設 100)</td>
+        </tr>
+        <tr>
+          <td><code>summarize_chat_space</code></td>
+          <td>使用 <strong>Gemini 3.6 Flash</strong> 提煉對話主題、決議與 Action Items</td>
+          <td><code>space_name_or_id</code>, <code>limit</code>, <code>post_to_chat</code> (是否回推群組)</td>
+        </tr>
+        <tr>
+          <td><code>send_chat_message</code></td>
+          <td>在指定 Google Chat 群組推播發送訊息</td>
+          <td><code>space_name_or_id</code>, <code>message_text</code></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <!-- 常用指令情境 -->
+    <div class="section-title">💬 在 Claude 中如何用自然語言調用？</div>
+    <div class="grid-2">
+      <div class="card">
+        <h3>🔍 查詢與檢索</h3>
+        <ul>
+          <li>「幫我看 Google Chat 有哪些關於『北市府』或『富邦』的群組？」</li>
+          <li>「讀取『0.暫存』最近 50 筆訊息看看之前記了什麼？」</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h3>🧠 智慧摘要與待辦</h3>
+        <ul>
+          <li>「摘要『1.BU2-PG』最近 100 筆對話，整理出待辦事項給我。」</li>
+          <li>「分析『0.暫存』最近 30 則訊息，並推播摘要回群組。」</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- FAQ 與避坑指南 -->
+    <div class="section-title">❓ 常見問題與排錯 (FAQ)</div>
+    <div class="card" style="margin-bottom: 16px;">
+      <h4 style="color: var(--accent-blue); margin-bottom: 6px;">Q1: 為什麼摘要可以讀取，但想推播回群組時報錯 (404 Not Found)？</h4>
+      <p style="color: var(--text-secondary); font-size: 0.95rem;">
+        <strong>原因：</strong>讀取訊息使用的是您個人的身分（只要群組有您就能讀）；但推播發言需要該群組<strong>已經把 Bot 邀請進去</strong>。<br>
+        <strong>解法：</strong>在 Google Chat 目標群組點擊上方選單 ➔ <strong>應用程式與整合</strong> ➔ 點選 <strong>+ 新增應用程式</strong> 把 Bot 加進來即可！
+      </p>
+    </div>
+
+    <div class="card">
+      <h4 style="color: var(--accent-blue); margin-bottom: 6px;">Q2: Token 過期了需要手動刪除嗎？</h4>
+      <p style="color: var(--text-secondary); font-size: 0.95rem;">
+        不需要！程式內部具備 Refresh Token 自動刷新機制。只要不是憑證被後台撤銷，背景會自動無感續期。
+      </p>
+    </div>
+
+    <footer>
+      <p>Google Chat Assistant MCP Project · 碩網資訊 BU2 · 2026</p>
+    </footer>
+  </div>
+</body>
+</html>

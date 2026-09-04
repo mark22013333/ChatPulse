@@ -1,0 +1,19 @@
+# ChatG-Bot 執行依賴
+#
+# 目前未鎖定版本。Phase 1 的驗收條件之一是「乾淨環境可重建」，
+# 屆時應以 pip freeze 產出鎖定版本（見 SPECIFICATION.md 第十三節）。
+#
+# 執行前必須設定環境變數 GOOGLE_API_KEY，否則啟動會失敗並提示。
+
+# --- 共用（core）---
+google-api-python-client
+google-auth-oauthlib
+google-auth-httplib2
+requests
+
+# --- MCP server（mcp_app）---
+mcp
+
+# --- 儀表板後端（dashboard）---
+fastapi
+uvicorn[standard]

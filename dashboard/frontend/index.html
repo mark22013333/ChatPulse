@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="zh-TW" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ChatPulse - Google Chat 智慧儀表板</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#f0f9ff',
+              500: '#0ea5e9',
+              600: '#0284c7',
+            },
+            dark: {
+              900: '#090d16',
+              800: '#111827',
+              700: '#1f2937',
+              600: '#374151',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <!-- Marked for Markdown rendering -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    /* Custom Scrollbars */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #111827; }
+    ::-webkit-scrollbar-thumb { background: #374151; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #4b5563; }
+    
+    .markdown-body h1, .markdown-body h2, .markdown-body h3 {
+      font-weight: 600;
+      color: #f3f4f6;
+      margin-top: 1rem;
+      margin-bottom: 0.5rem;
+    }
+    .markdown-body h3 { font-size: 1.15rem; color: #38bdf8; }
+    .markdown-body ul { list-style-type: disc; padding-left: 1.5rem; margin-bottom: 1rem; }
+    .markdown-body li { margin-bottom: 0.35rem; color: #d1d5db; }
+    .markdown-body code {
+      background: #1f2937;
+      color: #38bdf8;
+      padding: 0.15rem 0.4rem;
+      border-radius: 0.25rem;
+      font-size: 0.875rem;
+    }
+    .markdown-body strong { color: #ffffff; }
+
+    /* Typing cursor animation */
+    .typing-cursor::after {
+      content: '▋';
+      display: inline-block;
+      color: #38bdf8;
+      animation: blink 0.8s infinite;
+      margin-left: 2px;
+    }
+    @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+  </style>
+</head>
+<body class="bg-dark-900 text-gray-100 font-sans h-screen flex flex-col overflow-hidden">
+
+  <!-- Top Navbar -->
+  <header class="h-14 border-b border-dark-700 bg-dark-800 flex items-center justify-between px-5 shrink-0">
+    <div class="flex items-center space-x-3">
+      <div class="w-8 h-8 rounded-lg bg-sky-500/20 border border-sky-500/30 flex items-center justify-center text-sky-400 font-bold">
+        <i class="fa-solid fa-bolt"></i>
+      </div>
+      <div>
+        <h1 class="font-bold text-base tracking-tight bg-gradient-to-r from-white to-gray-400 bg-clip-text text-transparent">ChatPulse</h1>
+        <span class="text-xs text-gray-400 font-mono">Google Chat 智慧摘要儀表板</span>
+      </div>
+    </div>
+    
+    <div class="flex items-center space-x-3">
+      <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+        <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+        Gemini 3.6 Flash
+      </span>
+      <a href="/docs/index.html" target="_blank" class="text-xs text-gray-400 hover:text-white px-2.5 py-1 rounded border border-dark-700 hover:border-dark-600 transition">
+        <i class="fa-regular fa-circle-question mr-1"></i> 團隊手冊
+      </a>
+    </div>
+  </header>
+
+  <!-- Main 3-Column Layout -->
+  <div class="flex-1 flex overflow-hidden">
+    
+    <!-- Left Sidebar: Spaces Navigator -->
+    <aside class="w-80 border-r border-dark-700 bg-dark-800/60 flex flex-col shrink-0">
+      <!-- Search & Refresh Header -->
+      <div class="p-3 border-b border-dark-700 flex flex-col gap-2">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-semibold text-gray-400 uppercase tracking-wider">聊天室列表</span>
+          <button id="btn-refresh-spaces" class="text-xs text-gray-400 hover:text-sky-400 flex items-center gap-1 transition">
+            <i class="fa-solid fa-arrows-rotate"></i> 重新整理
+          </button>
+        </div>
+        <div class="relative">
+          <i class="fa-solid fa-magnifying-glass absolute left-3 top-2.5 text-gray-500 text-xs"></i>
+          <input id="search-space-input" type="text" placeholder="搜尋 100+ 群組 (如 BU2, 暫存, 北市府)..." 
+            class="w-full bg-dark-900 border border-dark-700 rounded-md pl-8 pr-3 py-1.5 text-xs text-gray-200 placeholder-gray-500 focus:outline-none focus:border-sky-500">
+        </div>
+      </div>
+
+      <!-- Spaces List Scrollable -->
+      <div id="spaces-list-container" class="flex-1 overflow-y-auto p-2 space-y-1">
+        <div class="text-center py-10 text-gray-500 text-xs">
+          <i class="fa-solid fa-circle-notch fa-spin text-base mb-2"></i>
+          <p>正在載入 Google Chat 空間...</p>
+        </div>
+      </div>
+
+      <!-- Space Count Footer -->
+      <div class="p-2.5 border-t border-dark-700 bg-dark-800 text-xs text-gray-500 flex justify-between">
+        <span id="spaces-count-badge">載入中...</span>
+        <span>Google Workspace</span>
+      </div>
+    </aside>
+
+    <!-- Center Canvas: Streaming Summary & Action Workbench -->
+    <main class="flex-1 flex flex-col bg-dark-900 overflow-hidden">
+      <!-- Selected Space Toolbar -->
+      <div class="h-14 border-b border-dark-700 bg-dark-800/40 px-6 flex items-center justify-between shrink-0">
+        <div class="flex items-center space-x-3">
+          <span id="current-space-icon" class="w-7 h-7 rounded bg-dark-700 flex items-center justify-center text-gray-300 text-xs font-bold">
+            <i class="fa-solid fa-comments"></i>
+          </span>
+          <div>
+            <div id="current-space-title" class="font-semibold text-sm text-gray-100">請從左側選取群組</div>
+            <div id="current-space-id" class="text-xs text-gray-500 font-mono truncate max-w-xs">尚未選擇目標空間</div>
+          </div>
+        </div>
+
+        <!-- Action Control Buttons -->
+        <div class="flex items-center space-x-2">
+          <div class="flex items-center bg-dark-700 rounded-md p-1 border border-dark-600">
+            <span class="text-xs text-gray-400 px-2">分析範圍:</span>
+            <select id="select-limit" class="bg-dark-800 text-xs text-gray-200 rounded px-2 py-0.5 border border-dark-600 focus:outline-none focus:border-sky-500">
+              <option value="30">最近 30 筆</option>
+              <option value="50">最近 50 筆</option>
+              <option value="100" selected>最近 100 筆 (推薦)</option>
+              <option value="200">最近 200 筆</option>
+            </select>
+          </div>
+
+          <button id="btn-start-summary" disabled class="bg-sky-600 hover:bg-sky-500 disabled:opacity-40 disabled:hover:bg-sky-600 text-white font-medium text-xs px-4 py-2 rounded-md shadow-sm flex items-center gap-1.5 transition">
+            <i class="fa-solid fa-sparkles"></i>
+            <span>開始智慧摘要</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Main Summary Output Area -->
+      <div class="flex-1 overflow-y-auto p-6 space-y-6">
+        
+        <!-- Welcome Card when idle -->
+        <div id="idle-placeholder" class="h-full flex flex-col items-center justify-center text-center text-gray-500 space-y-3">
+          <div class="w-14 h-14 rounded-full bg-dark-800 border border-dark-700 flex items-center justify-center text-xl text-sky-400">
+            <i class="fa-solid fa-wand-magic-sparkles"></i>
+          </div>
+          <div>
+            <h3 class="text-gray-300 font-medium text-base mb-1">隨選 Google Chat 群組，秒級產生洞察</h3>
+            <p class="text-xs text-gray-500 max-w-sm">支援跨多天對話梳理、核心主題萃取、共識整理，並自動提取 Action Items 轉為工時格式。</p>
+          </div>
+        </div>
+
+        <!-- Summary Result Display (Hidden initially) -->
+        <div id="summary-result-card" class="hidden space-y-4">
+          <!-- Card Header & Actions -->
+          <div class="flex items-center justify-between pb-3 border-b border-dark-700">
+            <div class="flex items-center space-x-2">
+              <span class="text-xs font-semibold px-2 py-0.5 rounded bg-sky-500/10 text-sky-400 border border-sky-500/20">AI 深度分析報告</span>
+              <span id="summary-meta" class="text-xs text-gray-400 font-mono"></span>
+            </div>
+            
+            <div class="flex items-center space-x-2">
+              <button id="btn-copy-zplanner" class="text-xs bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 border border-amber-500/30 px-3 py-1.5 rounded-md flex items-center gap-1.5 transition">
+                <i class="fa-solid fa-clock"></i> 複製為 ZPlanner 工時格式
+              </button>
+              <button id="btn-publish-chat" class="text-xs bg-dark-700 hover:bg-dark-600 text-gray-200 border border-dark-600 px-3 py-1.5 rounded-md flex items-center gap-1.5 transition">
+                <i class="fa-solid fa-paper-plane text-sky-400"></i> 推播回 Google Chat
+              </button>
+              <button id="btn-copy-markdown" class="text-xs bg-dark-700 hover:bg-dark-600 text-gray-200 border border-dark-600 px-3 py-1.5 rounded-md flex items-center gap-1.5 transition">
+                <i class="fa-regular fa-copy"></i> 複製 Markdown
+              </button>
+            </div>
+          </div>
+
+          <!-- Markdown Content Rendered -->
+          <div id="summary-content" class="markdown-body bg-dark-800/80 border border-dark-700 rounded-xl p-6 leading-relaxed shadow-lg"></div>
+
+          <!-- Action Items Interactive Checklist -->
+          <div id="action-items-section" class="bg-dark-800/50 border border-dark-700 rounded-xl p-5 space-y-3">
+            <div class="flex items-center justify-between">
+              <h4 class="text-sm font-semibold text-emerald-400 flex items-center gap-2">
+                <i class="fa-solid fa-list-check"></i>
+                <span>萃取待辦與工作追蹤 (Action Items)</span>
+              </h4>
+              <span id="action-items-count" class="text-xs text-gray-500">0 項待辦</span>
+            </div>
+            <div id="action-items-list" class="space-y-2 text-xs">
+              <!-- Dynamically populated checkboxes -->
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </main>
+
+  </div>
+
+  <!-- Toast Notification -->
+  <div id="toast" class="fixed bottom-5 right-5 bg-dark-800 border border-sky-500 text-white text-xs px-4 py-3 rounded-lg shadow-2xl transition-opacity duration-300 opacity-0 pointer-events-none flex items-center gap-2">
+    <i class="fa-solid fa-circle-check text-sky-400"></i>
+    <span id="toast-msg">通知內容</span>
+  </div>
+
+  <script>
+    // State
+    let currentSpaces = [];
+    let selectedSpace = null;
+    let currentRawMarkdown = "";
+    let extractedActionItems = [];
+
+    const spacesListContainer = document.getElementById('spaces-list-container');
+    const searchSpaceInput = document.getElementById('search-space-input');
+    const btnRefreshSpaces = document.getElementById('btn-refresh-spaces');
+    const spacesCountBadge = document.getElementById('spaces-count-badge');
+    const currentSpaceTitle = document.getElementById('current-space-title');
+    const currentSpaceId = document.getElementById('current-space-id');
+    const btnStartSummary = document.getElementById('btn-start-summary');
+    const selectLimit = document.getElementById('select-limit');
+    const idlePlaceholder = document.getElementById('idle-placeholder');
+    const summaryResultCard = document.getElementById('summary-result-card');
+    const summaryContent = document.getElementById('summary-content');
+    const summaryMeta = document.getElementById('summary-meta');
+    const actionItemsList = document.getElementById('action-items-list');
+    const actionItemsCount = document.getElementById('action-items-count');
+    const btnCopyZplanner = document.getElementById('btn-copy-zplanner');
+    const btnPublishChat = document.getElementById('btn-publish-chat');
+    const btnCopyMarkdown = document.getElementById('btn-copy-markdown');
+
+    function showToast(msg) {
+      const toast = document.getElementById('toast');
+      document.getElementById('toast-msg').innerText = msg;
+      toast.classList.remove('opacity-0', 'pointer-events-none');
+      setTimeout(() => {
+        toast.classList.add('opacity-0', 'pointer-events-none');
+      }, 3000);
+    }
+
+    // 1. Fetch Spaces
+    async function loadSpaces(refresh = false) {
+      spacesListContainer.innerHTML = `
+        <div class="text-center py-10 text-gray-500 text-xs">
+          <i class="fa-solid fa-circle-notch fa-spin text-base mb-2"></i>
+          <p>正在載入 Google Chat 空間...</p>
+        </div>`;
+      try {
+        const res = await fetch(`/api/v1/spaces?refresh=${refresh}`);
+        const data = await res.json();
+        currentSpaces = data.spaces || [];
+        renderSpacesList(currentSpaces);
+        spacesCountBadge.innerText = `共 ${currentSpaces.length} 個群組`;
+      } catch (err) {
+        spacesListContainer.innerHTML = `<div class="p-4 text-xs text-rose-400">載入失敗: ${err.message}</div>`;
+      }
+    }
+
+    function renderSpacesList(spaces) {
+      if (spaces.length === 0) {
+        spacesListContainer.innerHTML = `<div class="p-4 text-xs text-gray-500 text-center">查無符合的群組</div>`;
+        return;
+      }
+
+      spacesListContainer.innerHTML = spaces.map(s => {
+        const isSelected = selectedSpace && selectedSpace.id === s.id;
+        const iconClass = s.type === 'SPACE' ? 'fa-user-group' : 'fa-user';
+        return `
+          <div class="space-item p-2 rounded-md cursor-pointer transition flex items-center justify-between text-xs ${isSelected ? 'bg-sky-600/20 text-sky-300 border border-sky-500/30' : 'hover:bg-dark-700/60 text-gray-300'}"
+               onclick="selectSpace('${s.id}')">
+            <div class="flex items-center space-x-2 truncate">
+              <i class="fa-solid ${iconClass} text-gray-500 text-xs shrink-0"></i>
+              <span class="truncate font-medium">${s.displayName}</span>
+            </div>
+            <span class="text-[10px] text-gray-500 shrink-0 ml-1 font-mono">${s.type === 'SPACE' ? '群組' : '私訊'}</span>
+          </div>`;
+      }).join('');
+    }
+
+    // 2. Select Space
+    window.selectSpace = function(id) {
+      selectedSpace = currentSpaces.find(s => s.id === id);
+      if (!selectedSpace) return;
+
+      currentSpaceTitle.innerText = selectedSpace.displayName;
+      currentSpaceId.innerText = selectedSpace.id;
+      btnStartSummary.disabled = false;
+      renderSpacesList(getFilteredSpaces());
+    };
+
+    function getFilteredSpaces() {
+      const q = searchSpaceInput.value.trim().toLowerCase();
+      if (!q) return currentSpaces;
+      return currentSpaces.filter(s => s.displayName.toLowerCase().includes(q));
+    }
+
+    searchSpaceInput.addEventListener('input', () => {
+      renderSpacesList(getFilteredSpaces());
+    });
+
+    btnRefreshSpaces.addEventListener('click', () => loadSpaces(true));
+
+    // 3. Start SSE Summarization
+    btnStartSummary.addEventListener('click', async () => {
+      if (!selectedSpace) return;
+
+      const limit = parseInt(selectLimit.value, 10);
+      btnStartSummary.disabled = true;
+      btnStartSummary.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> <span>分析中...</span>`;
+      
+      idlePlaceholder.classList.add('hidden');
+      summaryResultCard.classList.remove('hidden');
+      summaryContent.innerHTML = '';
+      summaryContent.classList.add('typing-cursor');
+      summaryMeta.innerText = `空間: ${selectedSpace.displayName} ｜ 分析筆數: ${limit} 則`;
+      currentRawMarkdown = '';
+      extractedActionItems = [];
+      actionItemsList.innerHTML = '';
+
+      try {
+        const response = await fetch(`/api/v1/spaces/${encodeURIComponent(selectedSpace.id)}/summarize/stream`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            space_id: selectedSpace.id,
+            limit: limit
+          })
+        });
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let buffer = '';
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n\n');
+          buffer = lines.pop(); // Keep partial line
+
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const payload = line.replace('data: ', '').trim();
+              if (payload === '[DONE]') {
+                break;
+              }
+              try {
+                const parsed = JSON.parse(payload);
+                if (parsed.chunk) {
+                  currentRawMarkdown += parsed.chunk;
+                  summaryContent.innerHTML = marked.parse(currentRawMarkdown);
+                }
+              } catch (e) {
+                // Ignore parse error
+              }
+            }
+          }
+        }
+
+        // Complete rendering
+        summaryContent.classList.remove('typing-cursor');
+        summaryContent.innerHTML = marked.parse(currentRawMarkdown);
+        extractAndRenderActionItems(currentRawMarkdown);
+        showToast('🎉 對話摘要分析完成！');
+
+      } catch (err) {
+        summaryContent.classList.remove('typing-cursor');
+        summaryContent.innerHTML = `<div class="text-rose-400 text-xs">生成摘要時出錯: ${err.message}</div>`;
+      } finally {
+        btnStartSummary.disabled = false;
+        btnStartSummary.innerHTML = `<i class="fa-solid fa-sparkles"></i> <span>重新摘要</span>`;
+      }
+    });
+
+    // 4. Extract Action Items
+    function extractAndRenderActionItems(markdown) {
+      extractedActionItems = [];
+      const lines = markdown.split('\n');
+      let isActionSection = false;
+
+      for (const line of lines) {
+        if (line.includes('待辦事項') || line.includes('Action Items')) {
+          isActionSection = true;
+          continue;
+        }
+        if (isActionSection && line.startsWith('###')) {
+          break; // Next section
+        }
+        if (isActionSection && (line.trim().startsWith('•') || line.trim().startsWith('-') || line.trim().startsWith('*'))) {
+          const cleanItem = line.replace(/^[•\-\*]\s*/, '').trim();
+          if (cleanItem) {
+            extractedActionItems.push(cleanItem);
+          }
+        }
+      }
+
+      actionItemsCount.innerText = `${extractedActionItems.length} 項待辦`;
+      if (extractedActionItems.length === 0) {
+        actionItemsList.innerHTML = `<p class="text-gray-500 italic">對話中未檢測到明確指派的待辦事項。</p>`;
+        return;
+      }
+
+      actionItemsList.innerHTML = extractedActionItems.map((item, idx) => `
+        <label class="flex items-start space-x-2.5 p-2 rounded bg-dark-900/60 border border-dark-700/60 hover:border-dark-600 transition cursor-pointer">
+          <input type="checkbox" class="mt-0.5 rounded bg-dark-800 border-dark-600 text-sky-500 focus:ring-0">
+          <span class="text-gray-300 leading-normal">${item}</span>
+        </label>
+      `).join('');
+    }
+
+    // 5. ZPlanner Format Copy
+    btnCopyZplanner.addEventListener('click', () => {
+      if (extractedActionItems.length === 0) {
+        showToast('尚無待辦事項可匯出！');
+        return;
+      }
+
+      const zplannerText = extractedActionItems.map(item => {
+        return `【${selectedSpace ? selectedSpace.displayName : '專案'}】${item.replace(/<[^>]*>?/gm, '')} (工時: 1.0h)`;
+      }).join('\n');
+
+      navigator.clipboard.writeText(zplannerText);
+      showToast('📋 已複製為 ZPlanner 工時格式！');
+    });
+
+    // 6. Copy Markdown
+    btnCopyMarkdown.addEventListener('click', () => {
+      if (!currentRawMarkdown) return;
+      navigator.clipboard.writeText(currentRawMarkdown);
+      showToast('📋 Markdown 已複製到剪貼簿！');
+    });
+
+    // 7. Publish to Google Chat
+    btnPublishChat.addEventListener('click', async () => {
+      if (!selectedSpace || !currentRawMarkdown) return;
+
+      const confirmSend = confirm(`確定要將此份 AI 摘要推播發佈至「${selectedSpace.displayName}」嗎？`);
+      if (!confirmSend) return;
+
+      btnPublishChat.disabled = true;
+      btnPublishChat.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> 發送中...`;
+
+      try {
+        const res = await fetch('/api/v1/spaces/publish', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            space_id: selectedSpace.id,
+            text: currentRawMarkdown
+          })
+        });
+
+        if (!res.ok) {
+          const errData = await res.json();
+          throw new Error(errData.detail || '推播失敗');
+        }
+
+        showToast(`✅ 已成功推播回「${selectedSpace.displayName}」！`);
+      } catch (err) {
+        alert(`推播失敗：${err.message}\n(請確認該群組是否已加入 Bot 應用程式)`);
+      } finally {
+        btnPublishChat.disabled = false;
+        btnPublishChat.innerHTML = `<i class="fa-solid fa-paper-plane text-sky-400"></i> 推播回 Google Chat`;
+      }
+    });
+
+    // Init
+    loadSpaces();
+  </script>
+</body>
+</html>
