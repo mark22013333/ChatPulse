@@ -83,10 +83,18 @@ def check_and_auth_token():
 
     # 舊版精靈只授權三個 chat scope。那種 token 對 MCP 夠用，但儀表板會因為
     # 缺身分 scope 而無法判斷「你是誰」。偵測到就重新授權，不要讓人以為裝好了。
+    #
+    # ⚠️ 這個檢查**必須在 valid／expired 的分支之前，而且不能依賴 creds.valid**。
+    # 2026-09-05 實測踩到：token 過期時 creds.valid 是 False，寫成
+    # `if creds.valid and missing` 會整個跳過檢查，直接落進下面的刷新分支——
+    # 而 **refresh 只延長 access token 的效期，不會增加 scope**，
+    # 於是精靈印出「刷新成功」，使用者以為升級了，實際上 scope 一個也沒多。
     missing = set(cfg.DASHBOARD_SCOPES) - token_scopes
-    if creds and creds.valid and missing:
-        print(f"⚠️ 現有 Token 缺少 {len(missing)} 個權限，Web 儀表板會不能用。")
-        print("   （這是舊版精靈只授權三個權限造成的，重新授權一次就好）")
+    if creds and missing:
+        print(f"⚠️ 現有 Token 缺少 {len(missing)} 個權限，Web 儀表板會不能用：")
+        for s in sorted(missing):
+            print(f"     - {s}")
+        print("   （舊版精靈只授權三個權限造成的。刷新無法補回來，必須重新授權）")
         creds = None
 
     if creds and creds.valid:
@@ -149,9 +157,6 @@ def show_mcp_config_instructions():
   "mcpServers": {{
     "google-chat": {{
 {command_line}
-      "env": {{
-        "GOOGLE_API_KEY": "請填入你的 Gemini API key"
-      }}
     }}
   }}
 }}'''
@@ -161,9 +166,14 @@ def show_mcp_config_instructions():
     print("\n📍 設定檔位置：")
     print("   • Claude Desktop : ~/Library/Application Support/Claude/claude_desktop_config.json")
     print("   • Claude Code    : ~/.claude.json")
-    print("\n⚠️ 關於 GOOGLE_API_KEY（規格 3.3）：")
-    print("   • Claude Code 由終端啟動，會繼承 shell 環境，若已寫在 ~/.zshrc 可移除上面的 env 區塊")
-    print("   • Claude Desktop 是 GUI 程式，不讀 ~/.zshrc，env 區塊必須保留並填入實際金鑰")
+    print("\n💡 用 Claude Code 的話這一步可以跳過：直接執行 ./scripts/install-claude.sh，")
+    print("   它會呼叫 claude mcp add 自動註冊，不必手動貼 JSON。")
+    print("\n🤖 關於 AI 供應商：")
+    print("   • 預設走 claude_cli，直接用你本機 Claude Code 的登入狀態，")
+    print("     不需要任何 API key，上面的設定也不用加 env 區塊")
+    print("   • 只有要改走 Gemini 才需要 GOOGLE_API_KEY。Claude Code 由終端啟動會繼承")
+    print("     shell 環境（寫在 ~/.zshrc 即可）；Claude Desktop 是 GUI 程式不讀 ~/.zshrc，")
+    print('     要在上面的區塊裡自行補一段 "env": {"GOOGLE_API_KEY": "你的金鑰"}')
     print("=" * 65)
     print(" 💡 設定完成後，重啟 Claude 即可直接在對話中使用 Google Chat 工具！")
     print("=" * 65 + "\n")
