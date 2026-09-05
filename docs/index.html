@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Google Chat MCP 智慧助手 - 團隊上手指南與系統手冊</title>
+  <title>ChatPulse - 團隊上手指南與系統手冊</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;600&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -262,9 +262,79 @@
   <div class="container">
     <header>
       <div class="badge">Intumit BU2 Engineering Toolkit</div>
-      <h1>Google Chat MCP 智慧助手指南</h1>
-      <p>讓 Claude Desktop 與 Claude Code 直接連通 Google Chat：對話搜尋、100+ 筆上下文萃取與 Gemini 3.6 智慧摘要推播</p>
+      <h1>ChatPulse 上手指南</h1>
+      <p>Google Chat 的摘要與 Mention 收件匣。兩個入口共用同一套後端：
+         <strong>MCP Server</strong>（在 Claude Code / Desktop 對話中直接用）與
+         <strong>Web 儀表板</strong>（完整功能，含 Mention 收件匣與 Draft Reply）。</p>
     </header>
+
+    <div class="alert alert-tip">
+      <div>🧭</div>
+      <div><strong>不知道從哪開始？</strong>
+        裝完之後跑 <code>./scripts/doctor.sh</code>，它會逐項告訴你還缺什麼、下一步做什麼。<br>
+        讀訊息與發訊息用的都是<strong>你本人的 Google 身分</strong>，這個系統<strong>沒有機器人</strong>；
+        任何送出動作都需要二次確認。</div>
+    </div>
+
+    <!-- 兩個入口 -->
+    <div class="section-title">🚪 兩個入口，先決定你要用哪個</div>
+    <div class="grid-2">
+      <div class="card">
+        <h3 style="color: var(--accent-blue);">🤖 MCP Server</h3>
+        <p style="color: var(--text-secondary); margin-bottom: 12px;">
+          在 Claude Code / Claude Desktop 的對話裡直接用自然語言操作。
+        </p>
+        <ul>
+          <li><strong>安裝最輕</strong>：不需要 Node.js、不必建置前端。</li>
+          <li><strong>能做</strong>：列群組、抓對話、產摘要、發訊息、查供應商。</li>
+          <li><strong>不能做</strong>：Mention 收件匣與 Draft Reply（那兩個在儀表板）。</li>
+          <li>安裝：<code>./scripts/install-claude.sh</code></li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h3 style="color: var(--accent-green);">🖥️ Web 儀表板</h3>
+        <p style="color: var(--text-secondary); margin-bottom: 12px;">
+          瀏覽器介面，功能完整。這是「被 @ 了不漏接」的那一半。
+        </p>
+        <ul>
+          <li><strong>額外需要</strong>：Node.js（第一次啟動會自動建置前端，要幾分鐘）。</li>
+          <li><strong>能做</strong>：MCP 的全部，加上 Mention 收件匣、Draft Reply、參考群組。</li>
+          <li>啟動：<code>./scripts/start-web.sh</code> → <code>http://localhost:8000</code></li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- AI 供應商 -->
+    <div class="section-title">🧠 AI 供應商（摘要與 Draft Reply 需要）</div>
+    <div class="card">
+      <p style="color: var(--text-secondary); margin-bottom: 12px;">
+        只讀群組與訊息<strong>不需要</strong> AI；要產摘要或草稿才需要。目前兩個實作：
+      </p>
+      <table>
+        <thead>
+          <tr><th>供應商</th><th>需要什麼</th><th>說明</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>claude_cli</code><br><span style="font-size:0.85rem;color:var(--text-secondary);">預設</span></td>
+            <td>本機裝好並登入 Claude Code</td>
+            <td>直接用你現有的訂閱，<strong>不需要任何 API key</strong>。終端輸入 <code>claude</code> 能進對話就代表可用。</td>
+          </tr>
+          <tr>
+            <td><code>gemini</code></td>
+            <td><code>GOOGLE_API_KEY</code></td>
+            <td>免費層<strong>每天只有 20 次請求</strong>，多人共用會當天用完。</td>
+          </tr>
+        </tbody>
+      </table>
+      <p style="color: var(--text-secondary); margin-top: 12px; font-size: 0.9rem;">
+        另有兩個<strong>別名</strong>：<code>claude</code>（目前解析為 <code>claude_cli</code>）與
+        <code>auto</code>（依序試 <code>claude_cli</code> → <code>gemini</code>，挑第一個可用的）。<br>
+        想知道你機器上哪個可用：<code>./scripts/run_summary.sh --list-providers</code>，
+        或在 Claude 裡問「列出目前可用的 AI 供應商」。
+      </p>
+    </div>
 
     <!-- 概念澄清卡片 -->
     <div class="section-title">🔑 快速搞懂憑證機制（同事分享必讀）</div>
@@ -414,16 +484,79 @@ google-chat-bot/
         </tr>
         <tr>
           <td><code>summarize_chat_space</code></td>
-          <td>使用 <strong>Gemini 3.6 Flash</strong> 提煉對話主題、決議與 Action Items</td>
-          <td><code>space_name_or_id</code>, <code>limit</code>, <code>post_to_chat</code> (是否回推群組)</td>
+          <td>提煉對話主題、決議與 Action Items。<strong>三種風格輸出的章節結構不同</strong>：
+              <code>general</code> 通用／<code>technical</code> 技術細節（含「已排除的假設與排查過程」）／
+              <code>action_only</code> 只要待辦</td>
+          <td><code>space_name_or_id</code>, <code>limit</code>, <code>style</code>,
+              <code>post_to_chat</code>（是否回推群組）, <code>provider</code>（指定 AI 供應商，留空用預設）</td>
+        </tr>
+        <tr>
+          <td><code>list_ai_providers</code></td>
+          <td>列出目前有哪些 AI 供應商、各自可不可用，以及不可用的原因與修法</td>
+          <td>（無）</td>
         </tr>
         <tr>
           <td><code>send_chat_message</code></td>
-          <td>在指定 Google Chat 群組推播發送訊息</td>
+          <td>在指定 Google Chat 群組發送訊息（<strong>以你本人的身分</strong>，不是機器人）</td>
           <td><code>space_name_or_id</code>, <code>message_text</code></td>
         </tr>
       </tbody>
     </table>
+    <p style="color: var(--text-secondary); font-size: 0.9rem; margin-top: 8px;">
+      這五個是 MCP 入口的全部工具。<strong>Mention 收件匣與 Draft Reply 不在這裡</strong>——
+      它們需要知道「你是誰」以及維護處理狀態，只在 Web 儀表板提供（見下一節）。
+    </p>
+
+    <!-- Web 儀表板 -->
+    <div class="section-title">🖥️ Web 儀表板：Mention 收件匣與 Draft Reply</div>
+    <div class="card" style="margin-bottom: 16px;">
+      <p style="color: var(--text-secondary); margin-bottom: 12px;">
+        啟動一行就好，它會自己建 Python 環境、建置前端、開瀏覽器：
+      </p>
+      <pre><code>./scripts/start-web.sh</code></pre>
+      <p style="color: var(--text-secondary); font-size: 0.9rem;">
+        第一次會比較久（要 <code>npm install</code>）。跑起來在
+        <code>http://localhost:8000</code>。<br>
+        <strong>登入</strong>：已經跑過 <code>./scripts/setup.sh</code> 的話，
+        畫面上會有「匯入既有憑證」，不必再登入一次。
+      </p>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <h3 style="color: var(--accent-blue);">📬 Mention 收件匣</h3>
+        <p style="color: var(--text-secondary); margin-bottom: 12px;">
+          跨<strong>所有</strong>群組找出誰 @ 了你，集中成一份待處理清單。背景每 45 秒輪詢一次。
+        </p>
+        <ul>
+          <li>只認「真的被 @」：<strong>「某人被加進群組」與 <code>@全部</code> 廣播都不會算進來</strong>。</li>
+          <li>只有兩種狀態：待處理／已處理。</li>
+          <li><strong>已知取捨</strong>：在手機或 Chat 網頁直接回覆<strong>不會</strong>自動變成已處理，
+              需要回來手動標記。這是為了零誤判刻意選的。</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h3 style="color: var(--accent-green);">✍️ Draft Reply（含參考群組）</h3>
+        <p style="color: var(--text-secondary); margin-bottom: 12px;">
+          針對一則 @ 產生可直接送出的回話，輸出「脈絡分析」與「建議回話」兩段。
+        </p>
+        <ul>
+          <li><strong>參考群組是重點</strong>：PM 會 @ 你，正是因為答案不在他看得到的地方。
+              產草稿時可勾選 1~N 個其他群組一起納入脈絡。</li>
+          <li><strong>預設不勾</strong>任何參考群組，系統不會自動幫你選。</li>
+          <li>送出需二次確認 → 以你本人身分回到原討論串 → 該則自動標記為已處理。</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="alert alert-warn" style="margin-top: 16px;">
+      <div>🔒</div>
+      <div><strong>你看得到什麼，完全由 Google 的群組成員身分決定。</strong>
+        ChatPulse 不自建權限系統——你沒加入的群組，你的 token 就抓不到。<br>
+        產出物也是私有的：<strong>你產的摘要只有你看得到</strong>，即使同事跟你在同一個群組；
+        Mention 與其處理狀態同理。</div>
+    </div>
 
     <!-- 常用指令情境 -->
     <div class="section-title">💬 在 Claude 中如何用自然語言調用？</div>
@@ -469,7 +602,7 @@ google-chat-bot/
     </div>
 
     <footer>
-      <p>Google Chat Assistant MCP Project · 碩網資訊 BU2 · 2026</p>
+      <p>ChatPulse · Google Chat 摘要與 Mention 收件匣 · 碩網資訊 BU2 · 2026</p>
     </footer>
   </div>
 </body>
