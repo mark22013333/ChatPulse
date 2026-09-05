@@ -665,17 +665,25 @@ gantt
 
 功能面**零新增**。結束時你手上的東西和現在幾乎一樣，差別在底下換過了。這個取捨是刻意的：既然確定要重寫前端，先重寫再加新功能，新功能只需實作一次。
 
-驗收條件（測試腳本在 `tests/e2e/`）。**證據等級**：多數項目可隨時重跑驗證；
-少數依賴 Gemini 的項目當天跑出過真實結果，但報告檔已被後續配額耗盡的重跑覆蓋，
-數字轉抄於 [`docs/verification-log.md`](./docs/verification-log.md) 並標為 B 級——
-**要取回持久證據需等每日配額重置後重跑**（R-4）。
+驗收條件（測試腳本在 `tests/e2e/`）。**證據等級**見 [`docs/verification-log.md`](./docs/verification-log.md)：
+絕大多數項目可隨時重查——不只是「重跑測試」，還包括 `tests/e2e/check_stored_evidence.py`
+**直接從資料庫既有的產出重新驗證**（摘要存在 `summaries`、草稿存在 `draft_replies`、
+用量存在 `token_usage`），完全不需要 Gemini 配額。
+目前只有一項仍缺持久證據：483 則對話用 16384 的那一次（見 D-3）。
 - [x] React 版可完成現有全部操作（列 Space、摘要串流、Action Items、推播）
       —— 瀏覽器實測：436 個 Space 虛擬滾動、摘要 SSE 逐字串流、Action Items 萃取 3 項可勾選並複製、推播二次確認後訊息實際送達 Google Chat。這一輪是用 Playwright 驅動真實瀏覽器對真後端操作，期間 `browser_console_messages` 查詢回報 0 則錯誤與 0 則警告——**該輸出未落檔**，重驗需重跑一次瀏覽器流程
 - [x] ~~加入超過 100 個 Space 時，第 101 個之後仍讀得到（D-1）~~ **已於 Phase 0 完成**：修復後實測取得 436 個 Space（修復前 100 個）
 - [x] 500 則對話的摘要不被截斷（D-3）
-      —— 483 則對話（29,611 字）實跑正負對照：2048 → `finishReason=MAX_TOKENS`、三章節全缺；16384 → `finishReason=STOP`、三章節齊全（`tests/e2e/test_d3_truncation.py`）
+      —— **負對照為 A 級**：483 則對話（29,611 字）用 2048 跑出 `finishReason=MAX_TOKENS`、
+      三章節全缺，2026-09-05 兩次獨立執行皆同，報告帶時間戳不會被覆蓋。
+      **正對照分兩層**：16384 在 30~50 則規模不截斷有 5 份資料庫證據（A 級）；
+      **483 則這個特定規模的 16384 那一次仍缺持久證據**（配額限制，見 R-4）——
+      補法是 `test_d3_truncation.py --only 16384`，該參數與量測持久化已為此加好
 - [x] 切換摘要風格會產生不同結果（D-4）
-      —— 同一批 50 則對話：general 1,224 字／technical 3,439 字／action_only 493 字，章節結構各異且 action_only 確實不含「核心討論主題」
+      —— **A 級證據，可隨時重查**（`check_stored_evidence.py` 第 2 節直接讀 `summaries` 表）：
+      同一批 50 則對話、唯一變數是 style，得到 general 1,224 字（3/3 章節）／
+      technical 3,439 字（5/5 章節，含 general 沒有的「已排除的假設」）／
+      action_only 493 字（1/1 章節，且確實不含「核心討論主題」）。三者兩兩相異
 - [x] `limit` 傳 0、1001、非數值時回 400 `INVALID_PARAMETER`，四個入口行為一致（5.5）
       —— REST 與 SSE 兩個 HTTP 入口實測皆回 400＋`INVALID_PARAMETER`；MCP 與 CLI 共用同一個 `validate_limit()`，CLI 四種非法輸入（0／1001／abc／-5）皆印同一組中文訊息並 exit 1
 - [x] SQLite schema 已建立，`summaries` 與 `preferences` 可寫入並讀回，重啟後資料仍在
@@ -687,7 +695,8 @@ gantt
 
 你真正要的功能在這裡。
 
-驗收條件（測試腳本在 `tests/e2e/`；證據等級同 Phase 1，見 [`docs/verification-log.md`](./docs/verification-log.md)）：
+驗收條件（測試腳本在 `tests/e2e/`；證據等級同 Phase 1，見 [`docs/verification-log.md`](./docs/verification-log.md)。
+Phase 2 的核心條件「Draft Reply 引用 Reference Space」已取得 A 級證據，見下）：
 - [x] R-1 已實測，採集器實作 A 或 B 之一確定可用
       —— 實作 A 不可用（回 200 恆 0 筆，正對照證實），**實作 B 確定可用**：一輪 2~3 次 API 呼叫、約 1 秒（隨當時活躍 Space 數而變）。證據見 `docs/R1-findings.md`
 - [x] 兩位 Viewer 各自登入，各自只看到自己的 Space 與 Summary
@@ -700,7 +709,11 @@ gantt
       **(b) 不帶 `user.name` 的 113 筆**，是 `@全部` 廣播（`userMention` 連 `type` 與 `user` 都沒有）——這批沒有「被指到的人」可比對，改以「不算任何人的 Mention」斷言，113 筆 × 6 個候選 id 全部正確排除。這一批值得單獨驗，因為若實作只看 `annotations[].type == "USER_MENTION"`，每則 `@全部` 都會湧進每個人的收件匣。
       另有 11 個結構化樣本涵蓋真實資料掃不到的分支（`TYPE_UNSPECIFIED`、`SLASH_COMMAND`、`RICH_LINK`、同一則訊息中 ADD 別人＋MENTION 我、MENTION 別人＋ADD 我）。全量樣本存於測試產出的 `add_samples.json`。
 - [x] Draft Reply 能引用 Reference Space 的內容（測法：答案只存在於參考群組，被 @ 的群組裡沒有）
-      —— 用一個猜不到的專案代號當標記：討論串只有提問那 1 則、問題本身不含答案。**不勾參考群組**時草稿明確寫「對話紀錄中完全沒有相關資訊」；**勾選參考群組**後草稿寫出 `FIA01P2401`／`SmartKMS`。同一則 Mention、同一份討論串，唯一變數是 Reference Space
+      —— **A 級證據，且重複了 4 次**（`check_stored_evidence.py` 第 5 節直接讀 `draft_replies` 表）。
+      用一個猜不到的專案代號當標記，討論串只有提問那 1 則、問題本身不含答案。
+      資料庫留有 **4 組配對**（mention 4／5／6／7），每組都是同一則 Mention 的兩份草稿、
+      唯一變數是有沒有勾參考群組：**不勾**的那份明確寫「對話紀錄中完全沒有相關資訊」，
+      **勾了**的那份寫出 `FIA01P2401`／`SmartKMS`。4 組獨立配對結果一致
 - [x] 送出需二次確認，送出後該 Mention 自動標記已處理
       —— 瀏覽器實測：確認框寫明「將以**你本人的身分**送出，並回到原討論串（0.暫存）。送出後這則 Mention 會自動變成已處理」；確認後收件匣計數由 待處理 3／已處理 3 變為 待處理 2／已處理 4
 - [x] 送出的訊息在 Chat 中顯示為 Viewer 本人，且落在原討論串

@@ -82,8 +82,18 @@ E2E 測試會對**真實的 Google Chat 與 Gemini API** 發請求，不使用 m
 npm --prefix dashboard/frontend run test
 ```
 
-五套測試分別涵蓋：Phase 1 功能、Phase 2 Mention 與 Draft Reply、缺陷 D-3 的截斷正負對照、
-6.1 判定條件（含真實 ADD annotation 樣本）、靜態托管與路徑穿越防護。
+六套測試分別涵蓋：**落地證據重查**（不呼叫 Gemini）、Phase 1 功能、Phase 2 Mention 與
+Draft Reply、缺陷 D-3 的截斷正負對照、6.1 判定條件（含真實 ADD annotation 樣本）、
+靜態托管與路徑穿越防護。
+
+```bash
+# 只想確認「已產生的東西是對的」而不想消耗 Gemini 配額，跑這支就好
+.venv/bin/python tests/e2e/check_stored_evidence.py
+```
+
+它直接從 SQLite 重查宣稱：摘要的章節結構、三種風格的差異、Reference Space 的
+正負對照配對、token 用量的組成、名錄與真實 Mention。Gemini 免費層每天只有
+20 次請求，這支腳本讓大部分驗證不受那個限制。
 
 ## 專案結構
 

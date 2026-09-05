@@ -17,19 +17,44 @@ BASE = os.environ.get("CHATPULSE_BASE", "http://127.0.0.1:8000")
 TEMP_SPACE = "spaces/AAAAxLxqJxY"
 
 _results: List[Dict[str, Any]] = []
-_report_path: Optional[str] = None
+_report_paths: List[str] = []
 
 
 def set_report(path: str) -> None:
-    global _report_path
-    _report_path = path
-    with open(path, "w") as f:
-        f.write(f"# E2E 測試報告\n\n開始時間：{time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+    """開始寫報告。**同時寫兩份：一份帶時間戳、一份是固定檔名的「最新」。**
+
+    為什麼要兩份：2026-09-05 踩過一次——Gemini 每日配額用完後我重跑測試，
+    「配額用盡」的版本把含真實數字的報告整個蓋掉，於是規格書引用的數字
+    全部變成查不到來源，獨立審查因此判定那些宣稱無依據。
+    測試報告是證據，**證據不該被下一次執行銷毀**。
+
+    帶時間戳的那份只增不改；固定檔名那份方便腳本與人直接看最近一次。
+    """
+    global _report_paths
+    base, ext = os.path.splitext(path)
+    stamped = f"{base}-{time.strftime('%Y%m%dT%H%M%S')}{ext or '.md'}"
+    _report_paths = [stamped, path]
+
+    header = (
+        f"# E2E 測試報告\n\n"
+        f"開始時間：{time.strftime('%Y-%m-%d %H:%M:%S %z')}\n"
+        f"執行檔案：{os.path.basename(sys.argv[0]) if sys.argv else '?'}\n"
+        f"服務位址：{BASE}\n\n"
+    )
+    for p in _report_paths:
+        os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+        with open(p, "w") as f:
+            f.write(header)
+
+
+def report_paths() -> List[str]:
+    """回傳本次寫入的報告路徑（第一個是帶時間戳、不會被覆蓋的那份）。"""
+    return list(_report_paths)
 
 
 def _append(line: str) -> None:
-    if _report_path:
-        with open(_report_path, "a") as f:
+    for p in _report_paths:
+        with open(p, "a") as f:
             f.write(line + "\n")
 
 
@@ -86,6 +111,8 @@ def summary() -> int:
     for r in blocked_items:
         print(f"  ⏸️  {r['label']} — {r['detail']}")
         _append(f"- ⏸️ {r['label']} — {r['detail']}")
+    if _report_paths:
+        print(f"\n報告（不會被覆蓋的那份）：{_report_paths[0]}")
     if failed:
         return 1
     if blocked_items:
