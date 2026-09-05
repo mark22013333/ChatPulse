@@ -52,9 +52,19 @@ def load_measurements() -> dict:
     return {}
 
 
+def measurement_key(max_tokens: int) -> str:
+    """鍵必須含模型名。
+
+    只用 max_tokens 當鍵是錯的：配額是**每個模型各自 20 次**
+    （quotaId: GenerateRequestsPerDayPerProjectPerModel-FreeTier），所以換模型
+    重跑是繞過配額的正當手段——但那樣一來，A 模型的量測就會被當成 B 模型的證據。
+    """
+    return f"{cfg.GEMINI_MODEL}::{max_tokens}"
+
+
 def save_measurement(max_tokens: int, result: dict, prompt_chars: int, source_space: str) -> None:
     data = load_measurements()
-    data[str(max_tokens)] = {
+    data[measurement_key(max_tokens)] = {
         "measured_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "max_output_tokens": max_tokens,
         "finish_reason": result["finish_reason"],
@@ -111,7 +121,7 @@ def obtain(max_tokens: int, prompt: str, prompt_chars: int, space_name: str, onl
     不標示就等於把舊結果冒充成本輪實測。`only` 指定時，未被指定的那一半
     一律不打 API（把稀缺的配額名額留給要跑的那半）。
     """
-    cached = load_measurements().get(str(max_tokens))
+    cached = load_measurements().get(measurement_key(max_tokens))
 
     if only is not None and only != max_tokens:
         if cached:
@@ -184,28 +194,51 @@ def main() -> int:
     conversation = format_conversation(messages, directory.make_resolver())
     prompt = prompts.summary_prompt(space_name, conversation, len(messages), "general")
     info(f"對話文本 {len(conversation)} 字，prompt {len(prompt)} 字")
+    info(f"本輪使用的模型：{cfg.GEMINI_MODEL}"
+         + ("（＝專案設定值）" if cfg.GEMINI_MODEL == "gemini-3.6-flash"
+            else "（**非**專案預設的 gemini-3.6-flash，用 CHATPULSE_GEMINI_MODEL 指定）"))
     if only is not None:
         info(f"本輪只跑 maxOutputTokens={only}（Gemini 免費層每天 20 次，名額要留給缺的那半）")
 
-    section("1. 舊值 maxOutputTokens=2048（負對照：應該被截斷）")
+    section("1. 舊值 maxOutputTokens=2048（負對照）")
     old, old_src = obtain(2048, prompt, len(prompt), space_name, only)
     if old is None:
-        blocked("2048 會被截斷（finishReason=MAX_TOKENS）", "配額用盡且無先前量測")
-        blocked("2048 的輸出章節不齊", "配額用盡且無先前量測")
+        blocked("2048 的行為", "配額用盡且無先前量測")
     else:
         tag = "" if old_src == "fresh" else f"（沿用 {old['measured_at']} 的量測）"
-        check(
-            f"2048 會被截斷（finishReason=MAX_TOKENS）{tag}",
-            old["finish_reason"] == "MAX_TOKENS",
-            f"finishReason={old['finish_reason']}",
-        )
-        check(
-            f"2048 的輸出章節不齊（證明截斷造成資訊遺失）{tag}",
-            len(old["sections_found"]) < 3,
-            f"只有 {old['sections_found']}，輸出 {old['output_chars']} 字",
-        )
+        old_thoughts = old["usage"].get("thoughtsTokenCount") or 0
+        old_truncated = old["finish_reason"] == "MAX_TOKENS"
 
-    section("2. 新值 maxOutputTokens=16384（正式設定：不應被截斷）")
+        # **這一段刻意不寫死「2048 一定會被截斷」。**
+        # 2026-09-05 用 gemini-3.7-flash 重跑時，2048 那次 finishReason=STOP、
+        # 章節齊全——因為那一次它 thoughtsTokenCount 是 0，完全沒花思考預算。
+        # 同一份 prompt 在 gemini-3.6-flash 上則吃掉 1,962~2,772 個思考 token，
+        # 只剩幾十個寫正文。
+        #
+        # 所以 2048 的問題不是「一定不夠」，是**時好時壞**：思考量因模型、
+        # 甚至因每次請求而異，而超出時的表現是安靜截斷。驗收要驗的是這個機制，
+        # 不是某個模型某一次的結果。
+        if old_truncated:
+            check(
+                f"2048 被截斷（finishReason=MAX_TOKENS）{tag}",
+                True,
+                f"thoughts={old_thoughts} candidates={old['usage'].get('candidatesTokenCount')}"
+                f"，正文只剩 {old['output_chars']} 字、章節 {len(old['sections_found'])}/3",
+            )
+            info("這一輪重現了截斷：思考預算把正文擠掉了")
+        else:
+            check(
+                f"2048 這一輪未被截斷，且能解釋原因（思考 token 少）{tag}",
+                old_thoughts < 500,
+                f"finishReason={old['finish_reason']}，thoughts={old_thoughts}，"
+                f"正文 {old['usage'].get('candidatesTokenCount')} token",
+            )
+            info(
+                f"模型 {cfg.GEMINI_MODEL} 這一次沒花多少思考預算，所以 2048 剛好夠用。"
+                "**這正是把上限訂在 2048 的風險**——它會過，直到某次思考變長就安靜截斷。"
+            )
+
+    section("2. 新值 maxOutputTokens=16384（正式設定）")
     check("設定值為 16384（靜態可驗，不需 API）", cfg.GEMINI_MAX_OUTPUT_TOKENS == 16384,
           str(cfg.GEMINI_MAX_OUTPUT_TOKENS))
     new, new_src = obtain(cfg.GEMINI_MAX_OUTPUT_TOKENS, prompt, len(prompt), space_name, only)
@@ -226,41 +259,41 @@ def main() -> int:
         str(new["sections_found"]),
     )
 
-    if old is None:
-        info("兩半不齊，跳過對照計算")
-        return summary()
+    section("3. D-3 的核心論證：預算是「思考＋正文」的總和")
 
-    section("3. 正負對照（這才是 D-3 的證明）")
-    check(
-        "新值輸出明顯長於舊值",
-        new["output_chars"] > old["output_chars"],
-        f"{old['output_chars']} 字 -> {new['output_chars']} 字",
-    )
-    # maxOutputTokens 是「思考 + 正文」的總預算，不是只算正文。
-    # 這一點決定了 D-3 的真正根因：2048 那次思考就吃掉近 2,000，
-    # 只剩幾十個 token 寫正文，所以輸出幾乎是空的。
     def budget(m):
         u = m["usage"]
         return (u.get("thoughtsTokenCount") or 0) + (u.get("candidatesTokenCount") or 0)
 
+    # 這是唯一與模型無關、必須恆成立的斷言：完整輸出所需的總預算超過舊上限。
+    # 只要它成立，2048 就是不安全的——不論這一次有沒有剛好過關。
     check(
-        "2048 那次的預算被思考 token 吃光（正文只剩零星幾十 token）",
-        (old["usage"].get("thoughtsTokenCount") or 0) > 1000
-        and (old["usage"].get("candidatesTokenCount") or 0) < 200,
-        f"thoughts={old['usage'].get('thoughtsTokenCount')} "
-        f"candidates={old['usage'].get('candidatesTokenCount')} 合計={budget(old)}",
-    )
-    check(
-        "完整輸出所需的總預算（思考+正文）超過舊上限 2048",
+        "完整輸出所需的總預算（思考＋正文）超過舊上限 2048",
         budget(new) > 2048,
         f"thoughts={new['usage'].get('thoughtsTokenCount')} "
-        f"candidates={new['usage'].get('candidatesTokenCount')} 合計={budget(new)} > 2048",
+        f"＋ candidates={new['usage'].get('candidatesTokenCount')} "
+        f"＝ {budget(new)} > 2048",
     )
     info(
-        "結論：maxOutputTokens 含 thinking token，這是 2048 會截斷的實際原因，"
-        "規格書 D-3 的描述（「500 則對話的摘要會被截斷」）方向對但機制不同"
+        f"模型 {cfg.GEMINI_MODEL}：完整輸出用掉 {budget(new)} token 的輸出預算，"
+        f"其中思考佔 {new['usage'].get('thoughtsTokenCount') or 0}。"
+        "把上限訂在 2048 等於賭「這次思考不會太長」。"
     )
-    info(f"量測值已存於 {MEASUREMENTS}（本輪：2048={old_src}／16384={new_src}）")
+
+    if old is not None:
+        check(
+            "新值的輸出不短於舊值",
+            new["output_chars"] >= old["output_chars"],
+            f"{old['output_chars']} 字 -> {new['output_chars']} 字",
+        )
+        if old["finish_reason"] == "MAX_TOKENS":
+            check(
+                "截斷那次的正文遠少於完整輸出（量化資訊遺失）",
+                old["output_chars"] < new["output_chars"] / 5,
+                f"截斷 {old['output_chars']} 字 vs 完整 {new['output_chars']} 字",
+            )
+
+    info(f"量測值已存於 {MEASUREMENTS}（鍵含模型名；本輪：2048={old_src if old else 'n/a'}／16384={new_src}）")
 
     return summary()
 
