@@ -1,6 +1,6 @@
 # 單一 repo 內分三層，不拆成多個 repo
 
-程式碼集中在單一 repo（`github.com/mark22013333/ChatG-Bot`，private），內部分為三層：`core/`（Google Chat 與 Gemini 的共用封裝，不含入口）、`mcp_app/`（MCP server、CLI 摘要、OAuth 授權精靈）、`dashboard/`（FastAPI 後端與前端）。依賴方向單向：`mcp_app → core ← dashboard`，兩個入口互不 import。
+程式碼集中在單一 repo（`github.com/mark22013333/ChatPulse`，private），內部分為三層：`core/`（Google Chat 與 Gemini 的共用封裝，不含入口）、`mcp_app/`（MCP server、CLI 摘要、OAuth 授權精靈）、`dashboard/`（FastAPI 後端與前端）。依賴方向單向：`mcp_app → core ← dashboard`，兩個入口互不 import。
 
 拆分的動機是**發布對象不同**：`mcp_app` 要發給團隊每個人安裝，`dashboard` 是內部服務。但拆成獨立 repo 的代價（共用碼要嘛複製兩份、要嘛做成需要 git remote 與版本管理的可安裝套件）在這個規模上不划算——`core` 目前只有三支檔案。單一 repo 讓兩個入口直接以套件路徑 import，共同缺陷（例如 `core/chat_client.py:28` 忽略 `nextPageToken`，導致超過 100 個 Space 讀不到）只需修一次。
 

@@ -206,7 +206,7 @@ graph TD
 v1.0 時是單一目錄、扁平結構：MCP server 與儀表板後端同處 `src/` 底下，共用當時的 `src/api/chat_client.py`、`src/api/gemini_client.py` 與 `config/config.py`。v2.0 改為**單一 repo 內的三層結構**（ADR-0005）。**此結構已於 2026-09-04 完成搬移**，下列為現況：
 
 ```
-ChatG-Bot/                    github.com/mark22013333/ChatG-Bot（private）
+ChatPulse/                    github.com/mark22013333/ChatPulse（private）
 ├── core/                     共用封裝，不含任何入口
 │   ├── config.py               設定（純讀環境變數）
 │   ├── chat_client.py          Google Chat API
