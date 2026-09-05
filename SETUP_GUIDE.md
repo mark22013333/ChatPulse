@@ -1,25 +1,55 @@
-# Google Chat MCP Server 團隊協作與快速上手手冊
+# ChatPulse 團隊上手手冊（MCP Server ＋ Web 儀表板）
 
-歡迎使用 **Google Chat Assistant MCP Server**！  
-本工具讓您能夠直接在 **Claude Desktop** 或 **Claude Code** 中，透過自然語言：
+歡迎使用 **ChatPulse**！本工具有**兩個入口**，用的是同一套後端能力：
+
+| 入口 | 給誰 | 怎麼跑 |
+| :--- | :--- | :--- |
+| **MCP Server** | 想在 Claude Code / Claude Desktop 對話中直接用的人 | `./scripts/install-claude.sh` |
+| **Web 儀表板** | 想要完整功能（Mention 收件匣、Draft Reply）的人 | `./scripts/start-web.sh` |
+
+能做的事：
 - 🔍 搜尋與列出您加入的所有 Google Chat 空間。
-- 📥 快速抓取特定群組的最新歷史對話（支援 30/50/100 筆）。
-- 🧠 調用 **Gemini 3.6 Flash** 深度整理對話脈絡、決策重點與待辦事項 (Action Items)。
-- 💬 直接發送訊息或一鍵回推摘要至 Google Chat 群組。
+- 📥 抓取特定群組的最新歷史對話（1~1000 則，預設 50）。
+- 🧠 產出結構化摘要，三種風格（通用／技術細節／只要待辦）。
+- 📬 **Mention 收件匣**：跨所有群組找出誰 @ 了你（僅儀表板）。
+- ✍️ **Draft Reply**：針對一則 @ 產生可直接送出的回話（僅儀表板）。
+- 💬 以**你本人的身分**發送訊息或回推摘要（不是機器人，任何送出都要二次確認）。
 
 ---
 
-## 快速上手（只需 2 步驟）
+## 前置需求（先確認這兩件事）
 
-如果您是第一次使用的同事，請依循以下極簡流程：
+**1. 裝好並登入 Claude Code。** 摘要與 Draft Reply 預設走 `claude_cli` 供應商，
+它直接用你**本機 Claude Code 的登入狀態**（吃你現有的訂閱），不需要任何 API key。
+在終端執行 `claude` 能正常進入對話，就代表沒問題。
+
+> 沒有 Claude Code 也能用讀取類功能（列群組、抓訊息），但**一按摘要就會失敗**，
+> 錯誤訊息是「找不到 claude 指令」。另一條路是設 `GOOGLE_API_KEY` 走 Gemini，
+> 但免費層**每天只有 20 次請求**，多人共用會當天用完。
+
+**2. 裝好 Node.js（只有要用 Web 儀表板才需要）。** 前端建置產物不進版控，
+第一次跑 `start-web.sh` 會自動 `npm install` 並建置，需要幾分鐘。
+只用 MCP 的話不需要 Node。
+
+Python 與 `uv` **不用自己準備**——安裝腳本偵測不到 `uv` 會自動幫你裝。
+
+---
+
+## 快速上手（2 步驟）
 
 ### 步驟 1：取得專案與 Client Secret 憑證
-1. 將本專案資料夾複製（或 git clone）至您的電腦：
+1. 將本專案 git clone 至您的電腦（**專案庫是 private，請向維護者索取存取權**）：
    ```bash
-   git clone <專案庫網址> google-chat-bot
+   git clone https://github.com/mark22013333/ChatG-Bot.git google-chat-bot
    cd google-chat-bot
    ```
-2. 向專案維護者（如 Mark）索取共用的 `client_secret.json`，並放置於：
+2. 向專案維護者（如 Mark）索取共用的 `client_secret.json`。
+   **`config/` 目錄不在版控裡，clone 之後不會存在，要自己建**：
+   ```bash
+   mkdir -p config
+   # 然後把拿到的 client_secret.json 放進去
+   ```
+   最後應該長這樣：
    ```text
    google-chat-bot/config/client_secret.json
    ```
@@ -61,6 +91,7 @@
         "--with", "google-auth-oauthlib",
         "--with", "google-auth-httplib2",
         "--with", "requests",
+        "--with", "cryptography",
         "python3",
         "/絕對路徑/google-chat-bot/mcp_app/mcp_server.py"
       ]
@@ -74,10 +105,13 @@
 
 重啟 Claude 即可開始使用！
 
-> **Claude Desktop 使用者必讀**：Desktop 是 GUI 程式，**不會讀取 `~/.zshrc`**，
-> 所以 `GOOGLE_API_KEY` 必須寫在上面 JSON 的 `env` 區塊裡顯式提供，否則
-> MCP server 啟動時就會因為找不到 Gemini API key 而失敗。
-> 從終端啟動的 Claude Code 會繼承 shell 環境，不受此限。
+> **只有走 Gemini 供應商的 Claude Desktop 使用者需要這一步**：Desktop 是 GUI 程式，
+> **不會讀取 `~/.zshrc`**，所以 `GOOGLE_API_KEY` 要寫在上面 JSON 的 `env` 區塊裡：
+> ```json
+> "env": { "GOOGLE_API_KEY": "你的金鑰" }
+> ```
+> 預設的 `claude_cli` 供應商**不需要**這一步。從終端啟動的 Claude Code 會繼承
+> shell 環境，也不受此限。
 
 ---
 
@@ -106,6 +140,37 @@
 3. 在「憑證」>「建立憑證」選擇 **OAuth 用戶端 ID**，應用程式類型選擇 **電腦版應用程式 (Desktop App)**。
 4. 下載 JSON 並重新命名為 `client_secret.json` 放入 `config/` 即可。
 
-### Q2：為什麼摘要可以讀取，但推播回群組回傳 404？
-- 讀取訊息是用您個人的身分（只要群組內有您就能讀）。
-- 推播發言需要該 Google Chat 群組**已經邀請了該專案的 Bot**。請在該群組點「+ 新增應用程式」加入該機器人即可。
+### Q2：推播回群組失敗，是不是要先把 Bot 加進群組？
+**不是，這個系統沒有 Bot。** 讀訊息和發訊息用的都是**你本人的 Google 身分**，
+所以只要你在那個群組裡就能發言，不需要邀請任何應用程式進去。
+（舊版本手冊在這裡寫過「請加入該機器人」，那是錯的，已更正。）
+
+真正的原因通常是：
+- `403 SPACE_FORBIDDEN`：你不是該群組成員，或授權時沒給 `chat.messages.create` 權限 → 重跑授權精靈
+- `404 SPACE_NOT_FOUND`：群組 ID 打錯，或你已退出該群組
+- `401 NOT_AUTHENTICATED`：儀表板登入過期 → 重新登入
+
+### Q3：摘要一直失敗，說找不到 claude 指令？
+你的機器沒有裝 Claude Code，或沒有登入。見本文最上方的「前置需求」。
+想確認目前有哪些 AI 供應商可用，執行：
+```bash
+./scripts/run_summary.sh --list-providers
+```
+
+### Q4：怎麼用 Web 儀表板？
+```bash
+./scripts/start-web.sh
+```
+它會自己建好 Python 環境、建置前端、然後開瀏覽器到 http://localhost:8000。
+第一次會比較久（要 `npm install`）。
+
+登入方式：如果你已經跑過 `./scripts/setup.sh`，儀表板會直接認得你既有的授權，
+**不必再登入一次**（畫面上會有「匯入既有憑證」的選項）。沒跑過精靈的話，
+就在儀表板上直接按 Google 登入。
+
+### Q5：怎麼確認我裝好了？
+```bash
+./scripts/doctor.sh
+```
+它會逐項檢查 Python 環境、憑證、Token 權限、AI 供應商、MCP 註冊、前端建置，
+**每一項沒過都會直接告訴你下一步該做什麼**。裝完先跑這個，比一項項猜快。

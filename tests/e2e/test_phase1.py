@@ -6,7 +6,10 @@
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# 專案根＝tests/e2e 往上兩層。不寫死絕對路徑，同事 clone 到別的位置也要能跑
+E2E_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(E2E_DIR)))
+sys.path.insert(0, E2E_DIR)
 
 from e2e_lib import (  # noqa: E402
     TEMP_SPACE,
@@ -25,7 +28,7 @@ from e2e_lib import (  # noqa: E402
 
 REPORT = os.environ.get(
     "E2E_REPORT",
-    "/private/tmp/claude-501/-Users-cheng-google-chat-bot/e23e39c0-7bfd-493e-8211-f63e32bb9432/scratchpad/e2e-phase1.md",
+    os.path.join(E2E_DIR, "reports", "e2e-phase1.md"),
 )
 
 
@@ -92,7 +95,7 @@ def main() -> int:
     )
     # 這位 Viewer 可能已被前幾輪測試改過偏好，對他斷言「預設值」會誤判。
     # 5.5 要驗的是「新 Viewer 拿到的預設」，所以另建一位臨時 Viewer 來看。
-    sys.path.insert(0, "/Users/cheng/google-chat-bot")
+    # 專案根已在模組層級加進 sys.path，這裡不需要再插一次
     from core import db as _db
     from core import repository as _repo
 

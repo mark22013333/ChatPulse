@@ -22,23 +22,37 @@ MCP_SCRIPT="$PROJECT_DIR/mcp_app/mcp_server.py"
 ensure_venv
 echo -e "${GREEN}✅ 執行環境就緒 (python: $VENV_PYTHON)${NC}"
 
-# 2. 檢查 client_secret.json
+# 2. 檢查 client_secret.json（config/ 不進版控，clone 後不存在，先幫忙建出來）
+mkdir -p "$PROJECT_DIR/config"
 SECRET_FILE="$PROJECT_DIR/config/client_secret.json"
 if [ ! -f "$SECRET_FILE" ]; then
     echo -e "${RED}❌ 找不到憑證：$SECRET_FILE${NC}"
-    echo -e "👉 請先向專案管理員索取 client_secret.json 並放置於上述路徑後再執行此指令！"
+    echo -e "   config/ 目錄我已經幫你建好了，缺的是裡面的檔案。"
+    echo -e "👉 請向專案管理員索取 client_secret.json，放進上述路徑後再執行一次。"
+    echo -e "   （想自己在 GCP 建一份的話，見 SETUP_GUIDE.md 的 Q1）"
     exit 1
 fi
 echo -e "${GREEN}✅ 憑證檔案已就緒${NC}"
 
-# 3. 提醒 Gemini API key（規格 3.3：缺這個變數 MCP server 啟動就會失敗）
-if [ -z "${GOOGLE_API_KEY:-}" ]; then
-    echo -e "${YELLOW}⚠️ 目前 shell 沒有 GOOGLE_API_KEY 環境變數。${NC}"
-    echo -e "   Claude Code 由終端啟動會繼承 shell 環境，請先寫進 ~/.zshrc："
-    echo -e "     export GOOGLE_API_KEY='你的 Gemini API key'"
-    echo -e "   Claude Desktop 是 GUI 程式不讀 ~/.zshrc，需在 MCP 設定的 env 區塊填入。"
-else
-    echo -e "${GREEN}✅ 已偵測到 GOOGLE_API_KEY 環境變數${NC}"
+# 3. 檢查 AI 供應商（摘要與 Draft Reply 需要；只讀 Space 與訊息不需要）
+#    判斷交給 core.providers，不要在這裡另外寫一套規則。
+echo -e "${CYAN}🤖 檢查 AI 供應商...${NC}"
+if ! "$VENV_PYTHON" -c "
+import sys; sys.path.insert(0, '$PROJECT_DIR')
+from core import providers
+avail = [d for d in providers.describe_all() if d['available']]
+if not avail:
+    print('')
+    print('⚠️  目前沒有任何可用的 AI 供應商：列群組與讀訊息不受影響，但摘要會失敗。')
+    for d in providers.describe_all():
+        print(f\"   - {d['name']}：{d['reason']}\")
+    print('')
+    print('   最省事的解法：裝好並登入 Claude Code（終端輸入 claude 能進對話即可），')
+    print('   它會直接用你現有的訂閱，不需要任何 API key。')
+    sys.exit(1)
+print(f\"✅ AI 供應商可用：{'、'.join(d['name'] for d in avail)}（預設 {providers.default_name()}）\")
+"; then
+    echo -e "${YELLOW}   安裝會繼續，但摘要功能要等你補上供應商才能用。${NC}"
 fi
 
 # 4. 執行 Google 帳號授權
