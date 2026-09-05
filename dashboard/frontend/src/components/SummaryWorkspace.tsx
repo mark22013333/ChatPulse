@@ -22,8 +22,10 @@ import {
 import { ActionItems } from '@/components/ActionItems'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { Markdown } from '@/components/Markdown'
+import { ProviderSelect } from '@/components/ProviderSelect'
 import { api, errorMessage } from '@/lib/api'
 import { copyText } from '@/lib/clipboard'
+import { providerLabel, useProviderStore } from '@/store/providers'
 import { useSummaryStore } from '@/store/summary'
 import type { Space, SummaryStyleValue } from '@/lib/types'
 
@@ -47,6 +49,8 @@ export function SummaryWorkspace({ space }: SummaryWorkspaceProps) {
     abort,
     reset,
   } = useSummaryStore()
+
+  const providers = useProviderStore((state) => state.providers)
 
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [publishing, setPublishing] = useState(false)
@@ -117,6 +121,8 @@ export function SummaryWorkspace({ space }: SummaryWorkspaceProps) {
             </SelectContent>
           </Select>
         </div>
+
+        <ProviderSelect id="summary-provider" disabled={streaming} />
 
         <div className="flex flex-col gap-1">
           <Label htmlFor="summary-limit" className="text-[11px] text-muted-foreground">
@@ -190,6 +196,16 @@ export function SummaryWorkspace({ space }: SummaryWorkspaceProps) {
                 ) : (
                   <span>正在準備…</span>
                 )}
+                {/* 一律以 meta 回報的供應商為準——伺服器可能因別名解析而用了別的 */}
+                {meta?.provider ? (
+                  <span
+                    className="rounded border border-violet-500/25 bg-violet-500/10 px-2 py-0.5 font-medium text-violet-600 dark:text-violet-400"
+                    title={`本次實際使用的 AI 供應商與模型（來自 meta 事件）`}
+                  >
+                    {providerLabel(providers, meta.provider)}
+                    {meta.model ? <span className="ml-1 font-mono">· {meta.model}</span> : null}
+                  </span>
+                ) : null}
                 {streaming ? (
                   <span className="flex items-center gap-1">
                     <Loader2Icon className="size-3 animate-spin" />

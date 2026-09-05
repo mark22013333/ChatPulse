@@ -34,6 +34,36 @@ IDENTITY_SCOPES = [
 # 儀表板登入使用的完整 scope 組合
 DASHBOARD_SCOPES = CHAT_SCOPES + IDENTITY_SCOPES
 
+# --- AI 供應商選擇 ---
+# "claude" 是智慧別名：有 ANTHROPIC_API_KEY 就走 API，否則走本機的 Claude Code CLI。
+# 也可以指定 "claude_api"／"claude_cli"／"gemini" 強制走特定一條。
+AI_PROVIDER = os.environ.get("CHATPULSE_AI_PROVIDER", "claude")
+AI_PROVIDERS = ("gemini", "claude_api", "claude_cli")
+
+# --- Claude（Anthropic API）---
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+CLAUDE_API_MODEL = os.environ.get("CHATPULSE_CLAUDE_API_MODEL", "claude-opus-5")
+# effort 控制思考深度與 token 花費（low／medium／high／xhigh／max）。
+# 留空＝用 API 預設（high）。摘要這種工作用 medium 通常就夠，但降不降是
+# 使用者的成本決定，不預設幫他降。
+CLAUDE_API_EFFORT = os.environ.get("CHATPULSE_CLAUDE_API_EFFORT", "")
+
+# --- Claude Code CLI ---
+CLAUDE_CLI_BIN = os.environ.get("CHATPULSE_CLAUDE_BIN", "claude")
+# CLI 的 --model 吃別名（opus／sonnet／fable）或完整模型名
+CLAUDE_CLI_MODEL = os.environ.get("CHATPULSE_CLAUDE_CLI_MODEL", "opus")
+CLAUDE_CLI_TIMEOUT = int(os.environ.get("CHATPULSE_CLAUDE_CLI_TIMEOUT", "600"))
+# CLI 預設會載入 Claude Code 自己的 system prompt、CLAUDE.md 與全部工具定義，
+# 實測一個 2-token 的 prompt 也會寫入 19,085 token 的快取（約 $0.077）。
+# 停掉工具與 MCP、並用自己的 system prompt 取代之後，同一個請求降到 0 token
+# 快取寫入、約 $0.0006。摘要用不到任何工具，所以一律關掉。
+CLAUDE_CLI_DISABLED_TOOLS = (
+    "Task,Bash,Edit,Write,Read,Glob,Grep,NotebookEdit,WebFetch,WebSearch,TodoWrite,"
+    "SendMessage,ListAgents,Artifact,Skill,ToolSearch,CronCreate,CronDelete,CronList,"
+    "DesignSync,EnterWorktree,ExitWorktree,ReportFindings,ScheduleWakeup,Workflow,"
+    "EnterPlanMode,ExitPlanMode,SendUserFile,TaskOutput,TaskStop,BashOutput,KillShell"
+)
+
 # --- Gemini API ---
 GEMINI_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
 GEMINI_MODEL = os.environ.get("CHATPULSE_GEMINI_MODEL", "gemini-3.6-flash")

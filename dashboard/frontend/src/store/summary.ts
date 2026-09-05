@@ -1,6 +1,8 @@
 import { create } from 'zustand'
 import { api, errorMessage, LIMIT_DEFAULT, streamUrls } from '@/lib/api'
 import { streamSse } from '@/lib/sse'
+import { streamErrorMessage } from '@/lib/aiErrors'
+import { providerRequestField } from '@/store/providers'
 import type { SseMeta, SummaryRecord, SummaryStyle, SummaryStyleValue } from '@/lib/types'
 
 interface SummaryState {
@@ -123,7 +125,8 @@ export const useSummaryStore = create<SummaryState>((set, get) => ({
 
     await streamSse(
       streamUrls.summarize(),
-      { space_id: spaceId, limit, style },
+      // provider 是選填：選「自動」時整個欄位不出現，交給伺服器解析
+      { space_id: spaceId, limit, style, ...providerRequestField() },
       {
         onMeta: (meta) => set({ meta }),
         onChunk: (chunk) => set((state) => ({ text: state.text + (chunk.text ?? '') })),
@@ -131,7 +134,11 @@ export const useSummaryStore = create<SummaryState>((set, get) => ({
           set({ streaming: false, summaryId: done.summary_id ?? null })
           void get().loadHistory()
         },
-        onError: (event) => set({ streaming: false, error: `${event.message}（${event.code}）` }),
+        onError: (event) =>
+          set({
+            streaming: false,
+            error: streamErrorMessage(event.code, event.message, get().meta?.provider),
+          }),
       },
       signal,
     ).catch((err) => {

@@ -38,7 +38,7 @@ if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
 from core import config as cfg
-from core import crypto, db, directory, identity, prompts
+from core import crypto, db, directory, identity, prompts, providers
 from core import repository as repo
 from core.chat_client import (
     GoogleChatClient,
@@ -53,7 +53,6 @@ from core.errors import (
     NotAuthenticated,
     RouteNotFound,
 )
-from core.gemini_client import GeminiClient
 from core.mentions import CollectorRunner
 
 logging.basicConfig(
@@ -131,16 +130,31 @@ def _client_factory_for_collector(viewer_row: Dict[str, Any]) -> Optional[Google
         return None
 
 
-def get_gemini(viewer_id: Optional[int] = None) -> GeminiClient:
-    def _recorder(operation: str, prompt_t: int, output_t: int, total_t: int) -> None:
+def get_provider(
+    viewer_id: Optional[int] = None, name: Optional[str] = None
+) -> providers.AIProvider:
+    """取得一個 AI 供應商實例，並把用量記到該 Viewer 名下。
+
+    name 為 None 時依序取：Viewer 的偏好 → CHATPULSE_AI_PROVIDER → "claude"。
+    模型名由供應商自己回報，不由這裡猜——換供應商後用量表才不會記到錯的模型上。
+    """
+    if name is None and viewer_id is not None:
+        try:
+            name = repo.get_preferences(viewer_id).get("default_provider") or None
+        except Exception:
+            name = None
+
+    def _recorder(
+        operation: str, model: str, prompt_t: int, output_t: int, total_t: int
+    ) -> None:
         try:
             repo.record_token_usage(
-                viewer_id, cfg.GEMINI_MODEL, operation, prompt_t, output_t, total_t
+                viewer_id, model, operation, prompt_t, output_t, total_t
             )
         except Exception:
             log.exception("token 用量記錄失敗")
 
-    return GeminiClient(usage_recorder=_recorder)
+    return providers.resolve(name, usage_recorder=_recorder)
 
 
 def list_spaces_cached(viewer_id: int, refresh: bool = False) -> Dict[str, Any]:
@@ -452,6 +466,10 @@ def get_me(viewer: Dict[str, Any] = ViewerDep):
             "last_run_stats": json.loads(stats) if stats else None,
         },
         "mention_counts": repo.count_mentions(viewer["id"]),
+        "ai": {
+            "default": providers.default_name(),
+            "providers": providers.describe_all(),
+        },
     }
 
 
@@ -459,17 +477,23 @@ class PreferencesRequest(BaseModel):
     pinned_space_ids: Optional[List[str]] = None
     default_limit: Optional[int] = None
     default_style: Optional[str] = None
+    default_provider: Optional[str] = None
 
 
 @app.patch("/api/v1/preferences")
 def patch_preferences(req: PreferencesRequest, viewer: Dict[str, Any] = ViewerDep):
     limit = validate_limit(req.default_limit) if req.default_limit is not None else None
     style = prompts.validate_style(req.default_style) if req.default_style else None
+    provider = req.default_provider
+    if provider:
+        # 存進偏好前先驗一次，避免存下一個會在每次摘要時才爆的值
+        providers.resolve_name(provider)
     return repo.update_preferences(
         viewer["id"],
         pinned_space_ids=req.pinned_space_ids,
         default_limit=limit,
         default_style=style,
+        default_provider=provider,
     )
 
 
@@ -549,6 +573,20 @@ def get_styles():
     return {"styles": prompts.style_options()}
 
 
+@app.get("/api/v1/providers")
+def get_providers():
+    """列出 AI 供應商與各自現在可不可用。
+
+    不需登入——前端在登入畫面就可能要顯示「目前沒有可用的 AI 供應商」。
+    `available: false` 的項目會附上**說得出下一步的原因**（要設哪個環境變數、
+    要裝什麼），而不是只說失敗。
+    """
+    return {
+        "default": providers.default_name(),
+        "providers": providers.describe_all(),
+    }
+
+
 # ==========================================================================
 # SSE 共用（8.3）
 # ==========================================================================
@@ -575,6 +613,8 @@ def sse_response(generator: Generator[str, None, None]) -> StreamingResponse:
 
 class SummarizeRequest(BaseModel):
     space_id: str
+    #: AI 供應商；省略時用 Viewer 偏好或伺服器預設
+    provider: Optional[str] = None
     # 5.5：SSE 端點補上驗證，不再是裸 int（v1 可傳 99999）
     limit: int = Field(default=cfg.LIMIT_DEFAULT, ge=cfg.LIMIT_MIN, le=cfg.LIMIT_MAX)
     style: str = cfg.SUMMARY_STYLE_DEFAULT
@@ -603,11 +643,18 @@ def summarize_stream(req: SummarizeRequest, viewer: Dict[str, Any] = ViewerDep):
     space_id = req.space_id
     limit = req.limit
     style = req.style
+    req_provider = req.provider
     display = space_display_name(viewer_id, space_id)
+    # 供應商名稱在進串流前先驗，這樣打錯名字會得到 HTTP 400 而不是
+    # 一個「串流開始後才出錯」的 error 事件（與 limit／style 的處理一致）
+    resolved_provider = providers.resolve_name(req_provider)
 
     def generate() -> Generator[str, None, None]:
         try:
             client = get_client(viewer_id)
+            # 供應商在 meta 之前就要建好——meta 事件要帶 model，而 model
+            # 由供應商自己回報
+            ai = get_provider(viewer_id, req_provider)
             messages = client.fetch_recent_messages(space_id, limit=limit)
             learn_names(messages)
             conversation = format_conversation(messages, name_resolver_for(viewer))
@@ -630,12 +677,14 @@ def summarize_stream(req: SummarizeRequest, viewer: Dict[str, Any] = ViewerDep):
                     "space_id": space_id,
                     "message_count": count,
                     "style": style,
+                    "provider": resolved_provider,
+                    "model": ai.model,
                 }
             )
 
             prompt = prompts.summary_prompt(display, conversation, count, style)
             collected: List[str] = []
-            for chunk in get_gemini(viewer_id).stream_text(prompt, operation="summarize"):
+            for chunk in ai.stream_text(prompt, operation="summarize"):
                 collected.append(chunk)
                 yield sse({"type": "chunk", "text": chunk})
 
@@ -820,6 +869,7 @@ def refresh_mentions(viewer: Dict[str, Any] = ViewerDep):
 class DraftRequest(BaseModel):
     # 7.3：不自動選擇 Reference Space，預設空陣列
     reference_space_ids: List[str] = Field(default_factory=list)
+    provider: Optional[str] = None
     limit: int = Field(default=cfg.LIMIT_DEFAULT, ge=cfg.LIMIT_MIN, le=cfg.LIMIT_MAX)
 
 
@@ -830,7 +880,7 @@ def draft_stream(
     """產生 Draft Reply SSE（七節）。
 
     流程：取回該討論串完整對話 → 併入 Viewer 勾選的 Reference Space 近期訊息
-    → 送 Gemini 串流輸出兩段（脈絡分析、建議回話）。
+    → 送選定的 AI 供應商串流輸出兩段（脈絡分析、建議回話）。
     """
     viewer_id = viewer["id"]
     mention = repo.get_mention(viewer_id, mention_id)
@@ -843,10 +893,13 @@ def draft_stream(
 
     ref_ids = list(dict.fromkeys(req.reference_space_ids))  # 去重、保留順序
     limit = req.limit
+    resolved_provider = providers.resolve_name(req.provider)
+    req_provider = req.provider
 
     def generate() -> Generator[str, None, None]:
         try:
             client = get_client(viewer_id)
+            ai = get_provider(viewer_id, req_provider)
 
             # 被 @ 的那則訊息本身
             mention_msg = client.get_message(mention["message_name"])
@@ -903,6 +956,8 @@ def draft_stream(
                         }
                         for b in ref_blocks
                     ],
+                    "provider": resolved_provider,
+                    "model": ai.model,
                 }
             )
 
@@ -915,9 +970,7 @@ def draft_stream(
             )
 
             collected: List[str] = []
-            for chunk in get_gemini(viewer_id).stream_text(
-                prompt, operation="draft_reply"
-            ):
+            for chunk in ai.stream_text(prompt, operation="draft_reply"):
                 collected.append(chunk)
                 yield sse({"type": "chunk", "text": chunk})
 
@@ -990,9 +1043,15 @@ def reply_to_mention(
 
 @app.get("/api/v1/health")
 def health():
+    try:
+        active_provider = providers.resolve_name()
+    except Exception as exc:
+        active_provider = f"（無可用供應商：{exc}）"
     return {
         "status": "ok",
         "db": db.journal_mode(),
+        "ai_provider_default": providers.default_name(),
+        "ai_provider_active": active_provider,
         "gemini_configured": bool(cfg.GEMINI_API_KEY),
         "collector_running": collector_runner.is_running(),
         "collector_implementation": collector_runner.collector_name,

@@ -93,6 +93,25 @@ class GeminiQuotaExceeded(ChatPulseError):
     default_message = "Gemini 配額已用盡"
 
 
+class ClaudeQuotaExceeded(ChatPulseError):
+    """Claude 用量上限。
+
+    與 GEMINI_QUOTA_EXCEEDED 分開，因為兩者的處置不同：Gemini 免費層是
+    每日請求數（等隔天或換模型），Claude Code 訂閱是滾動時間窗的用量
+    （等窗口重置或改用 API key）。前端要能對使用者說清楚該怎麼辦。
+    """
+
+    code = "CLAUDE_QUOTA_EXCEEDED"
+    http_status = 429
+    default_message = "Claude 用量已達上限"
+
+
+class ClaudeApiError(ChatPulseError):
+    code = "CLAUDE_API_ERROR"
+    http_status = 502
+    default_message = "Claude 回應非預期內容"
+
+
 class ChatApiError(ChatPulseError):
     code = "CHAT_API_ERROR"
     http_status = 502

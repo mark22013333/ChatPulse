@@ -28,7 +28,7 @@ from core import directory
 from core import prompts
 from core.chat_client import GoogleChatClient, format_conversation, validate_limit
 from core.errors import ChatPulseError, SpaceNotFound
-from core.gemini_client import GeminiClient
+from core import providers
 
 mcp = MCPServer(name="Google Chat Assistant")
 
@@ -36,7 +36,7 @@ mcp = MCPServer(name="Google Chat Assistant")
 # GeminiClient() 會在缺 GOOGLE_API_KEY 時直接拋錯。放在模組層級會讓「只是 import
 # 這個模組」也產生副作用，測試與靜態檢查都跑不動。
 _chat_client: Optional[GoogleChatClient] = None
-_gemini_client: Optional[GeminiClient] = None
+_ai_providers: Dict[str, "providers.AIProvider"] = {}
 
 
 def get_chat_client() -> GoogleChatClient:
@@ -46,11 +46,16 @@ def get_chat_client() -> GoogleChatClient:
     return _chat_client
 
 
-def get_gemini_client() -> GeminiClient:
-    global _gemini_client
-    if _gemini_client is None:
-        _gemini_client = GeminiClient()
-    return _gemini_client
+def get_ai(name: Optional[str] = None) -> "providers.AIProvider":
+    """取得 AI 供應商（延遲建立並快取）。
+
+    name 省略時用 CHATPULSE_AI_PROVIDER（預設 `claude`，會自動在
+    Anthropic API 與本機 Claude Code CLI 之間挑一個可用的）。
+    """
+    key = (name or "").strip().lower() or "__default__"
+    if key not in _ai_providers:
+        _ai_providers[key] = providers.resolve(name or None)
+    return _ai_providers[key]
 
 
 def _error_text(exc: ChatPulseError) -> str:
@@ -143,9 +148,10 @@ def summarize_chat_space(
     limit: int = cfg.LIMIT_DEFAULT,
     style: str = cfg.SUMMARY_STYLE_DEFAULT,
     post_to_chat: bool = False,
+    provider: str = "",
 ) -> str:
     """
-    用 Gemini 對指定 Google Chat 空間的對話產出結構化摘要。
+    對指定 Google Chat 空間的對話產出結構化摘要（AI 供應商可選，見 provider 參數）。
     - space_name_or_id: 群組名稱關鍵字（例如 '0.暫存'）或 Space ID。
     - limit: 分析的對話則數，超出允許範圍會回傳參數錯誤。
     - style: 摘要風格，三選一（三種風格的輸出章節結構不同）：
@@ -155,6 +161,11 @@ def summarize_chat_space(
         • action_only  只要待辦：不寫任何脈絡與前言，只輸出待辦事項清單。
     - post_to_chat: 是否把摘要推播回該聊天室（預設 False，只在回應中輸出）。
       設為 True 會以使用者本人身分在該群組發言，請先向使用者確認再帶入。
+    - provider: 要用哪個 AI 供應商，留空＝用伺服器預設。可用值：
+        • claude      智慧別名：有 Anthropic 憑證走 API，否則用本機 Claude Code CLI
+        • claude_api  Anthropic API（需 ANTHROPIC_API_KEY）
+        • claude_cli  本機 Claude Code CLI（吃現有訂閱，不需 API key）
+        • gemini      Google Gemini（免費層每天僅 20 次請求）
     """
     try:
         limit = validate_limit(limit)
@@ -174,8 +185,12 @@ def summarize_chat_space(
         return f"空間「{display_name}」最近的訊息都沒有文字內容，無法摘要。"
 
     try:
-        summary = get_gemini_client().summarize_discussion(
-            display_name, conversation_text, len(messages), style
+        ai = get_ai(provider)
+        summary = ai.generate(
+            prompts.summary_prompt(
+                display_name, conversation_text, len(messages), style
+            ),
+            operation="summarize",
         )
     except ChatPulseError as exc:
         return _error_text(exc)
@@ -188,6 +203,21 @@ def summarize_chat_space(
             summary += f"\n\n*（⚠️ 推播失敗：[{exc.code}] {exc.message}）*"
 
     return summary
+
+
+@mcp.tool()
+def list_ai_providers() -> str:
+    """列出可用的 AI 供應商與各自的狀態。
+
+    在 summarize_chat_space 回報配額不足時，可以先用這個查有哪些替代選項，
+    再帶 provider 參數重試。
+    """
+    lines = [f"預設：{providers.default_name()}"]
+    for d in providers.describe_all():
+        mark = "✅ 可用" if d["available"] else "❌ 不可用"
+        lines.append(f"- {d['name']}（{d['label']}）｜模型 {d['model']}｜{mark}")
+        lines.append(f"    {d['reason']}")
+    return "\n".join(lines)
 
 
 @mcp.tool()

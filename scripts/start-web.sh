@@ -33,10 +33,21 @@ if [ ! -f "$FRONTEND_DIR/dist/index.html" ]; then
     fi
 fi
 
-if [ -z "${GOOGLE_API_KEY:-}" ]; then
-    echo ""
-    echo "⚠️  GOOGLE_API_KEY 未設定：Space 與訊息讀取不受影響，但摘要與 Draft Reply 會失敗。"
-    echo "   設定方式：export GOOGLE_API_KEY='你的 Gemini API key'"
+# AI 供應商：只要有一個可用就不必警告。預設的 claude 別名會在
+# Anthropic API 與本機 Claude Code CLI 之間自己挑，不一定需要 GOOGLE_API_KEY。
+if ! "$VENV_PYTHON" -c "
+import sys; sys.path.insert(0, '$PROJECT_DIR')
+from core import providers
+avail = [d for d in providers.describe_all() if d['available']]
+if not avail:
+    print('')
+    print('⚠️  目前沒有任何可用的 AI 供應商：Space 與訊息讀取不受影響，但摘要與 Draft Reply 會失敗。')
+    for d in providers.describe_all():
+        print(f\"   - {d['name']}：{d['reason']}\")
+    sys.exit(1)
+print(f\"✅ AI 供應商可用：{'、'.join(d['name'] for d in avail)}（預設 {providers.default_name()}）\")
+" 2>/dev/null; then
+    echo "   （供應商檢查失敗，服務仍會啟動；可用 /api/v1/providers 端點查詳情）"
 fi
 
 echo ""

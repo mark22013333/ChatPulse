@@ -14,6 +14,10 @@
   ```
 - `limit` 的**範圍**一律 1~1000，超出回 `400 INVALID_PARAMETER`。**預設值多為 50，但依端點而異**（`/mentions` 是 200——那是「列幾筆 Mention」，與「一個 Space 抓幾則對話」不是同一件事），各端點的預設值見下方各節
 - `style` 只接受 `general` / `technical` / `action_only`
+- `provider` 選填，決定用哪個 AI 供應商。可用值：`claude_api`／`claude_cli`／`gemini`
+  三個實作，加上 `claude`／`auto` 兩個**別名**（別名會挑第一個現在可用的實作）。
+  省略時依序取：Viewer 的 `default_provider` 偏好 → 伺服器的 `CHATPULSE_AI_PROVIDER` → `claude`。
+  名稱不合法時回 `400 INVALID_PARAMETER`，**在進串流之前就擋掉**
 
 ### 錯誤碼對照
 
@@ -23,8 +27,8 @@
 | 401 | `NOT_AUTHENTICATED` | 未登入或 session 過期 |
 | 403 | `SPACE_FORBIDDEN` | 不是該聊天室成員 |
 | 404 | `SPACE_NOT_FOUND` / `MENTION_NOT_FOUND` / `ROUTE_NOT_FOUND` | 目標不存在；`ROUTE_NOT_FOUND` 專指 API 路徑打錯（刻意與 SPACE_NOT_FOUND 分開，否則前端會把「端點打錯」顯示成「聊天室不見了」） |
-| 429 | `CHAT_RATE_LIMITED` / `GEMINI_QUOTA_EXCEEDED` | 上游限流，帶 `Retry-After` |
-| 502 | `CHAT_API_ERROR` / `GEMINI_API_ERROR` | 上游非預期回應 |
+| 429 | `CHAT_RATE_LIMITED` / `GEMINI_QUOTA_EXCEEDED` / `CLAUDE_QUOTA_EXCEEDED` | 上游限流，帶 `Retry-After`。兩個 AI 的配額分開列，前端可據此建議「換一個供應商試試」 |
+| 502 | `CHAT_API_ERROR` / `GEMINI_API_ERROR` / `CLAUDE_API_ERROR` | 上游非預期回應 |
 | 500 | `CONFIGURATION_ERROR` | 伺服器設定不完整（例如缺 GOOGLE_API_KEY） |
 | 500 | `INTERNAL_ERROR` | 未預期錯誤的兜底 |
 
@@ -95,7 +99,9 @@ scope 含 chat 三項 ＋ `openid`/`userinfo.email`/`userinfo.profile`。
   "viewer": { "id": 1, "google_user_id": "users/123", "email": "...", "display_name": "..." },
   "scopes": ["https://www.googleapis.com/auth/chat.spaces.readonly", "..."],
   "has_identity_scope": true,
-  "preferences": { "pinned_space_ids": [], "default_limit": 50, "default_style": "general" },
+  "preferences": { "pinned_space_ids": [], "default_limit": 50, "default_style": "general",
+                   "default_provider": null },
+  "ai": { "default": "claude", "providers": [ /* 同 GET /api/v1/providers */ ] },
   "collector": { "implementation": "polling", "interval_seconds": 45, "running": true,
                  "last_polled_at": "2026-09-05T01:23:45+00:00", "last_error": null,
                  "last_run_stats": { "new_mentions": 0, "spaces_polled": 2, "spaces_total": 436, "api_calls": 3, "elapsed_seconds": 0.8 } },
@@ -106,9 +112,11 @@ scope 含 chat 三項 ＋ `openid`/`userinfo.email`/`userinfo.profile`。
 ### `PATCH /api/v1/preferences`
 需登入。body 任一欄位可省略：
 ```json
-{ "pinned_space_ids": ["spaces/AAA"], "default_limit": 100, "default_style": "technical" }
+{ "pinned_space_ids": ["spaces/AAA"], "default_limit": 100, "default_style": "technical",
+  "default_provider": "claude_cli" }
 ```
 回傳更新後的 preferences，另含 `updated_at`（ISO 8601 UTC）。
+`default_provider` 傳空字串等同清除（回到伺服器預設）；傳非法值回 `400 INVALID_PARAMETER`。
 
 ---
 
@@ -145,12 +153,31 @@ scope 含 chat 三項 ＋ `openid`/`userinfo.email`/`userinfo.profile`。
 ### `POST /api/v1/summarize/stream`
 需登入。**SSE**。body：
 ```json
-{ "space_id": "spaces/AAAAxLxqJxY", "limit": 50, "style": "general" }
+{ "space_id": "spaces/AAAAxLxqJxY", "limit": 50, "style": "general", "provider": "claude_cli" }
 ```
 事件序：`meta` → 多個 `chunk` → `done`。
-`meta` 內容：`{"type":"meta","space":"0.暫存","space_id":"spaces/...","message_count":50,"style":"general"}`
+`meta` 內容：`{"type":"meta","space":"0.暫存","space_id":"spaces/...","message_count":50,"style":"general","provider":"claude_cli","model":"claude-cli:opus"}`
+**`provider` 與 `model` 是伺服器實際使用的值**（別名已展開），前端顯示「用了哪個」時要以此為準，不要用送出前的選擇。
 串流結束時後端會把完整摘要寫入 `summaries`（僅本人可見），`done` 事件帶 `summary_id`：
 `{"type":"done","summary_id":12}`
+
+### `GET /api/v1/providers`
+**不需登入**（登入畫面也可能要顯示「目前沒有可用的 AI 供應商」）。
+```json
+{
+  "default": "claude",
+  "providers": [
+    { "name": "claude_api", "label": "Claude（Anthropic API）", "model": "claude-opus-5",
+      "available": false, "reason": "找不到 Anthropic 憑證。設定 ANTHROPIC_API_KEY…" },
+    { "name": "claude_cli", "label": "Claude Code（本機 CLI，用你現有的訂閱）", "model": "claude-cli:opus",
+      "available": true, "reason": "使用本機 /Users/cheng/.local/bin/claude" },
+    { "name": "gemini", "label": "Gemini（Google AI Studio）", "model": "gemini-3.6-flash",
+      "available": true, "reason": "使用 GOOGLE_API_KEY" }
+  ]
+}
+```
+`default` 可能是別名（`claude`／`auto`）。`available: false` 的 `reason` 寫的是
+**該設哪個環境變數、該裝什麼**——前端要顯示出來，不要吞掉。
 
 ### `GET /api/v1/styles`
 不需登入。摘要風格選項，供下拉選單。
@@ -220,14 +247,15 @@ mentions 表**只存識別資訊**，不存內容）。
 ### `POST /api/v1/mentions/{id}/draft/stream`
 需登入。**SSE**。產生 Draft Reply。body：
 ```json
-{ "reference_space_ids": ["spaces/BBB", "spaces/CCC"], "limit": 50 }
+{ "reference_space_ids": ["spaces/BBB", "spaces/CCC"], "limit": 50, "provider": "claude_cli" }
 ```
 `reference_space_ids` **預設空陣列**（7.3：不自動選擇 Reference Space）。
 事件序：`meta` → 多個 `chunk` → `done`。
 `meta`：
 ```json
 { "type": "meta", "mention_id": 7, "space": "0.暫存", "thread_message_count": 12,
-  "reference_spaces": [ { "space_id": "spaces/BBB", "space_name": "1.BU2-PG", "message_count": 50 } ] }
+  "reference_spaces": [ { "space_id": "spaces/BBB", "space_name": "1.BU2-PG", "message_count": 50 } ],
+  "provider": "claude_cli", "model": "claude-cli:opus" }
 ```
 `done`：`{"type":"done","draft_id":3}`
 輸出內容為兩段 Markdown：`### 🧭 脈絡分析` 與 `### ✍️ 建議回話`。
@@ -250,7 +278,9 @@ mentions 表**只存識別資訊**，不存內容）。
 ### `GET /api/v1/health`
 不需登入。
 ```json
-{ "status": "ok", "db": "wal", "gemini_configured": true, "collector_running": true,
+{ "status": "ok", "db": "wal",
+  "ai_provider_default": "claude", "ai_provider_active": "claude_cli",
+  "gemini_configured": true, "collector_running": true,
   "collector_implementation": "polling", "viewer_count": 1 }
 ```
 

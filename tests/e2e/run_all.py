@@ -27,6 +27,7 @@ SCRATCH = os.environ.get(
 SUITES = [
     # 放最前面：不需要 Gemini 配額，先確立哪些宣稱有落地證據
     ("落地證據（從資料庫重查，零 Gemini 呼叫）", "check_stored_evidence.py"),
+    ("AI 供應商切換（實跑走 claude_cli，不動 Gemini 配額）", "test_providers.py"),
     ("Phase 1（認證／Space／訊息／參數／摘要／推播）", "test_phase1.py"),
     ("Phase 2（Mention／Draft Reply／Reference Space／送出／多 Viewer）", "test_phase2.py"),
     ("缺陷 D-3（摘要不被截斷，含 2048 負對照）", "test_d3_truncation.py"),

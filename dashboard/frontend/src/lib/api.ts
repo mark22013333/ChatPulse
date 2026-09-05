@@ -1,7 +1,9 @@
 import type {
+  AIConfig,
   AuthResult,
   AuthStatus,
   Me,
+  Preferences,
   Mention,
   MentionRefreshResponse,
   MentionState,
@@ -121,6 +123,13 @@ export const api = {
   bootstrap: () => post<AuthResult>('/auth/bootstrap', undefined, { skipAuthRedirect: true }),
   logout: () => post<AuthResult>('/auth/logout', undefined, { skipAuthRedirect: true }),
   me: () => request<Me>('/me'),
+
+  // ── AI 供應商 ──────────────────────────────────────────
+  /** 未登入也能打；登入後可改用 `/me` 的 `ai` 欄位，少一次往返。 */
+  providers: () => request<AIConfig>('/providers', {}, { skipAuthRedirect: true }),
+  /** `default_provider` 傳 null＝清掉偏好、沿用伺服器預設。 */
+  updatePreferences: (body: { default_provider?: string | null }) =>
+    request<Preferences>('/preferences', { method: 'PATCH', body: JSON.stringify(body) }),
 
   // ── Phase 1 ────────────────────────────────────────────
   spaces: (params: { search?: string; refresh?: boolean } = {}) =>

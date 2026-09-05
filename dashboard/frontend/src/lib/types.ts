@@ -24,6 +24,32 @@ export interface Preferences {
   pinned_space_ids: string[]
   default_limit: number
   default_style: SummaryStyleValue
+  /** 使用者偏好的 AI 供應商；null＝沿用伺服器預設 */
+  default_provider?: string | null
+}
+
+/**
+ * 單一 AI 供應商（`GET /api/v1/providers` 與 `/me` 的 `ai.providers`）。
+ * `name` 是實作名稱（claude_api / claude_cli / gemini），送 request 時用它。
+ * `available: false` 的供應商仍要顯示，`reason` 寫的是「該設哪個環境變數」，
+ * 對使用者有用，不可以吞掉。
+ */
+export interface AIProvider {
+  name: string
+  label: string
+  model: string
+  available: boolean
+  reason: string
+}
+
+/** `GET /api/v1/providers` 的回應，也是 `/me` 的 `ai` 欄位內容。 */
+export interface AIConfig {
+  /**
+   * 伺服器預設。可能是別名（`claude`＝有 Anthropic 憑證就走 API、否則退到 CLI；`auto`），
+   * 也可能直接是三個實作名稱之一——所以不保證對得上 `providers` 裡的任何 `name`。
+   */
+  default: string
+  providers: AIProvider[]
 }
 
 export interface CollectorRunStats {
@@ -58,6 +84,8 @@ export interface Me {
   preferences: Preferences
   collector: CollectorStatus | null
   mention_counts: MentionCounts
+  /** 登入後可直接用這份供應商設定，不必另外打 `/providers` */
+  ai?: AIConfig | null
 }
 
 export interface Space {
@@ -173,6 +201,12 @@ export interface SseMeta {
   mention_id?: number
   thread_message_count?: number
   reference_spaces?: DraftReferenceSpace[]
+  /**
+   * 伺服器實際採用的供應商與模型。要顯示「這份結果是誰產的」一律以這兩個欄位為準——
+   * 送出前選的可能是別名，伺服器解析後用的未必是同一個。
+   */
+  provider?: string
+  model?: string
 }
 
 export interface SseChunk {
