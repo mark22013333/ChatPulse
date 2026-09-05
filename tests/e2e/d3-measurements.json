@@ -1,0 +1,55 @@
+{
+  "gemini-3.7-flash::2048": {
+    "measured_at": "2026-09-05T01:48:36+00:00",
+    "max_output_tokens": 2048,
+    "finish_reason": "STOP",
+    "usage": {
+      "promptTokenCount": 24200,
+      "candidatesTokenCount": 1269,
+      "totalTokenCount": 25469,
+      "promptTokensDetails": [
+        {
+          "modality": "TEXT",
+          "tokenCount": 24200
+        }
+      ],
+      "serviceTier": "standard"
+    },
+    "output_chars": 1774,
+    "sections_found": [
+      "核心討論主題",
+      "共識與重要決議",
+      "待辦事項"
+    ],
+    "prompt_chars": 29969,
+    "source_space": "PSTB上班沒壓力之群組",
+    "model": "gemini-3.7-flash"
+  },
+  "gemini-3.7-flash::16384": {
+    "measured_at": "2026-09-05T01:48:48+00:00",
+    "max_output_tokens": 16384,
+    "finish_reason": "STOP",
+    "usage": {
+      "promptTokenCount": 24200,
+      "candidatesTokenCount": 1259,
+      "totalTokenCount": 27279,
+      "promptTokensDetails": [
+        {
+          "modality": "TEXT",
+          "tokenCount": 24200
+        }
+      ],
+      "thoughtsTokenCount": 1820,
+      "serviceTier": "standard"
+    },
+    "output_chars": 1787,
+    "sections_found": [
+      "核心討論主題",
+      "共識與重要決議",
+      "待辦事項"
+    ],
+    "prompt_chars": 29969,
+    "source_space": "PSTB上班沒壓力之群組",
+    "model": "gemini-3.7-flash"
+  }
+}

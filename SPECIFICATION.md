@@ -579,7 +579,7 @@ SQLite（WAL 模式），單一檔案。**對話全文不落地。**
 | :--- | :--- | :--- | :--- |
 | ~~**D-1**~~ **已修復** | `core/chat_client.py` `list_spaces()` | `spaces().list(pageSize=100)` 未處理 `nextPageToken`（同檔的訊息抓取倒是有寫翻頁迴圈） | **實測影響：帳號共 436 個 Space，其中 336 個永遠讀不到**，含「北市府-第八次異動開發」等實際工作群組。且失敗形態是搜尋回報「找不到」而非報錯。2026-09-04 改為自動翻頁（`pageSize=1000` ＋ 50 頁安全閥），修復後實測取得 436 個 |
 | ~~**D-2**~~ **程式面已修復；金鑰建議更換** | `core/config.py`（舊 `:17`） | Gemini API key 以明文硬編碼為環境變數的 fallback 預設值 | repo 要交給團隊使用，等於把金鑰一併發出。**程式面已修**：`core/config.py` 純讀 `GOOGLE_API_KEY`，無 fallback 值，缺少時由 `GeminiClient.__init__` 拋 `CONFIGURATION_ERROR`。**金鑰本身建議更換**，理由與處置見 3.3「憑證絕對不進 repo」下方的收斂結論——不是因為 repo 洩漏（repo 從未 push），而是因為它進過終端輸出。附帶修掉一個實際洩漏管道：金鑰原本放在 Gemini endpoint 的 `?key=` query string，任何含 URL 的錯誤訊息都會把它印出來，已改為 `x-goog-api-key` 標頭 |
-| ~~**D-3**~~ **已修復** | `core/gemini_client.py`、`dashboard/api/server.py` | `maxOutputTokens: 2048` | 500 則對話的結構化摘要會被截斷。v1.0 拿「100 萬 token 輸入窗口」當賣點（`v1:76-77`），但輸入窗口大與輸出夠用是兩件事。**已調整為 16384**。實測補充：真正的機制不是「摘要比 2048 長」，而是 **`maxOutputTokens` 把 thinking token 一起算進去**——同一份 483 則對話（第二輪執行的數字）：2048 那次 `thoughtsTokenCount` 就吃掉 1,962，只剩 82 token 寫正文（`finishReason=MAX_TOKENS`、三個章節全部缺）；16384 那次思考 2,622＋正文 1,160＝3,782，`finishReason=STOP`、章節齊全。**證據等級 B**：這一輪的報告檔已被後續配額耗盡的重跑覆蓋，數字轉抄於 [`docs/verification-log.md`](./docs/verification-log.md)（該檔另列了第一輪的 1,965／79，兩輪都成立、只是思考長度不同）。要取回持久證據需等配額重置後重跑 `tests/e2e/test_d3_truncation.py` |
+| ~~**D-3**~~ **已修復** | `core/gemini_client.py`、`dashboard/api/server.py` | `maxOutputTokens: 2048` | 500 則對話的結構化摘要會被截斷。v1.0 拿「100 萬 token 輸入窗口」當賣點（`v1:76-77`），但輸入窗口大與輸出夠用是兩件事。**已調整為 16384**。根因實測修正過兩次，第二次才對。**第一次**：不是「摘要比 2048 長」，而是 **`maxOutputTokens` 把 thinking token 一起算進去**——`gemini-3.6-flash` 跑 483 則對話，2048 那次 `thoughtsTokenCount` 吃掉 1,962～1,966，只剩 78～82 token 寫正文（`finishReason=MAX_TOKENS`、三章節全缺，兩次獨立執行皆同）。**第二次（更準確）**：換 `gemini-3.7-flash` 跑同一份 prompt，2048 那次**沒有被截斷**（`STOP`、三章節齊全、1,774 字），因為那一次 `thoughtsTokenCount` 是 **0**；同模型的 16384 那次卻花了 1,820。所以正確的說法是 **2048 不是「一定不夠」，而是時好時壞**——思考量因模型、甚至因每次請求而異（實測 0～2,772），超出時**安靜截斷、不報錯**。唯一與模型無關、必須恆成立的判準是「完整輸出所需的總預算（思考＋正文）> 2048」：3.7-flash 實測 1,820＋1,259＝3,079，3.6-flash 實測 2,622＋1,160＝3,782。`tests/e2e/test_d3_truncation.py` 現在驗的是這個機制，不是某個模型某一次的結果。**證據等級 A**，報告帶時間戳不會被覆蓋 |
 | ~~**D-4**~~ **已修復** | `dashboard/api/server.py` | `SummarizeRequest.style` 定義後從未被讀取 | UI 有下拉選單、API 有欄位、行為不存在。**已實作為 prompt 分歧**（`core/prompts.py`）：三種風格的輸出**章節結構不同**，不是同一份 prompt 後面加一句「請寫技術一點」。實測同一批 50 則對話：general 1,224 字（脈絡＋決議＋待辦）、technical 3,439 字（含「已排除的假設與排查過程」）、action_only 493 字（只有待辦章節） |
 | ~~**D-5**~~ **已修復** | `config/google_chat_token.json`、`config/client_secret.json` | OAuth token（access + refresh）與 client secret 皆以明文 JSON 存放於檔案系統 | 拆分後 MCP repo 要發給團隊，這兩個檔一旦進版控等同交出帳號授權。**版控面已於 Phase 0 處理**（`.gitignore`）；**加密面已完成**：Phase 2 的憑證存於 `credentials.encrypted_token`（Fernet，`core/crypto.py`），金鑰在 `data/token.key`（0600）且不與資料庫同檔。舊的單人 token 檔保留供 `POST /api/v1/auth/bootstrap` 匯入 |
 | **D-6**（本次新發現） | `core/chat_client.py` `fetch_recent_messages()` | 呼叫 `spaces.messages.list` **沒有帶 `orderBy`**，而該端點的預設是 **`createTime ASC`（最舊優先）** | **「最近 N 則」實際抓的是「最舊的 N 則」。** 舊程式碼註解寫「Google 回傳通常是由新到舊」，與官方預設相反。實測證據：修復前的 MCP 工具 `fetch_chat_messages(limit=3)` 對暫存群組回傳的是 **2023-05-12／2023-05-19** 三則，而該群組最新訊息是 2026-09-04。也就是說**過去每一份摘要摘的都是三年前的對話**。已改為 `orderBy=createTime desc` 取回後再反轉為時間正序 |
@@ -595,7 +595,7 @@ SQLite（WAL 模式），單一檔案。**對話全文不落地。**
 | :--- | :--- | :--- | :--- |
 | ~~**R-1**~~ **已結案** | `spaces.messages.search` 需要 Business/Enterprise 版 Workspace，`@intumit.com` 的版本等級未確認 | 決定 Mention 採集走實作 A 或 B | **已於 2026-09-05 實測（先於開發）**：實作 A 回 200 但恆 0 筆（正對照亦搜不到），**不可用**；改採實作 B，並以 `lastActiveTime` 預篩把每輪成本壓到 2~3 次呼叫、約 1 秒、每分鐘配額約 0.4%，因此輪詢間隔不需放寬。完整證據見 [`docs/R1-findings.md`](./docs/R1-findings.md) |
 | **R-2** | `gemini-3.6-flash` 的實際計費與導入期定價（至 2026-12-31）未逐項核對 | 團隊共用後成本可能高於預期 | **記錄機制已完成**（`token_usage` 表 ＋ `GET /api/v1/usage`，記 prompt／output／total 與呼叫次數）。**定價仍未逐項核對**——要等累積兩週實際用量後才評估，現在無法結案。實測補充兩個會影響估算的事實，見下方 R-2 補充 |
-| **R-4**（本次新發現） | 目前這把 Gemini API key 在**免費層**，`gemini-3.6-flash` 的上限是**每天 20 次請求** | **團隊共用在免費層完全不可行**，也直接限制了 E2E 測試的可重複性 | 錯誤原文：`quotaId: GenerateRequestsPerDayPerProjectPerModel-FreeTier, quotaValue: 20`。本次測試在數小時內就把 20 次用完（15 次經儀表板 ＋ 5 次測試腳本直呼），之後所有摘要與草稿都回 `GEMINI_QUOTA_EXCEEDED`。**程式的處理是正確的**（照 8.3 送 error 事件、不中斷連線、不噴 traceback），但功能等於停擺。上線前必須先決定：升級到付費層、或改接公司 GCP 專案的 Vertex AI（10.2 已列的替代路徑，程式改動限於 `gemini_client.py` 的認證與 endpoint）。模型可用 `CHATPULSE_GEMINI_MODEL` 一個環境變數換掉 |
+| **R-4**（本次新發現） | 目前這把 Gemini API key 在**免費層**，`gemini-3.6-flash` 的上限是**每天 20 次請求** | **團隊共用在免費層完全不可行**，也直接限制了 E2E 測試的可重複性 | 錯誤原文：`quotaId: GenerateRequestsPerDayPerProjectPerModel-FreeTier, quotaValue: 20`。本次測試在數小時內就把 20 次用完（15 次經儀表板 ＋ 5 次測試腳本直呼），之後所有摘要與草稿都回 `GEMINI_QUOTA_EXCEEDED`。**程式的處理是正確的**（照 8.3 送 error 事件、不中斷連線、不噴 traceback），但功能等於停擺。上線前必須先決定：升級到付費層、或改接公司 GCP 專案的 Vertex AI（10.2 已列的替代路徑，程式改動限於 `gemini_client.py` 的認證與 endpoint）。模型可用 `CHATPULSE_GEMINI_MODEL` 一個環境變數換掉。**補充一個實測到的事實**：quotaId 是 `GenerateRequestsPerDayPerProjectPerModel-FreeTier`——**每個模型各有自己的 20 次**。實測 `gemini-3.6-flash` 用盡時 `gemini-3.7-flash` 仍可用。這對驗證與臨時應急有用（本次 D-3 的完整對照就是靠換模型跑完的），但**不構成團隊共用的解法**：三個模型加起來也才 60 次／天，且換模型會換掉輸出風格與思考行為 |
 | **R-3** | v1.0 `v1:163-164` 標「已驗證」的兩項未附證據 | 見下方澄清 | 已於本版如實重寫 |
 
 **R-2 補充（2026-09-05 實測）**
@@ -674,11 +674,14 @@ gantt
       —— 瀏覽器實測：436 個 Space 虛擬滾動、摘要 SSE 逐字串流、Action Items 萃取 3 項可勾選並複製、推播二次確認後訊息實際送達 Google Chat。這一輪是用 Playwright 驅動真實瀏覽器對真後端操作，期間 `browser_console_messages` 查詢回報 0 則錯誤與 0 則警告——**該輸出未落檔**，重驗需重跑一次瀏覽器流程
 - [x] ~~加入超過 100 個 Space 時，第 101 個之後仍讀得到（D-1）~~ **已於 Phase 0 完成**：修復後實測取得 436 個 Space（修復前 100 個）
 - [x] 500 則對話的摘要不被截斷（D-3）
-      —— **負對照為 A 級**：483 則對話（29,611 字）用 2048 跑出 `finishReason=MAX_TOKENS`、
-      三章節全缺，2026-09-05 兩次獨立執行皆同，報告帶時間戳不會被覆蓋。
-      **正對照分兩層**：16384 在 30~50 則規模不截斷有 5 份資料庫證據（A 級）；
-      **483 則這個特定規模的 16384 那一次仍缺持久證據**（配額限制，見 R-4）——
-      補法是 `test_d3_truncation.py --only 16384`，該參數與量測持久化已為此加好
+      —— **已完整取證**（原以為要等配額，實際上配額是**每個模型各 20 次**，換模型即可）：
+      · `gemini-3.6-flash`：483 則對話用 2048 → `finishReason=MAX_TOKENS`、三章節全缺，
+        兩次獨立執行皆同，報告帶時間戳（`e2e-d3-20260905T090909.md`／`-091501.md`）
+      · `gemini-3.7-flash`：同一份 prompt 的完整正負對照，16384 → `STOP`、三章節齊全，
+        總預算 1,820＋1,259＝3,079 > 2048（`e2e-d3-37flash-*.md`，7/7 通過）
+      · 16384 在 30~50 則規模不截斷另有 5 份資料庫證據（`check_stored_evidence.py`）
+      兩個模型合起來證明的是機制本身：輸出預算含思考 token，而思考量會變，
+      所以 2048 不安全——這比原本「摘要太長」的說法準確
 - [x] 切換摘要風格會產生不同結果（D-4）
       —— **A 級證據，可隨時重查**（`check_stored_evidence.py` 第 2 節直接讀 `summaries` 表）：
       同一批 50 則對話、唯一變數是 style，得到 general 1,224 字（3/3 章節）／
