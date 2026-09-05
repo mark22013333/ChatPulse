@@ -84,6 +84,12 @@ def harden_file(path: str) -> bool:
     """
     if not os.path.exists(path):
         return False
+    if os.name == "nt":
+        # Windows 沒有 POSIX 的 group/other 權限位元：st_mode 恆為 0o666，
+        # chmod 只映射到唯讀旗標。照 POSIX 邏輯跑的話，`current & 0o077`
+        # 永遠為真、每次都回報「已收緊」——**日誌會謊報這個檔案被保護了**。
+        # 寧可誠實回報「沒做」，也不要留一個假的安全保證。
+        return False
     try:
         current = stat.S_IMODE(os.stat(path).st_mode)
         if current & 0o077:  # group 或 other 有任何權限

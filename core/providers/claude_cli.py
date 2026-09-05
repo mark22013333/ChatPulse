@@ -52,8 +52,20 @@ class ClaudeCLIProvider(AIProvider):
     def model(self) -> str:
         return f"claude-cli:{self._model}"
 
+    @staticmethod
+    def _resolve_binary() -> Optional[str]:
+        """把 `claude` 解析成可執行的**絕對路徑**。
+
+        **不可以把裸名丟進 Popen**：POSIX 的 execvp 會查 PATH，但 Windows 的
+        CreateProcess 不會補 PATHEXT，而 Claude Code 在 Windows 上通常是
+        `claude.cmd`。裸名會得到 FileNotFoundError，而那個錯誤看起來就像
+        「沒裝 Claude Code」——使用者會去重裝一個他明明已經裝好的東西。
+        shutil.which 會依 PATHEXT 找到正確的檔案，所以一律經過它。
+        """
+        return shutil.which(cfg.CLAUDE_CLI_BIN)
+
     def available(self) -> tuple[bool, str]:
-        binary = shutil.which(cfg.CLAUDE_CLI_BIN)
+        binary = self._resolve_binary()
         if not binary:
             return (
                 False,
@@ -68,7 +80,8 @@ class ClaudeCLIProvider(AIProvider):
         self, system: Optional[str], stream: bool, has_images: bool = False
     ) -> List[str]:
         argv = [
-            cfg.CLAUDE_CLI_BIN,
+            # 絕對路徑，不是裸名——理由見 _resolve_binary()
+            self._resolve_binary() or cfg.CLAUDE_CLI_BIN,
             "-p",
             "--model",
             self._model,
@@ -280,11 +293,16 @@ class ClaudeCLIProvider(AIProvider):
                             "Claude Code 的用量已達上限，本次請求被拒絕。"
                         )
         finally:
+            # 我們自己殺掉的行程不算失敗。**不能用 exit code 判斷這件事**：
+            # POSIX 被 kill 後是 -9（SIGKILL），Windows 則是 1——而 1 與「真的
+            # 執行失敗」無法區分，會把正常的提前結束報成錯誤。用旗標記下來。
+            killed_by_us = False
             if proc.poll() is None:
                 proc.kill()
+                killed_by_us = True
             stderr = proc.stderr.read() if proc.stderr else ""
             proc.wait()
-            if proc.returncode not in (0, -9) and stderr:
+            if proc.returncode != 0 and not killed_by_us and stderr:
                 # 已經 yield 過內容時不要再拋——呼叫端會把它包成 error 事件，
                 # 但那時前端已經顯示了部分結果，中途變成錯誤更令人困惑
                 if not usage:

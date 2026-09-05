@@ -26,8 +26,15 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 
-# 專案自帶的虛擬環境；存在時一律優先使用（版本已由 requirements.txt 鎖定）
-VENV_PYTHON = os.path.join(BASE_DIR, ".venv", "bin", "python")
+# 專案自帶的虛擬環境；存在時一律優先使用（版本已由 requirements.txt 鎖定）。
+# Windows 的 venv 執行檔在 Scripts\python.exe，不是 bin/python——寫死 POSIX
+# layout 會讓 Windows 使用者被告知「尚未建立虛擬環境」，即使他明明建好了。
+VENV_PYTHON = os.path.join(
+    BASE_DIR,
+    ".venv",
+    "Scripts" if os.name == "nt" else "bin",
+    "python.exe" if os.name == "nt" else "python",
+)
 
 def print_banner():
     print("=" * 65)
