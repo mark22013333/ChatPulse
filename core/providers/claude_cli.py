@@ -117,7 +117,7 @@ class ClaudeCLIProvider(AIProvider):
         if any(k in low for k in ("rate limit", "usage limit", "quota", "429")):
             return ClaudeQuotaExceeded(
                 "Claude Code 的用量已達上限。等用量視窗重置，"
-                "或設定 ANTHROPIC_API_KEY 改走 Anthropic API。"
+                "或改用 gemini 供應商。"
             )
         if any(k in low for k in ("not logged in", "unauthenticated", "login")):
             return ConfigurationError(

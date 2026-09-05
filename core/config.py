@@ -35,18 +35,10 @@ IDENTITY_SCOPES = [
 DASHBOARD_SCOPES = CHAT_SCOPES + IDENTITY_SCOPES
 
 # --- AI 供應商選擇 ---
-# "claude" 是智慧別名：有 ANTHROPIC_API_KEY 就走 API，否則走本機的 Claude Code CLI。
-# 也可以指定 "claude_api"／"claude_cli"／"gemini" 強制走特定一條。
+# "claude" 是別名，目前解析到本機的 Claude Code CLI；"auto" 會依序試
+# claude_cli → gemini。也可以直接指定 "claude_cli"／"gemini" 強制走特定一條。
+# 合法名稱的單一事實來源是 core.providers.VALID_NAMES，這裡不另列一份。
 AI_PROVIDER = os.environ.get("CHATPULSE_AI_PROVIDER", "claude")
-AI_PROVIDERS = ("gemini", "claude_api", "claude_cli")
-
-# --- Claude（Anthropic API）---
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-CLAUDE_API_MODEL = os.environ.get("CHATPULSE_CLAUDE_API_MODEL", "claude-opus-5")
-# effort 控制思考深度與 token 花費（low／medium／high／xhigh／max）。
-# 留空＝用 API 預設（high）。摘要這種工作用 medium 通常就夠，但降不降是
-# 使用者的成本決定，不預設幫他降。
-CLAUDE_API_EFFORT = os.environ.get("CHATPULSE_CLAUDE_API_EFFORT", "")
 
 # --- Claude Code CLI ---
 CLAUDE_CLI_BIN = os.environ.get("CHATPULSE_CLAUDE_BIN", "claude")

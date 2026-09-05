@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from core import config as cfg  # noqa: E402
 from core import providers  # noqa: E402
 from core.errors import InvalidParameter  # noqa: E402
+from core.providers.claude_cli import ClaudeCLIProvider  # noqa: E402
 from e2e_lib import (  # noqa: E402
     TEMP_SPACE,
     blocked,
@@ -45,8 +46,16 @@ def main() -> int:
     described = providers.describe_all()
     names = [d["name"] for d in described]
     check(
-        "三個供應商都在註冊表中",
-        set(names) == {"gemini", "claude_api", "claude_cli"},
+        "兩個供應商都在註冊表中",
+        set(names) == {"gemini", "claude_cli"},
+        str(names),
+    )
+    # 迴歸斷言：claude_api 供應商已於 2026-09-05 移除（見 SPECIFICATION.md 3.2）。
+    # 它曾是合法值，所以要主動驗「現在不再是」——否則哪天有人把檔案加回來、
+    # 或某份設定裡還留著這個名字，會安靜地變成「未知供應商」以外的行為。
+    check(
+        "claude_api 已不在註冊表中",
+        "claude_api" not in names,
         str(names),
     )
     for d in described:
@@ -57,7 +66,7 @@ def main() -> int:
             d["reason"][:60],
         )
 
-    for bad in ["gpt4", "openai", "", "Claude Code"]:
+    for bad in ["gpt4", "openai", "", "Claude Code", "claude_api"]:
         try:
             providers.resolve(bad if bad else "nonexistent-xyz")
             check(f"非法供應商名稱 {bad!r} 應被拒", False, "沒有拋錯")
@@ -69,42 +78,54 @@ def main() -> int:
             )
 
     # ------------------------------------------------------------------
-    section("2. 別名解析：claude 應依憑證有無挑不同實作")
+    section("2. 別名解析：claude／auto 應挑第一個現在可用的實作")
     available_map = {d["name"]: d["available"] for d in described}
 
     resolved = providers.resolve_name("claude")
-    if available_map.get("claude_api"):
-        expected = "claude_api"
-    else:
-        expected = "claude_cli"
     check(
-        f"別名 claude 解析為 {expected}",
-        resolved == expected,
-        f"實際 {resolved}（claude_api 可用={available_map.get('claude_api')}）",
+        "別名 claude 解析為 claude_cli",
+        resolved == "claude_cli",
+        f"實際 {resolved}",
+    )
+    check(
+        "別名 auto 解析為 claude_cli（它排在 gemini 前面）",
+        providers.resolve_name("auto") == "claude_cli",
+        f"實際 {providers.resolve_name('auto')}",
     )
 
-    # 正對照：塞一把假金鑰進環境，別名應改選 API。
-    # 只驗「選擇邏輯」，不會真的拿這把假金鑰去打 API。
-    saved = os.environ.get("ANTHROPIC_API_KEY")
-    # 值刻意**不長得像金鑰**：這個測試只驗「有沒有設環境變數」的選擇邏輯，
-    # 不會拿它去打 API。用 sk-ant- 前綴會被 GitHub 的 secret scanning
-    # push protection 當成外洩憑證擋下推送。
-    os.environ["ANTHROPIC_API_KEY"] = "dummy-value-for-provider-selection-test"
-    try:
-        with_key = providers.resolve_name("claude")
-    finally:
-        if saved is None:
-            os.environ.pop("ANTHROPIC_API_KEY", None)
-        else:
-            os.environ["ANTHROPIC_API_KEY"] = saved
-    check(
-        "有 ANTHROPIC_API_KEY 時別名 claude 改選 claude_api（正對照）",
-        with_key == "claude_api",
-        f"實際 {with_key}",
+    # 正對照：把 claude_cli 暫時弄成「不可用」，驗別名解析真的是「挑可用的」，
+    # 而不是因為底下只剩一個實作就退化成寫死。
+    # 這一組取代了 claude_api 移除前的「塞假 ANTHROPIC_API_KEY」對照。
+    original_available = ClaudeCLIProvider.available
+    ClaudeCLIProvider.available = lambda self: (  # type: ignore[assignment]
+        False,
+        "測試用：暫時假裝本機沒有 Claude Code",
     )
+    try:
+        if available_map.get("gemini"):
+            check(
+                "claude_cli 不可用時，別名 auto 往下退到 gemini（正對照）",
+                providers.resolve_name("auto") == "gemini",
+                f"實際 {providers.resolve_name('auto')}",
+            )
+        else:
+            blocked("auto 退到 gemini 的正對照", "本機沒有設定 GOOGLE_API_KEY")
+        try:
+            providers.resolve("claude")
+            check("claude_cli 不可用時，別名 claude 應拋錯", False, "沒有拋錯")
+        except InvalidParameter as exc:
+            check(
+                "別名 claude 全不可用時，錯誤訊息說得出各實作的原因",
+                "claude_cli" in exc.message and "測試用" in exc.message,
+                exc.message[:80],
+            )
+    finally:
+        ClaudeCLIProvider.available = original_available  # type: ignore[assignment]
+
     check(
-        "移除金鑰後又退回原本的選擇（環境有還原）",
+        "還原後別名 claude 又解析回 claude_cli（環境有還原）",
         providers.resolve_name("claude") == resolved,
+        f"實際 {providers.resolve_name('claude')}",
     )
 
     # ------------------------------------------------------------------
@@ -227,7 +248,7 @@ def main() -> int:
     )
     check(
         "/me 帶 ai 供應商清單",
-        "ai" in me and len(me["ai"].get("providers") or []) == 3,
+        "ai" in me and len(me["ai"].get("providers") or []) == 2,
         str(len((me.get("ai") or {}).get("providers") or [])),
     )
     r = c.patch("/api/v1/preferences", json={"default_provider": "gpt4"})
@@ -238,6 +259,40 @@ def main() -> int:
     )
     # 還原，避免影響其他測試
     c.patch("/api/v1/preferences", json={"default_provider": ""})
+
+    # ------------------------------------------------------------------
+    section("7. 舊偏好指到已移除的供應商時要退回伺服器預設")
+    # 這一節是 claude_api 移除的直接後果：PATCH 擋得住「新存入」非法值，
+    # 但擋不住「兩週前就存在資料庫裡」的舊值。若不處理，那位 Viewer 的
+    # 摘要與 Draft Reply 會一律回「未知的 AI 供應商」，而他看不出問題在偏好。
+    # 走 in-process 呼叫而不是 HTTP：這樣不必為了測一個分支去寫資料庫。
+    from dashboard.api import server as api_server  # noqa: E402
+
+    original_get_prefs = api_server.repo.get_preferences
+    api_server.repo.get_preferences = lambda vid: {"default_provider": "claude_api"}
+    try:
+        p = api_server.get_provider(viewer_id=1)
+        check(
+            "偏好存著已移除的 claude_api 時，退回伺服器預設而不是拋錯",
+            p.name == providers.resolve_name(None),
+            f"實際 {p.name}",
+        )
+    except InvalidParameter as exc:
+        check(
+            "偏好存著已移除的 claude_api 時，退回伺服器預設而不是拋錯",
+            False,
+            f"拋了 InvalidParameter：{exc.message[:60]}",
+        )
+    finally:
+        api_server.repo.get_preferences = original_get_prefs
+
+    # 負對照：合法的偏好仍然要被採用，別為了防呆把正常路徑也吃掉
+    api_server.repo.get_preferences = lambda vid: {"default_provider": "gemini"}
+    try:
+        p = api_server.get_provider(viewer_id=1)
+        check("合法偏好仍然生效（負對照）", p.name == "gemini", f"實際 {p.name}")
+    finally:
+        api_server.repo.get_preferences = original_get_prefs
 
     return summary()
 

@@ -14,8 +14,9 @@
   ```
 - `limit` 的**範圍**一律 1~1000，超出回 `400 INVALID_PARAMETER`。**預設值多為 50，但依端點而異**（`/mentions` 是 200——那是「列幾筆 Mention」，與「一個 Space 抓幾則對話」不是同一件事），各端點的預設值見下方各節
 - `style` 只接受 `general` / `technical` / `action_only`
-- `provider` 選填，決定用哪個 AI 供應商。可用值：`claude_api`／`claude_cli`／`gemini`
-  三個實作，加上 `claude`／`auto` 兩個**別名**（別名會挑第一個現在可用的實作）。
+- `provider` 選填，決定用哪個 AI 供應商。可用值：`claude_cli`／`gemini`
+  兩個實作，加上 `claude`／`auto` 兩個**別名**（別名會挑第一個現在可用的實作）。
+  `claude_api` 曾是合法值，已於 2026-09-05 移除，現在傳它會回 `400 INVALID_PARAMETER`。
   省略時依序取：Viewer 的 `default_provider` 偏好 → 伺服器的 `CHATPULSE_AI_PROVIDER` → `claude`。
   名稱不合法時回 `400 INVALID_PARAMETER`，**在進串流之前就擋掉**
 
@@ -28,7 +29,7 @@
 | 403 | `SPACE_FORBIDDEN` | 不是該聊天室成員 |
 | 404 | `SPACE_NOT_FOUND` / `MENTION_NOT_FOUND` / `ROUTE_NOT_FOUND` | 目標不存在；`ROUTE_NOT_FOUND` 專指 API 路徑打錯（刻意與 SPACE_NOT_FOUND 分開，否則前端會把「端點打錯」顯示成「聊天室不見了」） |
 | 429 | `CHAT_RATE_LIMITED` / `GEMINI_QUOTA_EXCEEDED` / `CLAUDE_QUOTA_EXCEEDED` | 上游限流，帶 `Retry-After`。兩個 AI 的配額分開列，前端可據此建議「換一個供應商試試」 |
-| 502 | `CHAT_API_ERROR` / `GEMINI_API_ERROR` / `CLAUDE_API_ERROR` | 上游非預期回應 |
+| 502 | `CHAT_API_ERROR` / `GEMINI_API_ERROR` / `CLAUDE_API_ERROR` | 上游非預期回應。`CLAUDE_API_ERROR` 指的是「Claude 這條路徑出錯」，**不是**已移除的 `claude_api` 供應商——`claude_cli` 也用這個碼 |
 | 500 | `CONFIGURATION_ERROR` | 伺服器設定不完整（例如缺 GOOGLE_API_KEY） |
 | 500 | `INTERNAL_ERROR` | 未預期錯誤的兜底 |
 
@@ -167,8 +168,6 @@ scope 含 chat 三項 ＋ `openid`/`userinfo.email`/`userinfo.profile`。
 {
   "default": "claude",
   "providers": [
-    { "name": "claude_api", "label": "Claude（Anthropic API）", "model": "claude-opus-5",
-      "available": false, "reason": "找不到 Anthropic 憑證。設定 ANTHROPIC_API_KEY…" },
     { "name": "claude_cli", "label": "Claude Code（本機 CLI，用你現有的訂閱）", "model": "claude-cli:opus",
       "available": true, "reason": "使用本機 /Users/cheng/.local/bin/claude" },
     { "name": "gemini", "label": "Gemini（Google AI Studio）", "model": "gemini-3.6-flash",
