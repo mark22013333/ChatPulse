@@ -35,6 +35,37 @@ Python 與 `uv` **不用自己準備**——安裝腳本偵測不到 `uv` 會自
 
 ---
 
+## 最快的路：一個指令走完全部
+
+不想讀完整份手冊的話，只要記這一行。它會一步一步問你、每一步都解釋在做什麼，
+**隨時可以重複執行**（已經做好的步驟會自動跳過）：
+
+| 系統 | 指令 |
+| :--- | :--- |
+| **Windows** | 在專案資料夾裡**雙擊 `chatpulse.bat`**，或在命令提示字元執行 `chatpulse.bat` |
+| **macOS / Linux** | `./chatpulse.sh` |
+
+它會依序處理：Python 環境 → 憑證檢查 → Google 授權 → 選擇入口並安裝。
+中途卡住的話，每一項都會直接告訴你下一步該做什麼。
+
+其他常用子命令（Windows 把 `./chatpulse.sh` 換成 `chatpulse.bat`）：
+
+```bash
+./chatpulse.sh check    # 只檢查安裝狀態，不動任何東西
+./chatpulse.sh auth     # 只重新做 Google 授權
+./chatpulse.sh web      # 只啟動 Web 儀表板
+```
+
+> **Windows 使用者請先看這兩點**
+> 1. **裝 Python 時務必勾選「Add python.exe to PATH」**（在安裝畫面最下方）。
+>    沒勾的話 `chatpulse.bat` 會找不到 Python，而那是最常見的卡關原因。
+> 2. **不要把專案放在 OneDrive 同步資料夾裡。** 這個工具用 SQLite 儲存資料，
+>    它的檔案鎖在同步資料夾或網路磁碟上會失敗。放本機路徑（例如 `C:\ChatPulse`）。
+
+下面是逐步說明，想知道每一步在做什麼、或自動安裝失敗時可以照著手動做。
+
+---
+
 ## 快速上手（2 步驟）
 
 ### 步驟 1：取得專案與 Client Secret 憑證
@@ -182,6 +213,18 @@ Python 與 `uv` **不用自己準備**——安裝腳本偵測不到 `uv` 會自
 ```
 它會逐項檢查 Python 環境、憑證、Token 權限、AI 供應商、MCP 註冊、前端建置，
 **每一項沒過都會直接告訴你下一步該做什麼**。裝完先跑這個，比一項項猜快。
+
+### Q7：Windows 上有什麼不一樣的地方？
+
+功能完全一樣，但有三點差異要知道：
+
+1. **入口是 `chatpulse.bat`**（可雙擊）。`scripts/` 底下那些 `.sh` 檔在 Windows 上跑不了，
+   對應功能請用 `chatpulse.bat check` / `auth` / `web`。
+2. **檔案權限保護不生效**。`config\` 與 `data\` 裡有你的 Google 授權憑證，
+   在 macOS/Linux 上會被設成「只有你讀得到」，但 Windows 沒有對應的機制。
+   **請不要在共用電腦上使用**。這是作業系統差異，不是設定錯誤，
+   `chatpulse.bat check` 也會提醒你這件事。
+3. **不要放在 OneDrive 同步資料夾**（見本文最上方的說明）。
 
 ### Q6：為什麼我送出的訊息旁邊多了一個灰色標籤？
 
