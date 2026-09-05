@@ -24,8 +24,7 @@
 ```bash
 # 1. AI 供應商（摘要與 Draft Reply 需要；只讀 Space 與訊息不需要）
 #    最省事：裝好並登入 Claude Code，什麼都不用設（預設就會用它）
-#    或者擇一：
-export ANTHROPIC_API_KEY='...'    # 走 Anthropic API
+#    另一條路：
 export GOOGLE_API_KEY='...'       # 走 Gemini（免費層每天 20 次）
 
 # 2. Python 環境（3.12）
@@ -42,10 +41,14 @@ uv pip install -r requirements.txt
 
 | 值 | 需要什麼 | 適用 |
 | :--- | :--- | :--- |
-| `claude`（預設） | — | **智慧別名**：有 Anthropic 憑證走 API，否則用本機 Claude Code CLI |
+| `claude`（預設） | 同 `claude_cli` | **別名**，目前解析為本機 Claude Code CLI |
+| `auto` | — | **別名**，依序試 `claude_cli` → `gemini`，挑第一個可用的 |
 | `claude_cli` | 本機裝好並登入 Claude Code | 吃現有訂閱、零額外設定 |
-| `claude_api` | `ANTHROPIC_API_KEY` 或 `ant auth login` | 發給團隊、需要並發 |
 | `gemini` | `GOOGLE_API_KEY` | 既有選項；免費層每天僅 20 次請求 |
+
+> Anthropic API 供應商（`claude_api`）已於 2026-09-05 移除。它從未對真實 API 跑過，
+> 留著等於在契約與前端選單裡放一個沒人驗過的選項。要接回來的話，
+> 實作在 git 歷史裡（`core/providers/claude_api.py`）。
 
 ```bash
 # 看目前有哪些可用（三個入口都查得到）

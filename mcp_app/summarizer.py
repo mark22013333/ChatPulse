@@ -154,7 +154,7 @@ def build_parser():
         help=(
             "AI 供應商，留空＝用 CHATPULSE_AI_PROVIDER（預設 claude）。"
             f"可用值：{'、'.join(providers.VALID_NAMES)}。"
-            "claude 是智慧別名：有 Anthropic 憑證走 API，否則用本機 Claude Code CLI"
+            "claude 與 auto 是別名，會挑第一個現在可用的實作"
         ),
     )
     parser.add_argument(

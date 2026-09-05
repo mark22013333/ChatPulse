@@ -140,7 +140,19 @@ def get_provider(
     """
     if name is None and viewer_id is not None:
         try:
-            name = repo.get_preferences(viewer_id).get("default_provider") or None
+            saved = repo.get_preferences(viewer_id).get("default_provider") or None
+            # 偏好是使用者以前存下的，而供應商清單會變（例：claude_api 於
+            # 2026-09-05 移除）。存過的舊值若已不合法，當作沒設、退回伺服器預設，
+            # 不要原樣丟進 resolve()——那會讓摘要與 Draft Reply 一律回
+            # 「未知的 AI 供應商」，而使用者看不出問題出在自己幾週前的偏好上。
+            if saved and saved not in providers.VALID_NAMES:
+                log.warning(
+                    "Viewer %s 的 default_provider 偏好 %r 已不是合法供應商，改用伺服器預設",
+                    viewer_id,
+                    saved,
+                )
+                saved = None
+            name = saved
         except Exception:
             name = None
 

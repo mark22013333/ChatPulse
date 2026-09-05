@@ -3,13 +3,14 @@
 用法：
 
     from core import providers
-    p = providers.resolve("claude", usage_recorder=rec)   # 智慧別名
+    p = providers.resolve("claude", usage_recorder=rec)   # 別名
     p = providers.resolve(None)                            # 用設定的預設值
     providers.describe_all()                               # 給前端的清單
 
-`"claude"` 是**智慧別名**而不是一個實作：有 Anthropic 憑證就走 API，
-否則退到本機的 Claude Code CLI。這樣「預設用 Claude」在兩種環境下都成立——
-開發機通常只有 Claude Code，發給團隊的環境通常只有 API key。
+`"claude"` 是**別名**而不是一個實作，目前底下只有本機的 Claude Code CLI
+（Anthropic API 供應商已於 2026-09-05 移除，見 SPECIFICATION.md 3.2）。
+保留這個別名的理由是它同時是 `CHATPULSE_AI_PROVIDER` 的預設值與 API 契約的
+一部分；別名底下不可用時，錯誤訊息會說出「該裝什麼」，比直接寫死實作名有用。
 """
 
 from typing import Dict, List, Optional
@@ -17,20 +18,18 @@ from typing import Dict, List, Optional
 from .. import config as cfg
 from ..errors import InvalidParameter
 from .base import AIProvider, UsageRecorder
-from .claude_api import ClaudeAPIProvider
 from .claude_cli import ClaudeCLIProvider
 from .gemini import GeminiProvider
 
 _CLASSES = {
-    ClaudeAPIProvider.name: ClaudeAPIProvider,
     ClaudeCLIProvider.name: ClaudeCLIProvider,
     GeminiProvider.name: GeminiProvider,
 }
 
 #: 別名 -> 依序嘗試的實作名稱。第一個「現在可用」的雀屏中選。
 _ALIASES: Dict[str, List[str]] = {
-    "claude": [ClaudeAPIProvider.name, ClaudeCLIProvider.name],
-    "auto": [ClaudeAPIProvider.name, ClaudeCLIProvider.name, GeminiProvider.name],
+    "claude": [ClaudeCLIProvider.name],
+    "auto": [ClaudeCLIProvider.name, GeminiProvider.name],
 }
 
 VALID_NAMES = tuple(_CLASSES) + tuple(_ALIASES)

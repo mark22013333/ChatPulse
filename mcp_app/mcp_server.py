@@ -49,8 +49,8 @@ def get_chat_client() -> GoogleChatClient:
 def get_ai(name: Optional[str] = None) -> "providers.AIProvider":
     """取得 AI 供應商（延遲建立並快取）。
 
-    name 省略時用 CHATPULSE_AI_PROVIDER（預設 `claude`，會自動在
-    Anthropic API 與本機 Claude Code CLI 之間挑一個可用的）。
+    name 省略時用 CHATPULSE_AI_PROVIDER（預設別名 `claude`，目前解析為
+    本機的 Claude Code CLI）。
     """
     key = (name or "").strip().lower() or "__default__"
     if key not in _ai_providers:
@@ -162,8 +162,8 @@ def summarize_chat_space(
     - post_to_chat: 是否把摘要推播回該聊天室（預設 False，只在回應中輸出）。
       設為 True 會以使用者本人身分在該群組發言，請先向使用者確認再帶入。
     - provider: 要用哪個 AI 供應商，留空＝用伺服器預設。可用值：
-        • claude      智慧別名：有 Anthropic 憑證走 API，否則用本機 Claude Code CLI
-        • claude_api  Anthropic API（需 ANTHROPIC_API_KEY）
+        • claude      別名，目前解析為本機 Claude Code CLI
+        • auto        別名，依序試 claude_cli → gemini，挑第一個可用的
         • claude_cli  本機 Claude Code CLI（吃現有訂閱，不需 API key）
         • gemini      Google Gemini（免費層每天僅 20 次請求）
     """

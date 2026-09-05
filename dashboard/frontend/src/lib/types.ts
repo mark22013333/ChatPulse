@@ -30,7 +30,7 @@ export interface Preferences {
 
 /**
  * 單一 AI 供應商（`GET /api/v1/providers` 與 `/me` 的 `ai.providers`）。
- * `name` 是實作名稱（claude_api / claude_cli / gemini），送 request 時用它。
+ * `name` 是實作名稱（claude_cli / gemini），送 request 時用它。
  * `available: false` 的供應商仍要顯示，`reason` 寫的是「該設哪個環境變數」，
  * 對使用者有用，不可以吞掉。
  */
@@ -45,8 +45,8 @@ export interface AIProvider {
 /** `GET /api/v1/providers` 的回應，也是 `/me` 的 `ai` 欄位內容。 */
 export interface AIConfig {
   /**
-   * 伺服器預設。可能是別名（`claude`＝有 Anthropic 憑證就走 API、否則退到 CLI；`auto`），
-   * 也可能直接是三個實作名稱之一——所以不保證對得上 `providers` 裡的任何 `name`。
+   * 伺服器預設。可能是別名（`claude`／`auto`，會挑第一個可用的實作），
+   * 也可能直接是實作名稱之一——所以不保證對得上 `providers` 裡的任何 `name`。
    */
   default: string
   providers: AIProvider[]
