@@ -40,8 +40,8 @@
 | **43** | `user_directory` 累積的人數（會持續成長） | `SELECT COUNT(*) FROM user_directory` |
 | **2 則** | 真實（非測試造出）的待處理工作 Mention | `SELECT * FROM mentions WHERE space_id != 'spaces/AAAAxLxqJxY'` |
 | **8 個** | `requirements.txt` 鎖版的套件數 | `grep -c '==' requirements.txt` |
-| **46 個** | 前端原始檔數 | `find dashboard/frontend/src -type f | wc -l` |
-| **13** | 前端單元測試數 | `npm --prefix dashboard/frontend run test` |
+| **51 個** | 前端原始檔數 | `find dashboard/frontend/src -type f | wc -l` |
+| **32** | 前端單元測試數 | `npm --prefix dashboard/frontend run test` |
 | **HTTP 200／0 筆** | 實作 A 的搜尋端點行為（含正對照） | `scratchpad/r1_*.json`；`docs/R1-findings.md` |
 | **1,224／3,439／493** | D-4 三種風格的輸出字數（同一批 50 則對話，唯一變數是 style） | `check_stored_evidence.py` 第 2 節，直接讀 `summaries` 表 |
 | **4 組配對** | 7.1 Reference Space 的正負對照：同一則 Mention，不勾參考群組的草稿不含答案、勾了的含答案 | `check_stored_evidence.py` 第 5 節，直接讀 `draft_replies` 表 |
@@ -147,6 +147,15 @@ Mention 收件匣、Draft Reply（勾選 Reference Space）、送出回話並自
 > 未經驗證。這不在規格的驗收條件內，列在此處備查。
 
 ---
+
+> **2026-09-05 10:55 更新（`claude_api` 移除）**：上表三個數字當天重查後修正。
+> `8 個`（requirements 鎖版套件數）：移除 `anthropic` 前實際是 **9**，文件寫 8——
+> 那是 `anthropic` 加入時漏改的，移除後剛好回到 8，所以這一格現在才真的對。
+> `13 → 32`（前端單元測試數）：13 是 Phase 1 剛寫完時的數字，之後一路加到 31；
+> 本次移除 `claude_api` 又淨增 1 項（拿掉 1 項、新增 2 項對照）。
+> `46 → 51`（前端原始檔數）：與本次改動**無關**，是既有的漂移，順手改正。
+>
+> 這三格都附有重現指令，任何時候都查得回來——會漂是因為沒人重查，不是因為查不到。
 
 ## C 級：推算值，未實跑全量
 

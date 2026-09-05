@@ -33,8 +33,8 @@ if [ ! -f "$FRONTEND_DIR/dist/index.html" ]; then
     fi
 fi
 
-# AI 供應商：只要有一個可用就不必警告。預設的 claude 別名會在
-# Anthropic API 與本機 Claude Code CLI 之間自己挑，不一定需要 GOOGLE_API_KEY。
+# AI 供應商：只要有一個可用就不必警告。預設的 claude 別名走本機的
+# Claude Code CLI，所以不一定需要 GOOGLE_API_KEY。
 if ! "$VENV_PYTHON" -c "
 import sys; sys.path.insert(0, '$PROJECT_DIR')
 from core import providers
