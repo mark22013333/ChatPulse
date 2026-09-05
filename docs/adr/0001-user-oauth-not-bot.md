@@ -32,9 +32,14 @@ ChatPulse 讀寫 Google Chat 一律使用 **Viewer 本人的 OAuth 憑證**，�
   - **無法關閉**：`spaces.messages.create` 的 request body 沒有任何 attribution 相關欄位，
     也沒有對應的 scope 或 Console 開關。**但要精確地說——這是「官方未提供任何關閉手段」，
     不是「官方明令禁止」**，我們找不到方法，不代表方法不存在。
-  - **可以改文字**：Cloud Console → Google Chat API → Configuration → Application info →
-    App name（上限 25 字元）。改名不會使既有授權失效（OAuth 文件列出的 refresh token
-    失效原因清單裡沒有這一項），同事不需要重跑授權。
+  - **可以改文字**：改 Chat API 的 **App name**（上限 25 字元）。直接網址（官方
+    `configure-chat-api` 頁提供的形式，`PROJECT_ID` 換成自己的專案）：
+    <https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat?project=PROJECT_ID>
+    ——本專案是 `gen-lang-client-0826447547`。
+    **刻意寫網址而不是「Console → 某處 → 某處」的路徑**：Google Console 改版頻繁，
+    路徑描述會過期而且沒人會發現，網址至少會 404 給你看。
+    改名不會使既有授權失效（OAuth 文件列出的 refresh token 失效原因清單裡沒有這一項），
+    同事不需要重跑授權。
   - 唯一能讓 app 名稱不顯示的情境是「管理員權限」模式，但那會改成顯示
     「由組織管理員執行」——比顯示工具名更不像本人，不採用。
   - **這個標籤與本決策的方向相反**：架構上一切以本人身分發話，UI 上卻掛著一個

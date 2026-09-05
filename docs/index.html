@@ -583,8 +583,9 @@ google-chat-bot/
     <div class="card" style="margin-bottom: 16px;">
       <h4 style="color: var(--accent-blue); margin-bottom: 6px;">Q1: 推播回群組時失敗，是不是要先把 Bot 加進群組？</h4>
       <p style="color: var(--text-secondary); font-size: 0.95rem;">
-        <strong>不是。這個系統沒有 Bot。</strong>讀訊息和發訊息用的都是<strong>你本人的 Google 身分</strong>
-        （架構決策 ADR-0001），所以只要你在那個群組裡就能發言，<strong>不需要邀請任何應用程式進去</strong>。
+        <strong>不是，不需要邀請任何東西進群組。</strong>讀訊息和發訊息用的都是<strong>你本人的 Google 身分</strong>
+        （架構決策 ADR-0001），所以只要你在那個群組裡就能發言。
+        <strong>沒有機器人代你發言</strong>——API 回讀確認發送者就是你的帳號本人。
         <span style="color: var(--accent-blue);">（舊版手冊在這裡寫過「把 Bot 加進群組」，那是錯的，已更正——照做只會讓你去找一隻不存在的機器人。）</span><br>
         <strong>真正的原因通常是：</strong><br>
         • <code>403 SPACE_FORBIDDEN</code>：你不是該群組的成員，或授權時沒給
@@ -594,10 +595,33 @@ google-chat-bot/
       </p>
     </div>
 
-    <div class="card">
+    <div class="card" style="margin-bottom: 16px;">
       <h4 style="color: var(--accent-blue); margin-bottom: 6px;">Q2: Token 過期了需要手動刪除嗎？</h4>
       <p style="color: var(--text-secondary); font-size: 0.95rem;">
-        不需要！程式內部具備 Refresh Token 自動刷新機制。只要不是憑證被後台撤銷，背景會自動無感續期。
+        不需要！程式內部具備 Refresh Token 自動刷新機制。只要不是憑證被後台撤銷，背景會自動無感續期。<br>
+        <strong>注意一個例外：</strong>刷新只延長效期，<strong>不會增加授權範圍</strong>。
+        若儀表板抱怨權限不足，要重跑 <code>./scripts/setup.sh</code> 重新授權，刷新補不回來。
+      </p>
+    </div>
+
+    <div class="card">
+      <h4 style="color: var(--accent-blue); margin-bottom: 6px;">Q3: 為什麼我送出的訊息旁邊多了一個灰色標籤？</h4>
+      <p style="color: var(--text-secondary); font-size: 0.95rem;">
+        那是 Google Chat 的<strong>歸屬標示</strong>：只要訊息是透過 API 送出的，
+        Chat 就會在你的名字旁邊顯示這個工具的名稱，像
+        <code>你 [ChatPulse] 中午12:36</code> 這樣。
+        官方文件
+        <a href="https://developers.google.com/workspace/chat/create-messages" style="color: var(--accent-blue);">create-messages</a>
+        逐字寫著「Chat also attributes the Chat app to the message by displaying its name」，
+        所以這是<strong>設計行為，不是設定錯誤</strong>。<br><br>
+        • <strong>發話的人還是你本人</strong>：API 回讀確認 <code>sender.type</code> 是
+          <code>HUMAN</code>、user id 是你自己，不是機器人代你發言。<br>
+        • <strong>關不掉</strong>：<code>spaces.messages.create</code> 沒有任何相關參數，
+          也沒有對應的 scope 或 Console 開關。（精確地說：官方<strong>未提供</strong>關閉手段，
+          而不是官方明令禁止。）<br>
+        • <strong>文字可以改</strong>（上限 25 字元），改的是 Chat API 的 App name，
+          <strong>只有專案維護者要做、一次改完所有人適用</strong>，而且不需要重新授權：<br>
+        <code style="font-size: 0.85rem; word-break: break-all;">https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat?project=PROJECT_ID</code>
       </p>
     </div>
 
