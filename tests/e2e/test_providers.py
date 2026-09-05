@@ -12,8 +12,10 @@
 import os
 import sys
 
-sys.path.insert(0, "/Users/cheng/google-chat-bot")
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# 專案根＝tests/e2e 往上兩層。不寫死絕對路徑，同事 clone 到別的位置也要能跑
+E2E_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(E2E_DIR)))
+sys.path.insert(0, E2E_DIR)
 
 from core import config as cfg  # noqa: E402
 from core import providers  # noqa: E402
@@ -34,7 +36,7 @@ from e2e_lib import (  # noqa: E402
 
 REPORT = os.environ.get(
     "E2E_REPORT",
-    "/private/tmp/claude-501/-Users-cheng-google-chat-bot/e23e39c0-7bfd-493e-8211-f63e32bb9432/scratchpad/e2e-providers.md",
+    os.path.join(E2E_DIR, "reports", "e2e-providers.md"),
 )
 
 

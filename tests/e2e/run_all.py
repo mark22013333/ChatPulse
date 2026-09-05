@@ -19,10 +19,9 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SCRATCH = os.environ.get(
-    "E2E_REPORT_DIR",
-    "/private/tmp/claude-501/-Users-cheng-google-chat-bot/e23e39c0-7bfd-493e-8211-f63e32bb9432/scratchpad",
-)
+# 報告預設落在 tests/e2e/reports/（已 gitignore）。不寫死本機絕對路徑——
+# 同事 clone 到別的位置也要跑得起來，而且要找得到報告。
+SCRATCH = os.environ.get("E2E_REPORT_DIR", os.path.join(HERE, "reports"))
 
 SUITES = [
     # 放最前面：不需要 Gemini 配額，先確立哪些宣稱有落地證據

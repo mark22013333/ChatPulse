@@ -6,7 +6,10 @@
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# 專案根＝tests/e2e 往上兩層。不寫死絕對路徑，同事 clone 到別的位置也要能跑
+E2E_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(E2E_DIR)))
+sys.path.insert(0, E2E_DIR)
 
 from e2e_lib import (  # noqa: E402
     blocked,
@@ -22,7 +25,7 @@ from e2e_lib import (  # noqa: E402
 
 REPORT = os.environ.get(
     "E2E_REPORT",
-    "/private/tmp/claude-501/-Users-cheng-google-chat-bot/e23e39c0-7bfd-493e-8211-f63e32bb9432/scratchpad/e2e-static.md",
+    os.path.join(E2E_DIR, "reports", "e2e-static.md"),
 )
 
 TRAVERSAL_PATHS = [
@@ -119,9 +122,8 @@ def authz_regressions() -> None:
     的獨立審查補上的。放在這裡是為了它們不會再退回去。
     """
     import stat as _stat
-    import sys as _sys
 
-    _sys.path.insert(0, "/Users/cheng/google-chat-bot")
+    # 專案根已在模組層級加進 sys.path，這裡不需要再插一次
     from core import config as _cfg
     from core import crypto as _crypto
     from core import db as _db

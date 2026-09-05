@@ -347,8 +347,16 @@ google-chat-bot/
         <span class="step-badge">3</span>
         <span>設定 Claude Desktop / Claude Code</span>
       </div>
+      <div class="alert alert-tip">
+        <div>✅</div>
+        <div><strong>用 Claude Code 的話這步可以跳過</strong>——<code>./scripts/install-claude.sh</code>
+        會自動幫你跑 <code>claude mcp add</code> 並帶上正確的絕對路徑。下面的手動 JSON
+        是給 Claude Desktop、或安裝腳本失敗時備援用的。</div>
+      </div>
       <p style="color: var(--text-secondary); margin-bottom: 8px;">
-        將以下 JSON 內容加入您的 Claude 設定檔中：
+        將以下 JSON 內容加入您的 Claude 設定檔中。
+        <strong style="color: var(--accent-blue);">請把 <code>/你的路徑/</code> 換成你實際 clone 的位置</strong>
+        （在專案目錄下執行 <code>pwd</code> 就會印出來）：
       </p>
       <pre><code id="mcp-config">{
   "mcpServers": {
@@ -361,8 +369,9 @@ google-chat-bot/
         "--with", "google-auth-oauthlib",
         "--with", "google-auth-httplib2",
         "--with", "requests",
+        "--with", "cryptography",
         "python3",
-        "/Users/cheng/google-chat-bot/mcp_app/mcp_server.py"
+        "/你的路徑/google-chat-bot/mcp_app/mcp_server.py"
       ]
     }
   }
@@ -371,6 +380,14 @@ google-chat-bot/
         <strong>設定檔位置：</strong><br>
         • <strong>Claude Desktop</strong>: <code>~/Library/Application Support/Claude/claude_desktop_config.json</code><br>
         • <strong>Claude Code (CLI)</strong>: <code>~/.claude.json</code>
+      </div>
+      <div class="alert alert-warn" style="margin-top: 12px;">
+        <div>⚠️</div>
+        <div><strong>只有走 Gemini 供應商的人才需要多這一步：</strong>
+        Claude Desktop 是 GUI 程式，<strong>不會讀取 <code>~/.zshrc</code></strong>，
+        所以環境變數要寫在設定裡。在上面的 <code>"google-chat"</code> 區塊內補一段：
+        <pre style="margin-top: 8px;"><code>"env": { "GOOGLE_API_KEY": "你的金鑰" }</code></pre>
+        預設的 <code>claude_cli</code> 供應商不需要這一步（它用你本機 Claude Code 的登入狀態）。</div>
       </div>
     </div>
 
@@ -431,10 +448,16 @@ google-chat-bot/
     <!-- FAQ 與避坑指南 -->
     <div class="section-title">❓ 常見問題與排錯 (FAQ)</div>
     <div class="card" style="margin-bottom: 16px;">
-      <h4 style="color: var(--accent-blue); margin-bottom: 6px;">Q1: 為什麼摘要可以讀取，但想推播回群組時報錯 (404 Not Found)？</h4>
+      <h4 style="color: var(--accent-blue); margin-bottom: 6px;">Q1: 推播回群組時失敗，是不是要先把 Bot 加進群組？</h4>
       <p style="color: var(--text-secondary); font-size: 0.95rem;">
-        <strong>原因：</strong>讀取訊息使用的是您個人的身分（只要群組有您就能讀）；但推播發言需要該群組<strong>已經把 Bot 邀請進去</strong>。<br>
-        <strong>解法：</strong>在 Google Chat 目標群組點擊上方選單 ➔ <strong>應用程式與整合</strong> ➔ 點選 <strong>+ 新增應用程式</strong> 把 Bot 加進來即可！
+        <strong>不是。這個系統沒有 Bot。</strong>讀訊息和發訊息用的都是<strong>你本人的 Google 身分</strong>
+        （架構決策 ADR-0001），所以只要你在那個群組裡就能發言，<strong>不需要邀請任何應用程式進去</strong>。
+        <span style="color: var(--accent-blue);">（舊版手冊在這裡寫過「把 Bot 加進群組」，那是錯的，已更正——照做只會讓你去找一隻不存在的機器人。）</span><br>
+        <strong>真正的原因通常是：</strong><br>
+        • <code>403 SPACE_FORBIDDEN</code>：你不是該群組的成員，或授權時沒給
+          <code>chat.messages.create</code> 權限 → 重跑一次授權精靈<br>
+        • <code>404 SPACE_NOT_FOUND</code>：群組 ID 打錯，或那個群組你已經退出了<br>
+        • <code>401 NOT_AUTHENTICATED</code>：儀表板的登入過期 → 重新登入
       </p>
     </div>
 
