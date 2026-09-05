@@ -135,9 +135,17 @@ Python 與 `uv` **不用自己準備**——安裝腳本偵測不到 `uv` 會自
 ## 常見問題 (FAQ)
 
 ### Q1：如果我自己想在 GCP 建立專屬的 Client Secret 怎麼做？
-1. 前往 [Google Cloud Console](https://console.cloud.google.com/) 建立專案。
-2. 在「API 和服務」>「資料庫」中啟用 **Google Chat API**。
-3. 在「憑證」>「建立憑證」選擇 **OAuth 用戶端 ID**，應用程式類型選擇 **電腦版應用程式 (Desktop App)**。
+下面每一步都給直接網址（把 `PROJECT_ID` 換成你的專案 ID）。**刻意不寫
+「點某個選單再點某個分頁」的路徑**——Google Console 改版頻繁，那種描述過期時
+不會有任何跡象，網址至少會直接 404 告訴你。
+
+1. 建立專案：<https://console.cloud.google.com/projectcreate>
+2. 啟用 Google Chat API：
+   <https://console.cloud.google.com/apis/library/chat.googleapis.com?project=PROJECT_ID>
+3. 建立 OAuth 用戶端（類型選 **電腦版應用程式 / Desktop app**）：
+   <https://console.cloud.google.com/auth/clients?project=PROJECT_ID>
+4. 設定 Chat app 的名稱與說明（這個名字會出現在你送出的每一則訊息旁邊，見 Q6）：
+   <https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat?project=PROJECT_ID>
 4. 下載 JSON 並重新命名為 `client_secret.json` 放入 `config/` 即可。
 
 ### Q2：推播回群組失敗，是不是要先把 Bot 加進群組？
@@ -174,3 +182,24 @@ Python 與 `uv` **不用自己準備**——安裝腳本偵測不到 `uv` 會自
 ```
 它會逐項檢查 Python 環境、憑證、Token 權限、AI 供應商、MCP 註冊、前端建置，
 **每一項沒過都會直接告訴你下一步該做什麼**。裝完先跑這個，比一項項猜快。
+
+### Q6：為什麼我送出的訊息旁邊多了一個灰色標籤？
+
+那是 Google Chat 的**歸屬標示**。只要訊息是透過 API 送出的，Chat 就會在你的名字旁邊
+顯示這個工具的名稱，長得像這樣：
+
+```
+你  [ChatPulse]  中午12:36
+```
+
+官方文件（[create-messages](https://developers.google.com/workspace/chat/create-messages)）
+逐字寫著「Chat also attributes the Chat app to the message by displaying its name」，
+所以這是**設計行為，不是設定錯誤**。
+
+- **發訊息的人還是你本人**。API 回讀確認 `sender.type` 是 `HUMAN`、user id 是你自己，
+  不是機器人代你發言。標籤只是說明「這則是透過工具送的」。
+- **關不掉**。`spaces.messages.create` 沒有任何 attribution 相關參數，也沒有對應的
+  scope 或 Console 開關。（精確地說：官方**未提供**關閉手段，而不是官方明令禁止。）
+- **標籤文字可以改**，改的是 Chat API 的 App name（上限 25 字元）：
+  <https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat?project=PROJECT_ID>
+  改名**不會**讓你需要重新授權。這件事只有專案維護者需要做，一次改完所有人都適用。

@@ -340,7 +340,12 @@ Phase 2 另需 `userinfo.profile`，用於取得 Viewer 自己的 user id（見 
 >
 > 代價是**只有 `@intumit.com` 網域內的帳號能授權**——以本專案的使用情境（發給同事）
 > 這正好是要的。若日後要給網域外的人用，就得切成 External，屆時上面三件事全部反轉。
-> 查看位置：GCP 主控台 → Google Auth Platform → 目標對象 → 使用者類型。
+> 查看位置（直接網址，`PROJECT_ID` 換成自己的專案；本專案是 `gen-lang-client-0826447547`）：
+> - 使用者類型與發布狀態：<https://console.cloud.google.com/auth/audience?project=PROJECT_ID>
+> - OAuth 總覽與專案健檢：<https://console.cloud.google.com/auth/overview?project=PROJECT_ID>
+>
+> 這裡刻意給網址而不是「主控台 → 某處 → 某處」的點擊路徑——Google Console 改版頻繁，
+> 路徑描述過期時沒有任何跡象，而網址至少會直接 404。
 
 ### 4.3 多 Viewer 與產出物可見性
 
