@@ -14,10 +14,16 @@
 
 | 入口 | 給誰 | 怎麼跑 |
 | :--- | :--- | :--- |
-| **Web 儀表板** | 內部使用 | `./scripts/start-web.sh` → http://localhost:8000 |
-| **MCP server** | 發給團隊每個人安裝 | `./scripts/install-claude.sh`，或照 [`SETUP_GUIDE.md`](SETUP_GUIDE.md) |
+| **Web 儀表板** | 要完整功能（Mention 收件匣、Draft Reply）的人 | `./scripts/start-web.sh` → http://localhost:8000 |
+| **MCP server** | 想在 Claude Code / Desktop 對話中直接用的人 | `./scripts/install-claude.sh`，或照 [`SETUP_GUIDE.md`](SETUP_GUIDE.md) |
 
 兩者是同一套後端能力的兩個入口，不是替代關係。
+
+**裝完先跑這個確認**（每一項沒過都會告訴你下一步）：
+
+```bash
+./scripts/doctor.sh
+```
 
 ## 前置作業
 
