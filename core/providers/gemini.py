@@ -6,17 +6,22 @@
 換供應商後用量表會記到錯的模型上）。
 """
 
-from typing import Iterator, Optional
+from typing import Iterator, Optional, Sequence
 
 from .. import config as cfg
 from ..errors import ConfigurationError
 from ..gemini_client import GeminiClient
-from .base import AIProvider
+from .base import AIProvider, ImagePart
 
 
 class GeminiProvider(AIProvider):
     name = "gemini"
     label = "Gemini（Google AI Studio）"
+    # 模型本身支援視覺，實作走 inlineData。
+    # ⚠️ **這條路徑尚未對真實 API 跑過**——免費層每天只有 20 次請求（R-4），
+    # 把配額燒在測試上會擋掉使用者自己的使用。欄位名依官方文件，
+    # 但單次請求的總大小上限與超限行為未驗證。
+    supports_vision = True
 
     def __init__(self, model: Optional[str] = None, **kwargs):
         super().__init__(**kwargs)
@@ -59,13 +64,25 @@ class GeminiProvider(AIProvider):
         return f"{system}\n\n{prompt}" if system else prompt
 
     def generate(
-        self, prompt: str, *, system: Optional[str] = None, operation: str = "generate"
+        self,
+        prompt: str,
+        *,
+        system: Optional[str] = None,
+        operation: str = "generate",
+        images: Optional[Sequence[ImagePart]] = None,
     ) -> str:
-        return self._get_client().generate(self._merge(prompt, system), operation=operation)
+        return self._get_client().generate(
+            self._merge(prompt, system), operation=operation, images=images
+        )
 
     def stream_text(
-        self, prompt: str, *, system: Optional[str] = None, operation: str = "generate"
+        self,
+        prompt: str,
+        *,
+        system: Optional[str] = None,
+        operation: str = "generate",
+        images: Optional[Sequence[ImagePart]] = None,
     ) -> Iterator[str]:
         yield from self._get_client().stream_text(
-            self._merge(prompt, system), operation=operation
+            self._merge(prompt, system), operation=operation, images=images
         )
