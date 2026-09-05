@@ -30,6 +30,8 @@ from .errors import (
 )
 
 API_BASE = "https://chat.googleapis.com/v1"
+# 附件下載走 media 端點，回的是原始位元組而不是 JSON，所以與 API_BASE 分開列
+MEDIA_BASE = "https://chat.googleapis.com"
 
 # search 端點只接受這兩種 orderBy（2026-09-05 實測，見 docs/R1-findings.md）
 SEARCH_ORDER_BY = "createTime DESC"
@@ -162,6 +164,59 @@ class GoogleChatClient:
             raise err
 
         raise last_error or ChatApiError("Google Chat 請求重試次數已用盡")
+
+    def download_attachment(self, resource_name: str) -> bytes:
+        """下載一個附件的原始位元組。
+
+        端點與其他 REST 呼叫不同（回的是位元組不是 JSON），所以不走 `_request()`，
+        但退避策略保持一致。
+
+        `resource_name` 要填 `attachment.attachmentDataRef.resourceName`，
+        **不是** attachment 自己的 `name`——那是兩個不同的識別字，填錯會 404。
+
+        授權：官方指南列出 chat.bot／chat.messages／chat.messages.readonly 三者之一，
+        本專案已有第三個，**不需要新增 scope**（2026-09-05 實測：HTTP 200、
+        481,433 bytes、magic bytes 為 JPEG）。
+
+        Drive 來源的附件（只有 `driveDataRef`）**不能用這個端點**，官方明寫要改走
+        Drive API，那需要本專案沒有的 Drive scope。呼叫端要先篩掉。
+        """
+        url = f"{MEDIA_BASE}/v1/media/{resource_name}"
+        last_error: Optional[Exception] = None
+
+        for attempt in range(cfg.CHAT_RETRY_MAX_ATTEMPTS):
+            try:
+                resp = self._session.get(url, params={"alt": "media"}, timeout=60)
+            except requests.RequestException as exc:
+                last_error = ChatApiError(f"下載附件失敗：{exc}")
+                if attempt < cfg.CHAT_RETRY_MAX_ATTEMPTS - 1:
+                    time.sleep(cfg.CHAT_RETRY_BASE_DELAY * (2**attempt))
+                    continue
+                raise last_error from exc
+
+            self._persist_refreshed_token()
+
+            if resp.status_code == 200:
+                return resp.content
+
+            # 附件下載另有「每個 Space 每秒 15 次」的限制，比一般端點更容易撞到
+            if resp.status_code == 429 and attempt < cfg.CHAT_RETRY_MAX_ATTEMPTS - 1:
+                retry_after = resp.headers.get("Retry-After")
+                delay = (
+                    float(retry_after)
+                    if retry_after and retry_after.isdigit()
+                    else cfg.CHAT_RETRY_BASE_DELAY * (2**attempt)
+                )
+                time.sleep(delay)
+                continue
+
+            err = classify_google_api_error(resp.status_code, resp.text)
+            if isinstance(err, ChatRateLimited):
+                ra = resp.headers.get("Retry-After")
+                err.retry_after = int(ra) if ra and ra.isdigit() else 30
+            raise err
+
+        raise last_error or ChatApiError("下載附件的重試次數已用盡")
 
     def _persist_refreshed_token(self) -> None:
         """AuthorizedSession 會就地刷新 token，刷新後要讓呼叫端有機會存回去。"""
@@ -371,6 +426,56 @@ class GoogleChatClient:
         return sender
 
 
+def attachment_note(message: Dict[str, Any]) -> str:
+    """把一則訊息的附件組成給模型讀的佔位符，沒有附件時回空字串。
+
+    **為什麼需要這個**：模型看不到圖，但它必須知道「這裡有一張圖」。
+    在此之前 `format_conversation()` 只取 `text`，於是工作群組裡最常見的
+    「@某人 ＋ 一張截圖」在模型眼中只剩下那個 @——整段脈絡靜默消失，
+    而且摘要不會有任何跡象顯示漏了東西。明示未讀遠比靜默遺漏好。
+
+    分類看 `contentType` 而不是 `source`，因為這裡要分的是「圖片／非圖片」，
+    而 `source` 分的是「Chat 上傳／Drive 檔案」——那是另一個維度，用它分類會把
+    Drive 上的圖片誤判成非圖片。`source` 在本帳號實測 84 個附件全部都有值
+    （`UPLOADED_CONTENT` 76、`DRIVE_FILE` 8），但即使如此也不該拿它當圖片判準。
+
+    仍以 `.get()` 取值並容忍缺欄位：Google API 慣例會省略 enum 的預設值，
+    這個保證不寫在文件裡，不值得賭。
+    """
+    atts = message.get("attachment") or []
+    if not atts:
+        return ""
+
+    images: List[str] = []
+    drive_images: List[str] = []
+    others: List[str] = []
+    for a in atts:
+        name = a.get("contentName") or "未命名檔案"
+        if (a.get("contentType") or "").startswith("image/"):
+            # 能不能下載看的是哪個 ref 存在，與「是不是圖片」是兩件事。
+            # Drive 上的圖片要走 Drive API（本專案沒有那個 scope），讀不到，
+            # 而它佔實測樣本的一成左右——沉默漏掉會讓人以為系統有讀。
+            if a.get("attachmentDataRef", {}).get("resourceName"):
+                images.append(name)
+            else:
+                drive_images.append(name)
+        else:
+            others.append(name)
+
+    parts: List[str] = []
+    if len(images) == 1:
+        parts.append(f"[圖片：{images[0]}（AI 未讀取內容）]")
+    elif images:
+        parts.append(f"[圖片 ×{len(images)}：{'、'.join(images)}（AI 未讀取內容）]")
+    if drive_images:
+        parts.append(
+            f"[圖片：{'、'.join(drive_images)}（存放於 Google Drive，本系統無權讀取內容）]"
+        )
+    if others:
+        parts.append(f"[附件：{'、'.join(others)}]")
+    return " ".join(parts)
+
+
 def format_conversation(
     messages: List[Dict[str, Any]],
     name_resolver: Optional[Callable[[Optional[str]], str]] = None,
@@ -393,8 +498,11 @@ def format_conversation(
             )
         created = (m.get("createTime") or "")[:16].replace("T", " ")
         text = (m.get("text") or "").strip()
-        if text:
-            lines.append(f"[{created}] {sender}: {text}")
+        note = attachment_note(m)
+        # 只有圖、沒有文字的訊息**也要納入**——在此之前這種訊息會整則消失
+        if text or note:
+            body = " ".join(part for part in (text, note) if part)
+            lines.append(f"[{created}] {sender}: {body}")
     return "\n".join(lines)
 
 

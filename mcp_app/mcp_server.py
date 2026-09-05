@@ -23,6 +23,7 @@ if BASE_DIR not in sys.path:
 
 from mcp.server.mcpserver import MCPServer
 
+from core import attachments
 from core import config as cfg
 from core import directory
 from core import prompts
@@ -186,12 +187,28 @@ def summarize_chat_space(
 
     try:
         ai = get_ai(provider)
+        # 能力檢查在下載之前——不支援視覺就不去取圖，省掉整條 API 往返。
+        # 取不到的圖仍以佔位符留在 conversation_text 裡，AI 會知道有圖沒看到。
+        images: list = []
+        skipped_images: list = []
+        if ai.supports_vision:
+            images, skipped_images = attachments.collect(
+                get_chat_client().download_attachment,
+                messages,
+                space_id=space_id,
+                budget_tokens=cfg.IMAGE_BUDGET_TOKENS_SUMMARY,
+            )
         summary = ai.generate(
             prompts.summary_prompt(
                 display_name, conversation_text, len(messages), style
             ),
             operation="summarize",
+            images=images,
         )
+        if images:
+            summary += f"\n\n*（本次一併分析了 {len(images)} 張圖片）*"
+        if skipped_images:
+            summary += f"\n\n*（有 {len(skipped_images)} 張圖片未納入：{'；'.join(skipped_images[:3])}）*"
     except ChatPulseError as exc:
         return _error_text(exc)
 
