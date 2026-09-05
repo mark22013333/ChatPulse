@@ -1,6 +1,6 @@
 # 交接：接續 ChatPulse 的下一個 session
 
-> 寫於 2026-09-05。這份是給「沒有前一個 session 記憶」的人／AI 看的。
+> 更新於 2026-09-06。這份是給「沒有前一個 session 記憶」的人／AI 看的。
 > 只寫**接手時真的需要知道的事**，其餘一律指向對應文件。
 
 ---
@@ -28,16 +28,18 @@
 
 ## 30 秒現況
 
-- **狀態**：規格書 v2.0 的 Phase 0／1／2 全部完成，21 條驗收條件逐條有證據
-- **分支**：`main`。2026-09-05 的工作共 13 個 commit
+- **狀態**：規格 v2.0 的 Phase 0／1／2 全部完成，21 條驗收條件逐條有證據。
+  之後又加了三件規格書沒寫的事：**圖片支援**、**Windows 支援**、**同事安裝體驗**
+- **分支**：`main`，與 `origin/main` 同步
 - **服務**：`./scripts/start-web.sh` → http://localhost:8000
-- **AI 供應商**：兩個實作——`claude_cli`（吃本機 Claude Code 訂閱，零設定）與
-  `gemini`（每天 20 次）；另有 `claude`／`auto` 兩個別名，預設 `claude`。
-  `claude_api`（Anthropic API）已於 2026-09-05 移除，理由見 SPECIFICATION.md 3.2
+- **AI 供應商**：`claude_cli`（吃本機 Claude Code 訂閱，預設）與 `gemini`（每天 20 次）。
+  另有 `claude`／`auto` 兩個別名。**`claude_api` 已於 2026-09-05 移除**（從未對真實 API 跑過）
+- **同事入口**：`./chatpulse.sh`（macOS/Linux）／`chatpulse.bat`（Windows），
+  互動式引導，邏輯在 `scripts/onboard.py` 兩平台共用
 
 ---
 
-## 先跑這個確認現況（不消耗任何 AI 配額）
+## 先跑這個確認現況
 
 ```bash
 cd /Users/cheng/google-chat-bot
@@ -46,12 +48,20 @@ cd /Users/cheng/google-chat-bot
 export CHATPULSE_BOOTSTRAP_USER_ID=users/109827265019732088641
 .venv/bin/python tests/e2e/check_stored_evidence.py   # 從資料庫重查宣稱
 .venv/bin/python tests/e2e/test_providers.py          # AI 供應商切換
+.venv/bin/python tests/e2e/test_attachments.py        # 圖片附件與視覺
 .venv/bin/python tests/e2e/test_static.py             # 靜態托管、授權迴歸
 .venv/bin/python tests/e2e/test_add_annotation.py     # Mention 判定條件
-npm --prefix dashboard/frontend run test              # 前端 31 項
+npm --prefix dashboard/frontend run test              # 前端 32 項
 ```
 
-五套全綠代表現況正常。要跑會消耗 AI 配額的完整套件：`tests/e2e/run_all.py`。
+**配額說明（原本這裡寫「不消耗任何 AI 配額」，不精確）**：這六套**不動 Gemini
+的每日 20 次**，但 `test_providers` 第 3 節與 `test_attachments` 第 6 節各會實跑一次
+`claude_cli`，消耗 Claude Code 的訂閱用量。要完全零 AI 呼叫，只跑
+`check_stored_evidence.py`（它從資料庫重查既有產出）。
+
+要跑會用到 Gemini 配額的完整套件：`tests/e2e/run_all.py`。
+
+安裝狀態檢查（同事也適用）：`./chatpulse.sh check` 或 `./scripts/doctor.sh`。
 
 ---
 
@@ -59,11 +69,11 @@ npm --prefix dashboard/frontend run test              # 前端 31 項
 
 | 項目 | 狀態 | 下一步 |
 | :--- | :--- | :--- |
-| ~~**推送到遠端**~~ **已完成** | 2026-09-05 確認 `main` 與 `origin/main` 同步，那 13 個 commit 已推上去 | — |
-| ~~**`claude_api` 供應商從未對真實 API 跑過**~~ **已消解** | 2026-09-05 決定**移除**這個供應商而不是留著等金鑰。未驗證的分支不該留在契約與前端選單裡 | 實作留在 git 歷史（`core/providers/claude_api.py`）；要接回來見 SPECIFICATION.md 3.2 的說明 |
-| **「兩位真人 Viewer 各自 OAuth」未驗** | 只有一個 Google 帳號。授權隔離邏輯已用「資料庫建第二位 viewer + session」走 HTTP 層驗過 | 找同事用他的帳號跑一次登入 |
+| **`chatpulse.bat` 從未在 Windows 上跑過** | 語法與流程照 cmd 行為寫的，但這台是 macOS，**未經實機驗證** | 找第一位 Windows 同事安裝時在旁邊看著。這是目前最大的未驗證項 |
+| **Chat app 名稱要改成工具名** | 原為 `T-Bot`，2026-09-06 一度改成 `MarkCheng`，但那是錯的——App name 是**專案層級共用設定**，取人名會讓同事的訊息顯示成 `王小明 [MarkCheng]` | 改成 `ChatPulse` 之類的工具名。位置見 ADR-0001 |
+| **Gemini 的圖片路徑未驗** | `inlineData` 依官方文件實作，但沒對真實 API 跑過（不想燒每天 20 次配額） | 有配額餘裕時送一張圖驗一次；欄位名與大小上限都未實測 |
+| **「兩位真人 Viewer 各自 OAuth」未驗** | 只有一個 Google 帳號。授權隔離邏輯已用「資料庫建第二位 viewer + session」走 HTTP 層驗過 | 與上面的 Windows 實測合併做：找同事跑一次完整安裝就同時驗掉這兩條 |
 | **D-2：建議更換 Gemini API key** | 程式面已修（無硬編碼）。金鑰本身建議換 | 理由見 SPECIFICATION.md 3.3「憑證絕不進 repo」下方的收斂結論 |
-| **`docs/index.html` 系統手冊** | 只修了過時的 MCP 路徑與則數預設值 | 尚未針對儀表板的 Phase 2 功能與供應商選擇改寫 |
 | **R-2 定價未逐項核對** | 記錄機制完成（`token_usage` ＋ `GET /api/v1/usage`） | 累積兩週用量後再評估 |
 
 ---
@@ -83,6 +93,19 @@ npm --prefix dashboard/frontend run test              # 前端 31 項
   停用工具＋`--system-prompt` 後降到近 0（`core/providers/claude_cli.py` 已固定帶上）
 - **不要用 `claude --bare`**：它只讀 `ANTHROPIC_API_KEY`、不讀 OAuth，會讓訂閱認證失效
 
+### 圖片（2026-09-05 新增）
+
+- **`--input-format stream-json` 強制 `--output-format stream-json`**。所以有圖的
+  `generate()` 不能再用 `--output-format json`，實作改成把 `stream_text` 接起來
+- **視覺是模型的原生能力，不是 `Read` 工具**。我們把 CLI 的工具全停用了，
+  但完全不影響它看圖（實測 init 事件顯示 `"tools":[]` 仍答得出圖片內容）
+- **圖片成本約 750 像素／token，而 API 不會替你縮圖**。一張未縮的 1920×1080
+  要 2,694 tokens，九張≈一整份 483 則對話的文字量。**縮圖是預設行為不是選項**
+- **Gemini 免費層的限制是請求數不是 token**，所以在免費層加圖幾乎免費；
+  升付費層後這個結論立刻反轉
+- **Drive 來源的圖片下載不到**（需要 Drive scope，本專案沒有），實測約佔全部附件一成。
+  這些會標成「存放於 Google Drive，本系統無權讀取內容」而不是靜默略過
+
 ### Google Chat API
 
 - **`spaces.messages.list` 預設排序是 `createTime ASC`**（最舊優先）。不帶 `orderBy`
@@ -93,36 +116,64 @@ npm --prefix dashboard/frontend run test              # 前端 31 項
   採集器因此走輪詢（實作 B）。詳見 `docs/R1-findings.md`
 - `messages.list` 的 filter 只吃 `createTime >`（`>=` 回 400）；search 端點則
   **完全不吃 createTime**
+- **附件下載不需要新增 scope**：現有的 `chat.messages.readonly` 就夠
+  （`GET /v1/media/{resourceName}?alt=media`）。但 `resourceName` 要填
+  `attachmentDataRef.resourceName`，**不是** attachment 自己的 `name`
+- **透過 API 送出的訊息一定會帶「歸屬標示」**（發送者名字旁的灰底 app 名稱），
+  官方明說是設計行為，**關不掉**，只能改文字。詳見 ADR-0001
 
-### 這台機器
+### 這台機器與工具
 
 - **zsh 有 `noclobber`**：`cmd > file` 會失敗，要用 `>|`
+- **Bash 工具的工作目錄會跨呼叫保留**：某次 `cd` 到子目錄之後，後續的相對路徑
+  （`.venv/bin/python tests/…`）會全部失敗。**這個 session 踩了兩次**。
+  跑測試一律先 `cd /Users/cheng/google-chat-bot &&` 或用絕對路徑
 - **`gitstatusd` 會製造殘留的 `.git/index.lock`**：git 寫入指令不要接管線
   （`| tail` 會吞掉 exit code），開完分支要用 `git rev-parse HEAD` 比對基準
-- **PreToolUse hook** 會攔截遞迴刪除與推送到 main，且是對**整條指令文字**比對——
-  commit message 裡提到危險指令的字樣也會被擋
-- 測試報告寫**兩份**（帶時間戳的那份不會被覆蓋）。這是因為曾經被配額耗盡的
-  重跑蓋掉含真實數字的報告，導致宣稱變成查無來源
+- **更嚴重的同類坑**：`git checkout main >/dev/null 2>&1 && git merge …` 這種寫法
+  會把錯誤**整個吞掉**。這個 session 踩過一次：checkout 成功、merge 失敗，
+  只看到 `exit 128` 和「檔案怎麼變回舊版了」（那其實只是切換分支的正常結果）。
+  **git 寫入型指令不要吞輸出**，重跑時讓它印出來
+- **PreToolUse hook** 會攔截遞迴刪除與**推送到 main**，且是對**整條指令文字**比對——
+  commit message 裡提到危險指令的字樣也會被擋。push 要由人執行
+- 測試報告寫**兩份**（帶時間戳的那份不會被覆蓋），落在 `tests/e2e/reports/`（已 gitignore）
+
+### 驗證方法本身的坑
+
+- **截斷輸出會製造假的「實測發現」**。這個 session 踩過：探針印 attachment JSON 時
+  截斷在 1200 字元，而 `source` 欄位排在很長的 `downloadUri` 之後被切掉，
+  於是誤判成「`source` 不一定回傳」並寫進設計文件與程式碼註解。
+  完整掃描 84 個附件後確認**全部都有 `source`**。**印 JSON 做判斷時不要截斷**
+- **有些 bug 只有真實使用者才踩得到**。這個 session 有三個是使用者實際去用才發現的：
+  精靈的 scope 偵測（要「token 過期＋scope 不足」的特定組合）、
+  App name 取成人名（只有多人使用才看得出來）、圖片沒被納入。
+  **維護者在自己機器上什麼都是好的**——這是為什麼「找同事實測」不該省
 
 ---
 
 ## 專案結構
 
 ```
-core/            共用封裝（Google Chat／AI 供應商／SQLite／加密／名錄／採集器）
+chatpulse.sh / chatpulse.bat   同事的入口（互動式引導，薄殼，只負責找 Python）
+core/            共用封裝（Google Chat／AI 供應商／SQLite／加密／名錄／採集器／附件）
   providers/     AI 供應商：base 介面 ＋ claude_cli／gemini 兩個實作
+  attachments.py 圖片挑選、縮圖、token 預算控管
 mcp_app/         MCP 入口（5 個工具）、CLI 摘要、OAuth 授權精靈
 dashboard/       FastAPI 後端 ＋ React 19 前端
-tests/e2e/       七套端對端測試，對真實 API 取證、不用 mock
-docs/            api-contract.md（契約）、R1-findings.md（R-1 實測）、
-                 verification-log.md（證據等級）、adr/（架構決策）
+scripts/         onboard.py（引導邏輯，兩平台共用）、doctor.sh、start-web.sh 等
+tests/e2e/       八套端對端測試，對真實 API 取證、不用 mock
+  reports/       測試報告落點（gitignore）
+docs/            api-contract.md（契約）、R1-findings.md、verification-log.md、adr/
 config/ data/    憑證與 SQLite，皆不進版控
 ```
 
 ---
 
-## 硬性限制（沿用自上一個 session）
+## 硬性限制（沿用自最早的 session）
 
 **發送 Google Chat 訊息只能發到 `spaces/AAAAxLxqJxY`（0.暫存）。** 其他 Space 只能讀。
 `tests/e2e/e2e_lib.py` 的 `guard_space()` 是硬性 assert，會擋掉任何其他目標——
 不要為了方便把它改掉。
+
+（注意：這條限制是**測試腳本**的，儀表板與 MCP 本身沒有這個限制，
+使用者可以對任何自己有權限的 Space 發言。）
