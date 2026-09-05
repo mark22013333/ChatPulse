@@ -329,6 +329,18 @@ Phase 2 另需 `userinfo.profile`，用於取得 Viewer 自己的 user id（見 
 **不需要**：Marketplace 相容的 OAuth client、Workspace 管理員一次性核准、把 Bot 加進任何群組。這是 ADR-0001 的直接收益。
 
 > 範圍說明：這三項「不需要」在 `@intumit.com` 的 `markcheng00806` 帳號上已實測成立（三個 chat scope 下可列 Space、讀訊息、發訊息，全程未經任何管理員核准流程）。**其他 Workspace 組態下未必成立**——若網域對第三方 OAuth client 設了白名單，第一位使用者授權時仍可能被擋。發給團隊前建議先找一位同事實測一次。
+>
+> **2026-09-05 補充：OAuth client 的「使用者類型」確認為「內部」（Internal）。**
+> 這是發給團隊前最該確認的一件事，因為它決定了三件事：
+> (a) **refresh token 不會 7 天過期**——7 天限制只適用於 External 且發布狀態為
+>     Testing 的 app，Internal 不適用（Internal 沒有 Testing／Production 這個區分）；
+> (b) **不需要維護測試使用者清單**，也沒有 100 人上限；
+> (c) **不需要送 Google 應用程式驗證**，所以 GCP 專案健檢頁上那些「帳單帳戶未關聯／
+>     聯絡資訊過時／專案聯絡人有誤」的警告不影響使用。
+>
+> 代價是**只有 `@intumit.com` 網域內的帳號能授權**——以本專案的使用情境（發給同事）
+> 這正好是要的。若日後要給網域外的人用，就得切成 External，屆時上面三件事全部反轉。
+> 查看位置：GCP 主控台 → Google Auth Platform → 目標對象 → 使用者類型。
 
 ### 4.3 多 Viewer 與產出物可見性
 

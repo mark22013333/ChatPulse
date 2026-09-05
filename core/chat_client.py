@@ -371,6 +371,45 @@ class GoogleChatClient:
         return sender
 
 
+def attachment_note(message: Dict[str, Any]) -> str:
+    """把一則訊息的附件組成給模型讀的佔位符，沒有附件時回空字串。
+
+    **為什麼需要這個**：模型看不到圖，但它必須知道「這裡有一張圖」。
+    在此之前 `format_conversation()` 只取 `text`，於是工作群組裡最常見的
+    「@某人 ＋ 一張截圖」在模型眼中只剩下那個 @——整段脈絡靜默消失，
+    而且摘要不會有任何跡象顯示漏了東西。明示未讀遠比靜默遺漏好。
+
+    分類看 `contentType` 而不是 `source`，因為這裡要分的是「圖片／非圖片」，
+    而 `source` 分的是「Chat 上傳／Drive 檔案」——那是另一個維度，用它分類會把
+    Drive 上的圖片誤判成非圖片。`source` 在本帳號實測 84 個附件全部都有值
+    （`UPLOADED_CONTENT` 76、`DRIVE_FILE` 8），但即使如此也不該拿它當圖片判準。
+
+    仍以 `.get()` 取值並容忍缺欄位：Google API 慣例會省略 enum 的預設值，
+    這個保證不寫在文件裡，不值得賭。
+    """
+    atts = message.get("attachment") or []
+    if not atts:
+        return ""
+
+    images: List[str] = []
+    others: List[str] = []
+    for a in atts:
+        name = a.get("contentName") or "未命名檔案"
+        if (a.get("contentType") or "").startswith("image/"):
+            images.append(name)
+        else:
+            others.append(name)
+
+    parts: List[str] = []
+    if len(images) == 1:
+        parts.append(f"[圖片：{images[0]}（AI 未讀取內容）]")
+    elif images:
+        parts.append(f"[圖片 ×{len(images)}：{'、'.join(images)}（AI 未讀取內容）]")
+    if others:
+        parts.append(f"[附件：{'、'.join(others)}]")
+    return " ".join(parts)
+
+
 def format_conversation(
     messages: List[Dict[str, Any]],
     name_resolver: Optional[Callable[[Optional[str]], str]] = None,
@@ -393,8 +432,11 @@ def format_conversation(
             )
         created = (m.get("createTime") or "")[:16].replace("T", " ")
         text = (m.get("text") or "").strip()
-        if text:
-            lines.append(f"[{created}] {sender}: {text}")
+        note = attachment_note(m)
+        # 只有圖、沒有文字的訊息**也要納入**——在此之前這種訊息會整則消失
+        if text or note:
+            body = " ".join(part for part in (text, note) if part)
+            lines.append(f"[{created}] {sender}: {body}")
     return "\n".join(lines)
 
 
