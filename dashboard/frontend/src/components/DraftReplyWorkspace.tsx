@@ -16,11 +16,13 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { Markdown } from '@/components/Markdown'
+import { ProviderSelect } from '@/components/ProviderSelect'
 import { SpaceList } from '@/components/SpaceList'
 import { errorMessage } from '@/lib/api'
 import { formatDateTime } from '@/lib/format'
 import { splitDraft, useDraftStore } from '@/store/draft'
 import { useMentionsStore } from '@/store/mentions'
+import { providerLabel, useProviderStore } from '@/store/providers'
 import { filterSpaces, useSpacesStore } from '@/store/spaces'
 import type { Mention } from '@/lib/types'
 
@@ -35,6 +37,7 @@ interface DraftReplyWorkspaceProps {
 export function DraftReplyWorkspace({ mention }: DraftReplyWorkspaceProps) {
   const spaces = useSpacesStore((state) => state.items)
   const applyResolved = useMentionsStore((state) => state.applyResolved)
+  const providers = useProviderStore((state) => state.providers)
 
   const {
     referenceSpaceIds,
@@ -178,6 +181,8 @@ export function DraftReplyWorkspace({ mention }: DraftReplyWorkspaceProps) {
             {refLimitError ? (
               <p className="text-[10px] text-destructive">{refLimitError}</p>
             ) : null}
+
+            <ProviderSelect id="draft-provider" disabled={streaming} triggerClassName="w-full" />
           </div>
 
           <SpaceList
@@ -229,6 +234,16 @@ export function DraftReplyWorkspace({ mention }: DraftReplyWorkspaceProps) {
                   <span className="font-mono">
                     討論串 {meta.thread_message_count ?? 0} 則
                   </span>
+                  {/* 一律以 meta 回報的供應商為準——伺服器可能因別名解析而用了別的 */}
+                  {meta.provider ? (
+                    <span
+                      className="rounded border border-violet-500/25 bg-violet-500/10 px-2 py-0.5 font-medium text-violet-600 dark:text-violet-400"
+                      title="本次實際使用的 AI 供應商與模型（來自 meta 事件）"
+                    >
+                      {providerLabel(providers, meta.provider)}
+                      {meta.model ? <span className="ml-1 font-mono">· {meta.model}</span> : null}
+                    </span>
+                  ) : null}
                   {(meta.reference_spaces ?? []).map((ref) => (
                     <span
                       key={ref.space_id}

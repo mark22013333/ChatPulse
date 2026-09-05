@@ -1,6 +1,8 @@
 import { create } from 'zustand'
 import { api, errorMessage, LIMIT_DEFAULT, streamUrls } from '@/lib/api'
 import { streamSse } from '@/lib/sse'
+import { streamErrorMessage } from '@/lib/aiErrors'
+import { providerRequestField } from '@/store/providers'
 import type { Mention, SseMeta } from '@/lib/types'
 
 /** 建議回話段落的標題（契約：`### ✍️ 建議回話`）。容忍 emoji 與空白差異。 */
@@ -137,7 +139,8 @@ export const useDraftStore = create<DraftState>((set, get) => ({
 
     await streamSse(
       streamUrls.draft(mentionId),
-      { reference_space_ids: referenceSpaceIds, limit: refLimit },
+      // provider 是選填：選「自動」時整個欄位不出現，交給伺服器解析
+      { reference_space_ids: referenceSpaceIds, limit: refLimit, ...providerRequestField() },
       {
         onMeta: (meta) => set({ meta }),
         onChunk: (chunk) =>
@@ -153,7 +156,11 @@ export const useDraftStore = create<DraftState>((set, get) => ({
             draftId: done.draft_id ?? null,
             replyText: state.replyEdited ? state.replyText : splitDraft(state.raw).reply.trim(),
           })),
-        onError: (event) => set({ streaming: false, error: `${event.message}（${event.code}）` }),
+        onError: (event) =>
+          set({
+            streaming: false,
+            error: streamErrorMessage(event.code, event.message, get().meta?.provider),
+          }),
       },
       signal,
     ).catch((err) => {

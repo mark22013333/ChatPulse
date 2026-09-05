@@ -151,7 +151,33 @@ graph TD
 **後端｜FastAPI（Python 3.12）**
 沿用既有實作。原生 async、內建 SSE 支援、可直接托管前端建置產物。實際執行版本為 3.12（盤點時由 `__pycache__` 中的 `*.cpython-312.pyc` 確認），非 v1.0 所寫的 3.11。
 
-**AI｜`gemini-3.6-flash`**
+**AI｜供應商可選，預設 Claude（2026-09-05 新增）**
+
+原本寫死 Gemini。R-4 實測 Gemini 免費層每天只有 20 次請求後，AI 供應商改為
+**可切換的介面**（`core/providers/`），三個實作：
+
+| 供應商 | 需要什麼 | 適用 |
+| :--- | :--- | :--- |
+| `claude_cli` | 本機裝好並登入 Claude Code | 吃現有訂閱、零額外設定，開發與單人使用 |
+| `claude_api` | `ANTHROPIC_API_KEY` 或 `ant auth login` 的 OAuth profile | 發給團隊、需要並發與穩定延遲 |
+| `gemini` | `GOOGLE_API_KEY` | 既有選項，免費層每天 20 次 |
+
+`CHATPULSE_AI_PROVIDER` 預設 `claude`——那是**智慧別名**而非實作：有 Anthropic
+憑證就走 API，否則退到本機的 Claude Code CLI。這樣「預設用 Claude」在開發機
+（通常只有 Claude Code）與團隊環境（通常只有 API key）兩種情況下都成立。
+單次請求可用 body 的 `provider` 欄位覆寫，Viewer 也可存成偏好（`default_provider`）。
+
+介面刻意很窄，只有「產生文字」與「串流產生文字」兩件事——摘要與 Draft Reply
+都不需要工具呼叫或多輪對話，介面開大只會讓三個實作互相遷就。
+
+> **Claude Code CLI 的實測注意事項**：預設會載入 Claude Code 自己的 system prompt、
+> CLAUDE.md 與全部工具定義，一個 2-token 的 prompt 也會寫入 **19,085 token** 的快取
+> （約 $0.077）。停掉工具與 MCP、並用 `--system-prompt` 取代預設之後，同一個請求降到
+> **0 token 快取寫入、約 $0.0006**。實作已固定帶上這些參數。
+> 另外**刻意不用 `--bare`**：它雖然能跳過 CLAUDE.md，但同時規定只讀 `ANTHROPIC_API_KEY`
+> 而不讀 OAuth——那會毀掉這條路徑「用現有訂閱」的唯一優點。
+
+**Gemini 的細節（保留為可選供應商）｜`gemini-3.6-flash`**
 與現有程式碼一致（`core/config.py` 的 `GEMINI_MODEL`）。輸入上限 1,048,576 tokens（官方文件），足以吞下數百則對話。
 兩點須知：(a) 官方已將其標為 previous-generation，較新的是 `gemini-3.8-flash` 與 `gemini-3.7-flash`，升級只需改 `core/config.py` 的 `GEMINI_MODEL` 一行，或直接設 `CHATPULSE_GEMINI_MODEL` 環境變數；(b) 導入期定價至 2026-12-31，2027-01-01 起改標準定價，**本文未逐項核對官方 pricing 頁**。
 
@@ -459,6 +485,7 @@ Google Chat 的 space id 形如 `spaces/AAAAxLxqJxY`——**內含斜線**。v1.
 | `PATCH` | `/api/v1/mentions/{id}` | 標記狀態（body: `state`） | Phase 2 |
 | `POST` | `/api/v1/mentions/{id}/draft/stream` | 產生 Draft Reply SSE（body: `reference_space_ids[]`、`limit`） | Phase 2 |
 | `GET` | `/api/v1/summaries` | 本人的歷史 Summary | Phase 2 |
+| `GET` | `/api/v1/providers` | AI 供應商清單與各自可用狀態（不需登入） | 2026-09-05 新增 |
 
 `cardsV2` 於 v2.0 移除（v1:134 曾列出，實作從未支援，且純文字已足夠）。
 
@@ -504,8 +531,8 @@ data: {"type":"error","code":"GEMINI_QUOTA_EXCEEDED","message":"Gemini 配額已
 | 401 | `NOT_AUTHENTICATED` | 未登入或 session 過期 |
 | 403 | `SPACE_FORBIDDEN` | Viewer 不是該 Space 成員 |
 | 404 | `SPACE_NOT_FOUND` / `MENTION_NOT_FOUND` / `ROUTE_NOT_FOUND` | 目標不存在；`ROUTE_NOT_FOUND` 專指 API 路徑打錯 |
-| 429 | `CHAT_RATE_LIMITED` / `GEMINI_QUOTA_EXCEEDED` | 上游限流，回應帶 `Retry-After` |
-| 502 | `CHAT_API_ERROR` / `GEMINI_API_ERROR` | 上游非預期回應 |
+| 429 | `CHAT_RATE_LIMITED` / `GEMINI_QUOTA_EXCEEDED` / `CLAUDE_QUOTA_EXCEEDED` | 上游限流，回應帶 `Retry-After`。兩個 AI 的配額分開列，因為處置不同：Gemini 是每日請求數（等隔天或換模型），Claude Code 是滾動視窗的訂閱用量（等視窗重置或改用 API key） |
+| 502 | `CHAT_API_ERROR` / `GEMINI_API_ERROR` / `CLAUDE_API_ERROR` | 上游非預期回應 |
 | 500 | `CONFIGURATION_ERROR` | 伺服器設定不完整（例如缺 `GOOGLE_API_KEY`、加密金鑰檔遺失） |
 | 500 | `INTERNAL_ERROR` | 未預期錯誤的兜底 |
 
@@ -595,7 +622,11 @@ SQLite（WAL 模式），單一檔案。**對話全文不落地。**
 | :--- | :--- | :--- | :--- |
 | ~~**R-1**~~ **已結案** | `spaces.messages.search` 需要 Business/Enterprise 版 Workspace，`@intumit.com` 的版本等級未確認 | 決定 Mention 採集走實作 A 或 B | **已於 2026-09-05 實測（先於開發）**：實作 A 回 200 但恆 0 筆（正對照亦搜不到），**不可用**；改採實作 B，並以 `lastActiveTime` 預篩把每輪成本壓到 2~3 次呼叫、約 1 秒、每分鐘配額約 0.4%，因此輪詢間隔不需放寬。完整證據見 [`docs/R1-findings.md`](./docs/R1-findings.md) |
 | **R-2** | `gemini-3.6-flash` 的實際計費與導入期定價（至 2026-12-31）未逐項核對 | 團隊共用後成本可能高於預期 | **記錄機制已完成**（`token_usage` 表 ＋ `GET /api/v1/usage`，記 prompt／output／total 與呼叫次數）。**定價仍未逐項核對**——要等累積兩週實際用量後才評估，現在無法結案。實測補充兩個會影響估算的事實，見下方 R-2 補充 |
-| **R-4**（本次新發現） | 目前這把 Gemini API key 在**免費層**，`gemini-3.6-flash` 的上限是**每天 20 次請求** | **團隊共用在免費層完全不可行**，也直接限制了 E2E 測試的可重複性 | 錯誤原文：`quotaId: GenerateRequestsPerDayPerProjectPerModel-FreeTier, quotaValue: 20`。本次測試在數小時內就把 20 次用完（15 次經儀表板 ＋ 5 次測試腳本直呼），之後所有摘要與草稿都回 `GEMINI_QUOTA_EXCEEDED`。**程式的處理是正確的**（照 8.3 送 error 事件、不中斷連線、不噴 traceback），但功能等於停擺。上線前必須先決定：升級到付費層、或改接公司 GCP 專案的 Vertex AI（10.2 已列的替代路徑，程式改動限於 `gemini_client.py` 的認證與 endpoint）。模型可用 `CHATPULSE_GEMINI_MODEL` 一個環境變數換掉。**補充一個實測到的事實**：quotaId 是 `GenerateRequestsPerDayPerProjectPerModel-FreeTier`——**每個模型各有自己的 20 次**。實測 `gemini-3.6-flash` 用盡時 `gemini-3.7-flash` 仍可用。這對驗證與臨時應急有用（本次 D-3 的完整對照就是靠換模型跑完的），但**不構成團隊共用的解法**：三個模型加起來也才 60 次／天，且換模型會換掉輸出風格與思考行為 |
+| **R-4**（本次新發現） | 目前這把 Gemini API key 在**免費層**，`gemini-3.6-flash` 的上限是**每天 20 次請求** | **團隊共用在免費層完全不可行**，也直接限制了 E2E 測試的可重複性 | 錯誤原文：`quotaId: GenerateRequestsPerDayPerProjectPerModel-FreeTier, quotaValue: 20`。本次測試在數小時內就把 20 次用完（15 次經儀表板 ＋ 5 次測試腳本直呼），之後所有摘要與草稿都回 `GEMINI_QUOTA_EXCEEDED`。**程式的處理是正確的**（照 8.3 送 error 事件、不中斷連線、不噴 traceback），但功能等於停擺。上線前必須先決定：升級到付費層、或改接公司 GCP 專案的 Vertex AI（10.2 已列的替代路徑，程式改動限於 `gemini_client.py` 的認證與 endpoint）。**2026-09-05 已提供實質解法**：AI 供應商改為可切換（見 3.2），預設改用 Claude。
+Gemini 的每日 20 次不再是單點故障——`claude_cli` 吃使用者現有的 Claude Code 訂閱、
+不需要任何 API key，`claude_api` 則走 Anthropic 的計費額度。**R-4 因此降級為
+「Gemini 這條路徑的已知限制」，不再阻擋團隊共用。**
+模型可用 `CHATPULSE_GEMINI_MODEL` 一個環境變數換掉。**補充一個實測到的事實**：quotaId 是 `GenerateRequestsPerDayPerProjectPerModel-FreeTier`——**每個模型各有自己的 20 次**。實測 `gemini-3.6-flash` 用盡時 `gemini-3.7-flash` 仍可用。這對驗證與臨時應急有用（本次 D-3 的完整對照就是靠換模型跑完的），但**不構成團隊共用的解法**：三個模型加起來也才 60 次／天，且換模型會換掉輸出風格與思考行為 |
 | **R-3** | v1.0 `v1:163-164` 標「已驗證」的兩項未附證據 | 見下方澄清 | 已於本版如實重寫 |
 
 **R-2 補充（2026-09-05 實測）**

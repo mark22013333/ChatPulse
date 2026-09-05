@@ -120,6 +120,8 @@ def get_preferences(viewer_id: int) -> Dict[str, Any]:
         "pinned_space_ids": json.loads(row["pinned_space_ids"] or "[]"),
         "default_limit": row["default_limit"],
         "default_style": row["default_style"],
+        # 空字串視為「沒有偏好」，讓它退回伺服器預設而不是變成非法值
+        "default_provider": row["default_provider"] or None,
         "updated_at": row["updated_at"],
     }
 
@@ -130,18 +132,23 @@ def update_preferences(
     pinned_space_ids: Optional[List[str]] = None,
     default_limit: Optional[int] = None,
     default_style: Optional[str] = None,
+    default_provider: Optional[str] = None,
 ) -> Dict[str, Any]:
     current = get_preferences(viewer_id)
     pinned = current["pinned_space_ids"] if pinned_space_ids is None else pinned_space_ids
     limit = current["default_limit"] if default_limit is None else default_limit
     style = current["default_style"] if default_style is None else default_style
+    provider = (
+        current.get("default_provider") if default_provider is None else default_provider
+    )
     db.execute(
         """
         UPDATE preferences
-           SET pinned_space_ids = ?, default_limit = ?, default_style = ?, updated_at = ?
+           SET pinned_space_ids = ?, default_limit = ?, default_style = ?,
+               default_provider = ?, updated_at = ?
          WHERE viewer_id = ?
         """,
-        (json.dumps(pinned), limit, style, _now(), viewer_id),
+        (json.dumps(pinned), limit, style, provider, _now(), viewer_id),
     )
     return get_preferences(viewer_id)
 

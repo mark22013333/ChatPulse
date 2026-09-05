@@ -22,8 +22,11 @@
 ## 前置作業
 
 ```bash
-# 1. Gemini API key（摘要與 Draft Reply 需要；只讀 Space 與訊息不需要）
-export GOOGLE_API_KEY='你的 Gemini API key'
+# 1. AI 供應商（摘要與 Draft Reply 需要；只讀 Space 與訊息不需要）
+#    最省事：裝好並登入 Claude Code，什麼都不用設（預設就會用它）
+#    或者擇一：
+export ANTHROPIC_API_KEY='...'    # 走 Anthropic API
+export GOOGLE_API_KEY='...'       # 走 Gemini（免費層每天 20 次）
 
 # 2. Python 環境（3.12）
 uv venv --python 3.12 .venv
@@ -33,8 +36,37 @@ uv pip install -r requirements.txt
 .venv/bin/python mcp_app/setup_wizard.py
 ```
 
-> ⚠️ 目前這把 Gemini key 若是**免費層**，`gemini-3.6-flash` 每天只有 **20 次請求**
-> （2026-09-05 實測）。單人試用夠，團隊共用完全不夠——見 `SPECIFICATION.md` 的風險 R-4。
+## AI 供應商（可切換）
+
+摘要與 Draft Reply 的 AI 供應商是可選的，預設 **Claude**：
+
+| 值 | 需要什麼 | 適用 |
+| :--- | :--- | :--- |
+| `claude`（預設） | — | **智慧別名**：有 Anthropic 憑證走 API，否則用本機 Claude Code CLI |
+| `claude_cli` | 本機裝好並登入 Claude Code | 吃現有訂閱、零額外設定 |
+| `claude_api` | `ANTHROPIC_API_KEY` 或 `ant auth login` | 發給團隊、需要並發 |
+| `gemini` | `GOOGLE_API_KEY` | 既有選項；免費層每天僅 20 次請求 |
+
+```bash
+# 看目前有哪些可用（三個入口都查得到）
+curl -s localhost:8000/api/v1/providers          # 儀表板
+./scripts/run_summary.sh --list-providers        # CLI
+# MCP 則是 list_ai_providers 工具
+
+# 指定供應商
+export CHATPULSE_AI_PROVIDER=claude_cli          # 伺服器預設
+./scripts/run_summary.sh "0.暫存" 50 --provider gemini   # 單次覆寫
+```
+
+儀表板的下拉選單、CLI 的 `--provider`、MCP 的 `provider` 參數三者接受同一組值。
+Viewer 也可以把選擇存成偏好（`default_provider`）。
+
+> ⚠️ **Gemini 免費層 `gemini-3.6-flash` 每天只有 20 次請求**（2026-09-05 實測）。
+> 這是改成可切換供應商的直接原因——見 `SPECIFICATION.md` 的風險 R-4。
+>
+> **Claude Code CLI 的成本注意**：它預設會載入 Claude Code 自己的 system prompt、
+> CLAUDE.md 與全部工具定義（實測一個 2-token 的 prompt 也會寫入 19,085 token 的快取）。
+> 本專案的實作已固定停用工具與 MCP、並用自己的 system prompt 取代，實測降到接近 0。
 
 ## Web 儀表板
 
@@ -82,9 +114,9 @@ E2E 測試會對**真實的 Google Chat 與 Gemini API** 發請求，不使用 m
 npm --prefix dashboard/frontend run test
 ```
 
-六套測試分別涵蓋：**落地證據重查**（不呼叫 Gemini）、Phase 1 功能、Phase 2 Mention 與
-Draft Reply、缺陷 D-3 的截斷正負對照、6.1 判定條件（含真實 ADD annotation 樣本）、
-靜態托管與路徑穿越防護。
+七套測試分別涵蓋：**落地證據重查**（不呼叫 AI）、**AI 供應商切換**、Phase 1 功能、
+Phase 2 Mention 與 Draft Reply、缺陷 D-3 的截斷正負對照、6.1 判定條件（含真實
+ADD annotation 樣本）、靜態托管與路徑穿越防護。
 
 ```bash
 # 只想確認「已產生的東西是對的」而不想消耗 Gemini 配額，跑這支就好

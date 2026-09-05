@@ -21,6 +21,12 @@ cryptography==50.0.1
 # --- MCP server（mcp_app）---
 mcp==2.1.1
 
+# --- AI 供應商（core/providers）---
+# anthropic 是**選用**的：只有走 claude_api 供應商時才需要。
+# claude_cli 供應商靠本機的 Claude Code 執行檔，不需要這個套件；
+# core/providers/claude_api.py 也刻意延遲 import，沒裝它不會影響其他供應商。
+anthropic==1.4.0
+
 # --- 儀表板後端（dashboard）---
 fastapi==0.141.1
 # [standard] 額外帶入 uvloop／httptools／watchfiles／websockets，SSE 與 --reload 需要

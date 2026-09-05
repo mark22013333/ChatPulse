@@ -18,7 +18,7 @@ from . import config as cfg
 
 _local = threading.local()
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS preferences (
     pinned_space_ids TEXT NOT NULL DEFAULT '[]',
     default_limit    INTEGER NOT NULL DEFAULT 50,
     default_style    TEXT NOT NULL DEFAULT 'general',
+    -- 空字串／NULL 代表沿用伺服器的 CHATPULSE_AI_PROVIDER
+    default_provider TEXT,
     updated_at       TEXT NOT NULL
 );
 
@@ -161,17 +163,44 @@ def close_connection() -> None:
         _local.conn = None
 
 
+#: 對**既有**資料表補欄位。`CREATE TABLE IF NOT EXISTS` 只在資料表不存在時
+#: 生效，對已經建好的資料表完全不做事——所以新增欄位一定要走這裡，
+#: 否則舊資料庫升級後會在查詢時才炸「no such column」。
+_ADD_COLUMNS = [
+    ("preferences", "default_provider", "TEXT"),
+]
+
+
+def _migrate(conn: sqlite3.Connection) -> List[str]:
+    applied = []
+    for table, column, decl in _ADD_COLUMNS:
+        existing = {
+            row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if not existing:
+            continue  # 資料表還不存在，_SCHEMA 會建（已含該欄位）
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+            applied.append(f"{table}.{column}")
+    return applied
+
+
 def init_db() -> None:
-    """建立 schema（idempotent），並記下 schema 版本。"""
+    """建立 schema（idempotent），補既有資料表的新欄位，並記下 schema 版本。"""
     cfg.ensure_data_dir()
     conn = get_connection()
     with conn:
         conn.executescript(_SCHEMA)
+        applied = _migrate(conn)
         conn.execute(
             "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (str(SCHEMA_VERSION),),
         )
+    if applied:
+        import logging
+
+        logging.getLogger("chatpulse.db").info("schema 遷移：新增欄位 %s", applied)
     # 資料庫檔本身也收權限：裡面有摘要與草稿內容
     try:
         os.chmod(cfg.DB_PATH, 0o600)

@@ -24,7 +24,7 @@ from core import directory
 from core import prompts
 from core.chat_client import GoogleChatClient, format_conversation, validate_limit
 from core.errors import ChatPulseError
-from core.gemini_client import GeminiClient
+from core import providers
 
 
 def confirm_post(space_name: str, space_id: str) -> bool:
@@ -52,6 +52,7 @@ def run_summary(
     count: int = cfg.LIMIT_DEFAULT,
     style: str = cfg.SUMMARY_STYLE_DEFAULT,
     post_back: bool = False,
+    provider: str = "",
 ):
     """執行摘要流程。
 
@@ -59,15 +60,15 @@ def run_summary(
     2. 找到指定群組
     3. 抓取指定則數的訊息
     4. 用 core 的 format_conversation() 組合對話文本
-    5. 呼叫 Gemini 產出摘要
+    5. 呼叫選定的 AI 供應商產出摘要
     6. （只有明確要求時）二次確認後推播回 Google Chat 群組
     """
     count = validate_limit(count)
     style = prompts.validate_style(style)
 
-    print("🚀 初始化 Google Chat 與 Gemini 模組...")
+    ai = providers.resolve(provider or None)
+    print(f"🚀 初始化 Google Chat 與 AI 模組（供應商：{ai.name}／模型：{ai.model}）...")
     chat = GoogleChatClient()
-    gemini = GeminiClient()
 
     print(f"🔍 正在尋找空間：「{space_query}」...")
     space = chat.find_space_by_name(space_query)
@@ -92,13 +93,14 @@ def run_summary(
         print("⚠️ 這些訊息都沒有文字內容，無法摘要。")
         return None
 
-    print(f"🧠 正在將對話送交 Gemini（風格：{style}）進行深度分析...")
-    summary = gemini.summarize_discussion(
-        space_name, conversation_text, len(messages), style
+    print(f"🧠 正在送交 {ai.name}（風格：{style}）進行深度分析...")
+    summary = ai.generate(
+        prompts.summary_prompt(space_name, conversation_text, len(messages), style),
+        operation="summarize",
     )
 
     print("\n" + "=" * 50)
-    print("📋 【Gemini 產出摘要結果】：")
+    print(f"📋 【摘要結果｜{ai.name}／{ai.model}】：")
     print("=" * 50)
     print(summary)
     print("=" * 50 + "\n")
@@ -147,6 +149,20 @@ def build_parser():
         ),
     )
     parser.add_argument(
+        "--provider",
+        default="",
+        help=(
+            "AI 供應商，留空＝用 CHATPULSE_AI_PROVIDER（預設 claude）。"
+            f"可用值：{'、'.join(providers.VALID_NAMES)}。"
+            "claude 是智慧別名：有 Anthropic 憑證走 API，否則用本機 Claude Code CLI"
+        ),
+    )
+    parser.add_argument(
+        "--list-providers",
+        action="store_true",
+        help="列出所有 AI 供應商與各自現在可不可用，然後結束",
+    )
+    parser.add_argument(
         "--post",
         action="store_true",
         help="摘要完成後推播回群組（會先顯示目標群組並要求二次確認）",
@@ -162,6 +178,14 @@ def build_parser():
 def main() -> int:
     args = build_parser().parse_args()
 
+    if args.list_providers:
+        print(f"預設：{providers.default_name()}")
+        for d in providers.describe_all():
+            print(f"\n  {'✅' if d['available'] else '❌'} {d['name']}（{d['label']}）")
+            print(f"     模型：{d['model']}")
+            print(f"     {d['reason']}")
+        return 0
+
     # 預設不推播；--no-post 是保守側，與 --post 併用時勝出
     post_back = args.post and not args.no_post
 
@@ -173,6 +197,7 @@ def main() -> int:
             count=count,
             style=args.style,
             post_back=post_back,
+            provider=args.provider,
         )
     except ChatPulseError as exc:
         # 8.4：可預期的錯誤只印中文訊息，不讓 traceback 冒到終端

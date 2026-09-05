@@ -13,6 +13,7 @@ import { UsagePanel } from '@/components/UsagePanel'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/store/auth'
 import { useMentionsStore } from '@/store/mentions'
+import { useProviderStore } from '@/store/providers'
 import { findSpace, useSpacesStore } from '@/store/spaces'
 import { useSummaryStore } from '@/store/summary'
 
@@ -45,6 +46,10 @@ export default function App() {
   const loadHistory = useSummaryStore((state) => state.loadHistory)
   const applyDefaults = useSummaryStore((state) => state.applyDefaults)
 
+  const applyProviderConfig = useProviderStore((state) => state.applyServerConfig)
+  const loadProviders = useProviderStore((state) => state.loadProviders)
+  const providersLoaded = useProviderStore((state) => state.initialised)
+
   useEffect(() => {
     void init()
   }, [init])
@@ -65,6 +70,24 @@ export default function App() {
       style: me.preferences.default_style,
     })
   }, [me?.preferences, applyDefaults])
+
+  // 供應商清單：/me 已經帶了 ai 就直接用（少一次往返），否則補打 /providers。
+  // 初始選擇＝偏好的 default_provider → 沒有就用伺服器的 default（見 store/providers.ts）
+  useEffect(() => {
+    if (!authenticated) return
+    if (me?.ai?.providers?.length) {
+      applyProviderConfig(me.ai, me.preferences?.default_provider ?? null)
+    } else if (!providersLoaded) {
+      void loadProviders()
+    }
+  }, [
+    authenticated,
+    me?.ai,
+    me?.preferences?.default_provider,
+    providersLoaded,
+    applyProviderConfig,
+    loadProviders,
+  ])
 
   // 未處理數量先用 /api/v1/me 的快照，頂列 badge 不必等收件匣開啟才出現
   useEffect(() => {
