@@ -246,3 +246,6 @@ Python 與 `uv` **不用自己準備**——安裝腳本偵測不到 `uv` 會自
 - **標籤文字可以改**，改的是 Chat API 的 App name（上限 25 字元）：
   <https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat?project=PROJECT_ID>
   改名**不會**讓你需要重新授權。這件事只有專案維護者需要做，一次改完所有人都適用。
+  > ⚠️ 正因為「所有人都適用」，**這個名字不可以取成任何人的名字**——
+  > 取成維護者的名字，同事的訊息就會顯示成 `王小明 [某某某] 12:36`，
+  > 看起來像是別人代發的。要取**工具名**。
