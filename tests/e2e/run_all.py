@@ -31,6 +31,7 @@ SUITES = [
     ("Phase 2（Mention／Draft Reply／Reference Space／送出／多 Viewer）", "test_phase2.py"),
     ("缺陷 D-3（摘要不被截斷，含 2048 負對照）", "test_d3_truncation.py"),
     ("判定條件 6.1（ADD 不可誤判為 Mention）", "test_add_annotation.py"),
+    ("訊息附件與圖片佔位符（零 AI 呼叫）", "test_attachments.py"),
     ("靜態托管與路徑穿越防護", "test_static.py"),
 ]
 

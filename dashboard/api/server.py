@@ -38,7 +38,7 @@ if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
 from core import config as cfg
-from core import crypto, db, directory, identity, prompts, providers
+from core import attachments, crypto, db, directory, identity, prompts, providers
 from core import repository as repo
 from core.chat_client import (
     GoogleChatClient,
@@ -682,6 +682,18 @@ def summarize_stream(req: SummarizeRequest, viewer: Dict[str, Any] = ViewerDep):
                 )
                 return
 
+            # 能力檢查要在下載之前——不支援視覺就根本不去取圖，
+            # 省掉整條 API 往返與流量（那些圖仍以佔位符出現在對話文本裡）
+            images: List = []
+            skipped_images: List[str] = []
+            if ai.supports_vision:
+                images, skipped_images = attachments.collect(
+                    client.download_attachment,
+                    messages,
+                    space_id=space_id,
+                    budget_tokens=cfg.IMAGE_BUDGET_TOKENS_SUMMARY,
+                )
+
             yield sse(
                 {
                     "type": "meta",
@@ -691,12 +703,14 @@ def summarize_stream(req: SummarizeRequest, viewer: Dict[str, Any] = ViewerDep):
                     "style": style,
                     "provider": resolved_provider,
                     "model": ai.model,
+                    "image_count": len(images),
+                    "images_skipped": skipped_images,
                 }
             )
 
             prompt = prompts.summary_prompt(display, conversation, count, style)
             collected: List[str] = []
-            for chunk in ai.stream_text(prompt, operation="summarize"):
+            for chunk in ai.stream_text(prompt, operation="summarize", images=images):
                 collected.append(chunk)
                 yield sse({"type": "chunk", "text": chunk})
 
@@ -954,6 +968,22 @@ def draft_stream(
                     }
                 )
 
+            # 圖片：**只取被 @ 的那則與其討論串**，Reference Space 不取。
+            # 理由是成本——參考群組可能有好幾個、每個 50 則，圖片全抓會爆掉預算；
+            # 而使用者真正需要看到的，是「@ 我的那則自己帶的截圖」
+            # （實測工作群組最常見的形態就是「@某人 ＋ 一張截圖」）。
+            # priority_message_names 保證那則的圖排在最前面，不會被同串雜圖擠掉。
+            images: List = []
+            skipped_images: List[str] = []
+            if ai.supports_vision:
+                images, skipped_images = attachments.collect(
+                    client.download_attachment,
+                    thread_msgs,
+                    space_id=mention["space_id"],
+                    budget_tokens=cfg.IMAGE_BUDGET_TOKENS_DRAFT,
+                    priority_message_names=[mention["message_name"]],
+                )
+
             yield sse(
                 {
                     "type": "meta",
@@ -970,6 +1000,8 @@ def draft_stream(
                     ],
                     "provider": resolved_provider,
                     "model": ai.model,
+                    "image_count": len(images),
+                    "images_skipped": skipped_images,
                 }
             )
 
@@ -982,7 +1014,7 @@ def draft_stream(
             )
 
             collected: List[str] = []
-            for chunk in ai.stream_text(prompt, operation="draft_reply"):
+            for chunk in ai.stream_text(prompt, operation="draft_reply", images=images):
                 collected.append(chunk)
                 yield sse({"type": "chunk", "text": chunk})
 

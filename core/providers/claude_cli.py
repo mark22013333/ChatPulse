@@ -17,16 +17,17 @@ are never read」——那會讓訂閱認證失效，正好毀掉這條路徑唯
 改用 `--system-prompt` 取代預設 prompt，效果相同而不動認證。
 """
 
+import base64
 import json
 import os
 import shutil
 import subprocess
 import tempfile
-from typing import Iterator, List, Optional
+from typing import Iterator, List, Optional, Sequence
 
 from .. import config as cfg
 from ..errors import ClaudeApiError, ClaudeQuotaExceeded, ConfigurationError
-from .base import AIProvider
+from .base import AIProvider, ImagePart
 
 DEFAULT_SYSTEM = (
     "你是一個文字分析工具。嚴格依照使用者訊息中的指示產生內容，"
@@ -37,6 +38,11 @@ DEFAULT_SYSTEM = (
 class ClaudeCLIProvider(AIProvider):
     name = "claude_cli"
     label = "Claude Code（本機 CLI，用你現有的訂閱）"
+    # 實測：帶上本檔現行的全部參數（--restricted、工具全停用、--strict-mcp-config、
+    # --system-prompt）再加 --input-format stream-json 送 image block，模型答得出
+    # 圖片內容，且 init 事件顯示 "tools":[]。**視覺是模型的原生能力，不是 Read 工具**，
+    # 所以停用工具不影響它。多張圖的順序也正確。
+    supports_vision = True
 
     def __init__(self, model: Optional[str] = None, **kwargs):
         super().__init__(**kwargs)
@@ -58,7 +64,9 @@ class ClaudeCLIProvider(AIProvider):
 
     # ------------------------------------------------------------------
 
-    def _argv(self, system: Optional[str], stream: bool) -> List[str]:
+    def _argv(
+        self, system: Optional[str], stream: bool, has_images: bool = False
+    ) -> List[str]:
         argv = [
             cfg.CLAUDE_CLI_BIN,
             "-p",
@@ -78,7 +86,13 @@ class ClaudeCLIProvider(AIProvider):
             "--system-prompt",
             system or DEFAULT_SYSTEM,
         ]
-        if stream:
+        if has_images:
+            # 圖片只能經由 stream-json 輸入傳進去。**CLI 強制**：
+            # --input-format stream-json 一定要搭配 --output-format stream-json
+            # （用 json 會被直接拒絕：「requires output-format=stream-json」），
+            # 所以有圖時一律走串流路徑，generate() 也改成把串流接起來。
+            argv += ["--input-format", "stream-json"]
+        if stream or has_images:
             # stream-json 需要 --verbose，否則 CLI 直接拒絕執行
             argv += [
                 "--output-format",
@@ -90,18 +104,52 @@ class ClaudeCLIProvider(AIProvider):
             argv += ["--output-format", "json"]
         return argv
 
+    @staticmethod
+    def _stdin_payload(prompt: str, images: Optional[Sequence[ImagePart]]) -> str:
+        """組 stdin 要寫的內容。
+
+        無圖時就是原本的純文字 prompt（**argv 與 stdin 都一行不改，零迴歸**）；
+        有圖時包成一行 stream-json 的 user 訊息。
+        """
+        if not images:
+            return prompt
+
+        content: List[dict] = [{"type": "text", "text": prompt}]
+        for img in images:
+            content.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": img.media_type,
+                        "data": base64.b64encode(img.data).decode("ascii"),
+                    },
+                }
+            )
+        return json.dumps(
+            {"type": "user", "message": {"role": "user", "content": content}},
+            ensure_ascii=False,
+        ) + "\n"
+
     def _run_dir(self) -> str:
         """在暫存目錄執行，避免把專案的 CLAUDE.md 與檔案帶進上下文。"""
         return tempfile.gettempdir()
 
-    def _spawn(self, prompt: str, system: Optional[str], stream: bool) -> subprocess.Popen:
+    def _spawn(
+        self,
+        prompt: str,
+        system: Optional[str],
+        stream: bool,
+        has_images: bool = False,
+    ) -> subprocess.Popen:
         ok, reason = self.available()
         if not ok:
             raise ConfigurationError(reason)
         # prompt 走 stdin 而不是 argv：摘要的 prompt 可能上萬字，
-        # 而且內容來自聊天室，不該經過 shell 或 argv 長度限制
+        # 而且內容來自聊天室，不該經過 shell 或 argv 長度限制。
+        # 圖片同理——base64 後可能好幾百 KB，argv 塞不下。
         return subprocess.Popen(
-            self._argv(system, stream),
+            self._argv(system, stream, has_images),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -143,8 +191,23 @@ class ClaudeCLIProvider(AIProvider):
     # ------------------------------------------------------------------
 
     def generate(
-        self, prompt: str, *, system: Optional[str] = None, operation: str = "generate"
+        self,
+        prompt: str,
+        *,
+        system: Optional[str] = None,
+        operation: str = "generate",
+        images: Optional[Sequence[ImagePart]] = None,
     ) -> str:
+        if images:
+            # 有圖時 CLI 強制走 stream-json 輸出，沒有非串流的 JSON 可以解析。
+            # 重用既有的串流解析而不是為它寫第二套。
+            text = "".join(
+                self.stream_text(prompt, system=system, operation=operation, images=images)
+            )
+            if not text.strip():
+                raise ClaudeApiError("Claude Code CLI 回傳空內容")
+            return text
+
         proc = self._spawn(prompt, system, stream=False)
         try:
             stdout, stderr = proc.communicate(prompt, timeout=cfg.CLAUDE_CLI_TIMEOUT)
@@ -172,13 +235,18 @@ class ClaudeCLIProvider(AIProvider):
         return text
 
     def stream_text(
-        self, prompt: str, *, system: Optional[str] = None, operation: str = "generate"
+        self,
+        prompt: str,
+        *,
+        system: Optional[str] = None,
+        operation: str = "generate",
+        images: Optional[Sequence[ImagePart]] = None,
     ) -> Iterator[str]:
-        proc = self._spawn(prompt, system, stream=True)
+        proc = self._spawn(prompt, system, stream=True, has_images=bool(images))
         assert proc.stdin and proc.stdout
         usage: dict = {}
         try:
-            proc.stdin.write(prompt)
+            proc.stdin.write(self._stdin_payload(prompt, images))
             proc.stdin.close()
 
             for line in proc.stdout:
