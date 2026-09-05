@@ -26,6 +26,11 @@ mcp==2.1.1
 # claude_cli 供應商靠本機的 Claude Code 執行檔。2026-09-05 移除 claude_api
 # 供應商後，anthropic 套件一併移除。
 
+# --- 訊息圖片（core/attachments.py）---
+# 送圖給模型前一律縮圖。實測成本與像素數成正比（約 750 像素／token）且
+# API 不會替你縮，1920x1080 一張就要 2,694 tokens；縮到長邊 1024 省約 61%。
+Pillow==12.3.0
+
 # --- 儀表板後端（dashboard）---
 fastapi==0.141.1
 # [standard] 額外帶入 uvloop／httptools／watchfiles／websockets，SSE 與 --reload 需要

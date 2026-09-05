@@ -157,7 +157,13 @@ scope 含 chat 三項 ＋ `openid`/`userinfo.email`/`userinfo.profile`。
 { "space_id": "spaces/AAAAxLxqJxY", "limit": 50, "style": "general", "provider": "claude_cli" }
 ```
 事件序：`meta` → 多個 `chunk` → `done`。
-`meta` 內容：`{"type":"meta","space":"0.暫存","space_id":"spaces/...","message_count":50,"style":"general","provider":"claude_cli","model":"claude-cli:opus"}`
+`meta` 內容：`{"type":"meta","space":"0.暫存","space_id":"spaces/...","message_count":50,"style":"general","provider":"claude_cli","model":"claude-cli:opus","image_count":2,"images_skipped":[]}`
+
+`image_count` 是**實際送進模型**的圖片張數；`images_skipped` 是被略過的原因清單
+（超出張數上限、超出 token 預算、下載失敗、聊天室被列入排除清單…）。
+被略過的圖仍以 `[圖片：檔名（AI 未讀取內容）]` 出現在對話文本裡——
+差別是模型知道有圖但看不到內容。供應商不支援視覺時 `image_count` 為 0
+且**完全不會下載**（能力檢查發生在下載之前）。
 **`provider` 與 `model` 是伺服器實際使用的值**（別名已展開），前端顯示「用了哪個」時要以此為準，不要用送出前的選擇。
 串流結束時後端會把完整摘要寫入 `summaries`（僅本人可見），`done` 事件帶 `summary_id`：
 `{"type":"done","summary_id":12}`
@@ -169,9 +175,9 @@ scope 含 chat 三項 ＋ `openid`/`userinfo.email`/`userinfo.profile`。
   "default": "claude",
   "providers": [
     { "name": "claude_cli", "label": "Claude Code（本機 CLI，用你現有的訂閱）", "model": "claude-cli:opus",
-      "available": true, "reason": "使用本機 /Users/cheng/.local/bin/claude" },
+      "available": true, "reason": "使用本機 /Users/cheng/.local/bin/claude", "supports_vision": true },
     { "name": "gemini", "label": "Gemini（Google AI Studio）", "model": "gemini-3.6-flash",
-      "available": true, "reason": "使用 GOOGLE_API_KEY" }
+      "available": true, "reason": "使用 GOOGLE_API_KEY", "supports_vision": true }
   ]
 }
 ```
@@ -249,12 +255,17 @@ mentions 表**只存識別資訊**，不存內容）。
 { "reference_space_ids": ["spaces/BBB", "spaces/CCC"], "limit": 50, "provider": "claude_cli" }
 ```
 `reference_space_ids` **預設空陣列**（7.3：不自動選擇 Reference Space）。
+
+圖片：**只取被 @ 的那則與其討論串，Reference Space 的圖不取**。理由是成本——
+參考群組可能有好幾個、每個 50 則，圖片全抓會吃光預算；而真正需要看到的是
+「@ 我的那則自己帶的截圖」。被 @ 的那則的圖享有最高優先序，不會被同串雜圖擠掉。
 事件序：`meta` → 多個 `chunk` → `done`。
 `meta`：
 ```json
 { "type": "meta", "mention_id": 7, "space": "0.暫存", "thread_message_count": 12,
   "reference_spaces": [ { "space_id": "spaces/BBB", "space_name": "1.BU2-PG", "message_count": 50 } ],
-  "provider": "claude_cli", "model": "claude-cli:opus" }
+  "provider": "claude_cli", "model": "claude-cli:opus",
+  "image_count": 1, "images_skipped": [] }
 ```
 `done`：`{"type":"done","draft_id":3}`
 輸出內容為兩段 Markdown：`### 🧭 脈絡分析` 與 `### ✍️ 建議回話`。

@@ -8,7 +8,9 @@
 
 分成兩段：結構化樣本（可無限重跑、涵蓋真實資料掃不到的分支）
 與真實 API 樣本（證明欄位在使用者驗證下真的有值，不是只有理論成立）。
-不呼叫任何 AI，不消耗配額。
+
+**第 6 節會實際呼叫一次 `claude_cli`**（吃 Claude Code 訂閱額度，不動 Gemini 配額）。
+那一節驗的是整條路徑最關鍵的一環：模型到底看不看得到圖。前五節零 AI 呼叫。
 """
 
 import os
@@ -19,7 +21,8 @@ E2E_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(os.path.dirname(E2E_DIR)))
 sys.path.insert(0, E2E_DIR)
 
-from core import prompts  # noqa: E402
+from core import attachments, prompts, providers  # noqa: E402
+from core import config as cfg  # noqa: E402
 from core.chat_client import (  # noqa: E402
     GoogleChatClient,
     attachment_note,
@@ -187,6 +190,89 @@ def main() -> int:
         real = format_conversation(with_att[:5], lambda uid: f"成員…{(uid or '')[-4:]}")
         check("真實訊息組出的對話文本含圖片佔位符", "圖片：" in real, real[:120])
         info(f"實際輸出範例：{real.splitlines()[0][:100] if real else '(空)'}")
+
+    # ------------------------------------------------------------------
+    section("5. 取圖管線：下載、縮圖、預算（真實附件）")
+
+    msgs_asc = list(reversed(msgs))
+    target = None
+    for m in msgs_asc:
+        for a in m.get("attachment") or []:
+            if (a.get("contentType") or "").startswith("image/") and (
+                a.get("attachmentDataRef") or {}
+            ).get("resourceName"):
+                target = m
+    if not target:
+        blocked("取圖管線", "0.暫存 沒有可下載的圖片附件")
+        return summary()
+
+    images, skipped = attachments.collect(
+        client.download_attachment,
+        msgs_asc,
+        space_id=TEMP_SPACE,
+        priority_message_names=[target.get("name")],
+    )
+    check("能從真實訊息取到可送 AI 的圖", bool(images), f"{len(images)} 張，略過 {len(skipped)} 項")
+    if images:
+        first = images[0]
+        check(
+            "優先訊息的圖排在最前面",
+            first.label in (target.get("attachment") or [{}])[0].get("contentName", ""),
+            f"第一張是 {first.label}",
+        )
+        check("媒體型別是模型支援的格式", first.media_type in attachments.SUPPORTED_TYPES, first.media_type)
+        check("位元組是實際內容而非路徑", isinstance(first.data, bytes) and len(first.data) > 1000,
+              f"{len(first.data):,} bytes")
+        info(f"取得：{[(i.label, i.media_type, len(i.data)) for i in images]}")
+
+    # 排除清單要真的擋得住（這是資料邊界的執行點，不能只有設定沒有行為）
+    saved_excluded = cfg.IMAGE_EXCLUDED_SPACE_IDS
+    cfg.IMAGE_EXCLUDED_SPACE_IDS = (TEMP_SPACE,)
+    try:
+        blocked_imgs, blocked_reason = attachments.collect(
+            client.download_attachment, msgs_asc, space_id=TEMP_SPACE
+        )
+        check(
+            "列入排除清單的聊天室不送圖（負對照）",
+            blocked_imgs == [] and bool(blocked_reason),
+            str(blocked_reason),
+        )
+    finally:
+        cfg.IMAGE_EXCLUDED_SPACE_IDS = saved_excluded
+
+    saved_enabled = cfg.IMAGE_ENABLED
+    cfg.IMAGE_ENABLED = False
+    try:
+        off_imgs, off_reason = attachments.collect(
+            client.download_attachment, msgs_asc, space_id=TEMP_SPACE
+        )
+        check("總開關關閉時不送圖（負對照）", off_imgs == [] and bool(off_reason), str(off_reason))
+    finally:
+        cfg.IMAGE_ENABLED = saved_enabled
+
+    # ------------------------------------------------------------------
+    section("6. 端到端：模型真的看得到圖（會用一次 Claude Code 訂閱額度）")
+
+    p = providers.resolve("claude_cli")
+    ok, reason = p.available()
+    if not ok:
+        blocked("模型視覺實跑", reason)
+        return summary()
+
+    check("claude_cli 宣告支援視覺", p.supports_vision is True)
+
+    answer = p.generate(
+        "下面附上一張圖片。請用繁體中文一句話說明你**實際看到**什麼。"
+        "如果你看不到圖片，就只回覆「我看不到圖片」，不要猜測。",
+        images=images[:1],
+        operation="vision_test",
+    )
+    check(
+        "模型描述了圖片內容，而不是說看不到",
+        "看不到" not in answer and len(answer.strip()) > 10,
+        answer.strip()[:150],
+    )
+    info(f"模型回答：{answer.strip()[:200]}")
 
     return summary()
 

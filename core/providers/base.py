@@ -11,7 +11,22 @@
 """
 
 from abc import ABC, abstractmethod
-from typing import Callable, Iterator, Optional
+from dataclasses import dataclass
+from typing import Callable, Iterator, Optional, Sequence
+
+
+@dataclass(frozen=True)
+class ImagePart:
+    """要一起送給模型的一張圖。
+
+    `data` 是**原始位元組**，不是路徑也不是 base64——base64 編碼是各實作自己的事
+    （Claude CLI 與 Gemini 的包裝格式不同）。刻意不落地成暫存檔：規格 3.2 的
+    「對話全文不寫入資料庫」在圖片上同樣適用，位元組全程只待在記憶體。
+    """
+
+    media_type: str  # image/png、image/jpeg、image/gif、image/webp
+    data: bytes
+    label: str = ""  # 檔名，用於降級時的佔位符與除錯
 
 UsageRecorder = Callable[[str, str, int, int, int], None]
 """(operation, model, prompt_tokens, output_tokens, total_tokens) -> None
@@ -27,6 +42,9 @@ class AIProvider(ABC):
     name: str = "base"
     #: 給人看的名稱（繁體中文，前端下拉選單用）
     label: str = "未命名供應商"
+    #: 這個實作能不能看圖。**呼叫端要在「下載圖片之前」先問這個**——
+    #: 若只在實作內部靜默忽略 images，就會付了下載與流量成本卻沒有效果。
+    supports_vision: bool = False
 
     def __init__(self, *, usage_recorder: Optional[UsageRecorder] = None):
         self._usage_recorder = usage_recorder
@@ -50,13 +68,23 @@ class AIProvider(ABC):
 
     @abstractmethod
     def generate(
-        self, prompt: str, *, system: Optional[str] = None, operation: str = "generate"
+        self,
+        prompt: str,
+        *,
+        system: Optional[str] = None,
+        operation: str = "generate",
+        images: Optional[Sequence[ImagePart]] = None,
     ) -> str:
         """一次產生完整文字。"""
 
     @abstractmethod
     def stream_text(
-        self, prompt: str, *, system: Optional[str] = None, operation: str = "generate"
+        self,
+        prompt: str,
+        *,
+        system: Optional[str] = None,
+        operation: str = "generate",
+        images: Optional[Sequence[ImagePart]] = None,
     ) -> Iterator[str]:
         """逐段 yield 文字片段。
 
@@ -91,4 +119,5 @@ class AIProvider(ABC):
             "model": self.model,
             "available": ok,
             "reason": reason,
+            "supports_vision": self.supports_vision,
         }

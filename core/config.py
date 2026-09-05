@@ -79,6 +79,40 @@ MAX_PAGES = 50  # 安全閥：避免 nextPageToken 異常時無限迴圈
 SUMMARY_STYLES = ("general", "technical", "action_only")
 SUMMARY_STYLE_DEFAULT = "general"
 
+# --- 訊息圖片 ---
+# 總開關。關掉之後圖片只會以佔位符出現在對話文本裡（AI 知道有圖但看不到內容），
+# 不會有任何圖片位元組離開 Google。
+# 注意：規格第十節「所有可讀 Space 都可送 AI」是在**純文字**前提下做的決定。
+# 截圖是無定向的畫面捕捉（終端 scrollback、其他客戶名稱、DB 查詢結果都可能一起入鏡），
+# 風險輪廓與文字不同。要對特定 Space 收緊時，用 IMAGE_EXCLUDED_SPACE_IDS。
+IMAGE_ENABLED = os.environ.get("CHATPULSE_IMAGES", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+)
+# 逗號分隔的 space id；列在這裡的聊天室一律只給佔位符，不送圖片內容
+IMAGE_EXCLUDED_SPACE_IDS = tuple(
+    s.strip()
+    for s in os.environ.get("CHATPULSE_IMAGE_EXCLUDED_SPACES", "").split(",")
+    if s.strip()
+)
+
+# 送出前一律縮圖。實測成本與像素數成正比（約 750 像素／token，三種尺寸一致），
+# 且 API **不會**替你自動縮圖——1920×1080 會照 2,073,600 個像素全額計費（2,694 tokens）。
+# 縮到長邊 1024 可省約 61%，這是整個成本控制的地基。
+IMAGE_MAX_EDGE = int(os.environ.get("CHATPULSE_IMAGE_MAX_EDGE", "1024"))
+IMAGE_PIXELS_PER_TOKEN = 750  # 實測值，用於預算估算
+
+# 預算以 token 計而不是張數：同樣「一張圖」在不同尺寸下差 4.2 倍，用張數控管沒有意義
+IMAGE_BUDGET_TOKENS_SUMMARY = int(os.environ.get("CHATPULSE_IMAGE_BUDGET_SUMMARY", "6000"))
+IMAGE_BUDGET_TOKENS_DRAFT = int(os.environ.get("CHATPULSE_IMAGE_BUDGET_DRAFT", "8000"))
+IMAGE_MAX_COUNT = int(os.environ.get("CHATPULSE_IMAGE_MAX_COUNT", "8"))
+# 摘要只看最近這麼多則裡的圖（整份 500 則的圖片全抓沒有意義也付不起）
+IMAGE_SCAN_RECENT_MESSAGES = 30
+# 單一原始檔超過這個大小就跳過，不下載（避免一張 20MB 的圖拖垮整輪）
+IMAGE_MAX_SOURCE_BYTES = 12 * 1024 * 1024
+IMAGE_DOWNLOAD_WORKERS = 4  # 附件下載另有「每個 Space 每秒 15 次」的限制
+
 # --- 儲存 ---
 DB_PATH = os.environ.get("CHATPULSE_DB", os.path.join(DATA_DIR, "chatpulse.db"))
 # 加密金鑰刻意不與資料庫同檔存放（SPECIFICATION.md 九節設計要點）

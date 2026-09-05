@@ -9,8 +9,9 @@
   3. 每次呼叫記錄 usageMetadata 的 token 數（R-2：累積兩週後評估成本）
 """
 
+import base64
 import json
-from typing import Any, Callable, Dict, Iterator, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence
 
 import requests
 
@@ -57,9 +58,29 @@ class GeminiClient:
     def _headers(self) -> Dict[str, str]:
         return {"Content-Type": "application/json", "x-goog-api-key": self.api_key}
 
-    def _payload(self, prompt: str, max_output_tokens: Optional[int] = None) -> Dict[str, Any]:
+    def _payload(
+        self,
+        prompt: str,
+        max_output_tokens: Optional[int] = None,
+        images: Optional[Sequence[Any]] = None,
+    ) -> Dict[str, Any]:
+        parts: List[Dict[str, Any]] = [{"text": prompt}]
+        for img in images or []:
+            # Gemini 的圖片走 inlineData（mimeType ＋ base64），與 text 併列在
+            # 同一個 parts 陣列裡。
+            # ⚠️ 這條路徑**尚未對真實 API 跑過**：Gemini 免費層每天只有 20 次請求
+            # （R-4），把配額燒在測試上會擋掉使用者自己的使用。欄位名依官方文件，
+            # 但單次請求的總大小上限與超限行為未驗證。
+            parts.append(
+                {
+                    "inlineData": {
+                        "mimeType": img.media_type,
+                        "data": base64.b64encode(img.data).decode("ascii"),
+                    }
+                }
+            )
         return {
-            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "contents": [{"role": "user", "parts": parts}],
             "generationConfig": {
                 "temperature": cfg.GEMINI_TEMPERATURE,
                 # D-3：2048 不夠，500 則對話的結構化摘要會被截斷
@@ -81,10 +102,16 @@ class GeminiClient:
     # 非串流
     # ------------------------------------------------------------------
 
-    def generate(self, prompt: str, *, operation: str = "generate") -> str:
+    def generate(
+        self,
+        prompt: str,
+        *,
+        operation: str = "generate",
+        images: Optional[Sequence[Any]] = None,
+    ) -> str:
         resp = requests.post(
             self._url("generateContent"),
-            json=self._payload(prompt),
+            json=self._payload(prompt, images=images),
             headers=self._headers(),
             timeout=300,
         )
@@ -127,7 +154,11 @@ class GeminiClient:
     # ------------------------------------------------------------------
 
     def stream_text(
-        self, prompt: str, *, operation: str = "generate"
+        self,
+        prompt: str,
+        *,
+        operation: str = "generate",
+        images: Optional[Sequence[Any]] = None,
     ) -> Iterator[str]:
         """逐段 yield 文字。上游是 Gemini 的 :streamGenerateContent?alt=sse。
 
@@ -138,7 +169,7 @@ class GeminiClient:
         try:
             with requests.post(
                 self._url("streamGenerateContent", sse=True),
-                json=self._payload(prompt),
+                json=self._payload(prompt, images=images),
                 headers=self._headers(),
                 stream=True,
                 timeout=300,
