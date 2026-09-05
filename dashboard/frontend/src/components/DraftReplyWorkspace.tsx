@@ -1,0 +1,314 @@
+import { useEffect, useMemo, useState } from 'react'
+import {
+  AlertCircleIcon,
+  CompassIcon,
+  Loader2Icon,
+  MessageSquareQuoteIcon,
+  SendIcon,
+  SparklesIcon,
+  SquareIcon,
+  XIcon,
+} from 'lucide-react'
+import { toast } from 'sonner'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { Markdown } from '@/components/Markdown'
+import { SpaceList } from '@/components/SpaceList'
+import { errorMessage } from '@/lib/api'
+import { formatDateTime } from '@/lib/format'
+import { splitDraft, useDraftStore } from '@/store/draft'
+import { useMentionsStore } from '@/store/mentions'
+import { filterSpaces, useSpacesStore } from '@/store/spaces'
+import type { Mention } from '@/lib/types'
+
+interface DraftReplyWorkspaceProps {
+  mention: Mention | null
+}
+
+/**
+ * Draft Reply 工作區（規格 7 節）。
+ * Reference Space 預設一個都不勾（7.3），送出前一定要二次確認（7.2 步驟 6）。
+ */
+export function DraftReplyWorkspace({ mention }: DraftReplyWorkspaceProps) {
+  const spaces = useSpacesStore((state) => state.items)
+  const applyResolved = useMentionsStore((state) => state.applyResolved)
+
+  const {
+    referenceSpaceIds,
+    referenceSearch,
+    refLimit,
+    refLimitError,
+    streaming,
+    raw,
+    meta,
+    error,
+    replyText,
+    sending,
+    toggleReference,
+    clearReferences,
+    setReferenceSearch,
+    setRefLimit,
+    setReplyText,
+    generate,
+    abort,
+    reset,
+  } = useDraftStore()
+
+  const [confirmOpen, setConfirmOpen] = useState(false)
+
+  // 換一則 Mention 就中止串流並清空草稿
+  useEffect(() => {
+    reset()
+  }, [mention?.id, reset])
+
+  // 元件卸載時中止串流
+  useEffect(() => () => abort(), [abort])
+
+  const sections = useMemo(() => splitDraft(raw), [raw])
+  const referenceCandidates = useMemo(
+    () => filterSpaces(spaces, referenceSearch),
+    [spaces, referenceSearch],
+  )
+  const selectedNames = useMemo(
+    () =>
+      referenceSpaceIds
+        .map((id) => spaces.find((space) => space.id === id)?.displayName ?? id)
+        .filter(Boolean),
+    [referenceSpaceIds, spaces],
+  )
+
+  if (!mention) {
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
+        <span className="flex size-12 items-center justify-center rounded-full bg-muted text-sky-500">
+          <MessageSquareQuoteIcon className="size-5" />
+        </span>
+        <div>
+          <p className="text-sm font-medium">從左側收件匣點一則 Mention</p>
+          <p className="mx-auto mt-1 max-w-sm text-xs text-muted-foreground">
+            系統會取回該討論串的完整對話，你可以再勾選其他 Space 當作 Reference Space
+            補充脈絡——被 @ 的問題，答案通常不在提問的那個 Space 裡。
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  const handleSend = async () => {
+    try {
+      const updated = await useDraftStore.getState().send(mention.id)
+      if (updated) applyResolved(updated)
+      else applyResolved({ ...mention, state: 'resolved', resolved_at: new Date().toISOString() })
+      toast.success('已送出回話，該則 Mention 已標記為已處理')
+      setConfirmOpen(false)
+    } catch (err) {
+      toast.error(errorMessage(err))
+    }
+  }
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      {/* 原始 Mention */}
+      <div className="shrink-0 border-b border-border px-5 py-3">
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+          <span className="text-sm font-semibold">{mention.space_name}</span>
+          <span className="text-xs text-muted-foreground">
+            {mention.sender_display} · {formatDateTime(mention.create_time)}
+          </span>
+          <span
+            className={
+              mention.state === 'pending'
+                ? 'rounded border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[10px] text-sky-500'
+                : 'rounded border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-500'
+            }
+          >
+            {mention.state === 'pending' ? '待處理' : '已處理'}
+          </span>
+        </div>
+        <p className="mt-2 rounded-lg border border-border bg-muted/40 p-3 text-xs leading-relaxed whitespace-pre-wrap">
+          {mention.text ?? `（無法取回訊息內容${mention.content_error ? `：${mention.content_error}` : ''}）`}
+        </p>
+      </div>
+
+      <div className="grid min-h-0 flex-1 grid-cols-1 xl:grid-cols-[280px_1fr]">
+        {/* Reference Space 勾選 */}
+        <div className="flex min-h-0 flex-col border-b border-border xl:border-r xl:border-b-0">
+          <div className="shrink-0 space-y-2 px-3 py-2.5">
+            <div className="flex items-center gap-2">
+              <h3 className="text-xs font-semibold">Reference Space</h3>
+              <span className="text-[10px] text-muted-foreground">
+                已勾選 {referenceSpaceIds.length}
+              </span>
+              {referenceSpaceIds.length > 0 ? (
+                <Button size="xs" variant="ghost" className="ml-auto" onClick={clearReferences}>
+                  <XIcon />
+                  清空
+                </Button>
+              ) : null}
+            </div>
+            <p className="text-[10px] leading-relaxed text-muted-foreground">
+              預設一個都不勾。勾選的 Space 近期訊息會一併送進脈絡。
+            </p>
+            <Input
+              value={referenceSearch}
+              onChange={(event) => setReferenceSearch(event.target.value)}
+              placeholder="搜尋 Space 名稱…"
+              className="h-7"
+            />
+            <div className="flex items-end gap-2">
+              <div className="flex-1 space-y-1">
+                <Label htmlFor="draft-limit" className="text-[10px] text-muted-foreground">
+                  每群抓取則數（1~1000）
+                </Label>
+                <Input
+                  id="draft-limit"
+                  type="number"
+                  min={1}
+                  max={1000}
+                  value={Number.isNaN(refLimit) ? '' : refLimit}
+                  onChange={(event) => setRefLimit(event.target.value)}
+                  className="h-7"
+                  aria-invalid={Boolean(refLimitError)}
+                />
+              </div>
+            </div>
+            {refLimitError ? (
+              <p className="text-[10px] text-destructive">{refLimitError}</p>
+            ) : null}
+          </div>
+
+          <SpaceList
+            spaces={referenceCandidates}
+            checkedIds={referenceSpaceIds}
+            onToggle={(space) => toggleReference(space.id)}
+            emptyHint="查無符合的 Space"
+            className="max-h-64 xl:max-h-none"
+          />
+
+          <div className="shrink-0 border-t border-border p-2.5">
+            {streaming ? (
+              <Button variant="outline" className="w-full" onClick={abort}>
+                <SquareIcon />
+                停止串流
+              </Button>
+            ) : (
+              <Button
+                className="w-full"
+                onClick={() => void generate(mention.id)}
+                disabled={Boolean(refLimitError)}
+              >
+                <SparklesIcon />
+                {raw ? '重新產生 Draft Reply' : '產生 Draft Reply'}
+              </Button>
+            )}
+          </div>
+        </div>
+
+        {/* 產出：脈絡分析 + 建議回話 */}
+        <div className="min-h-0 overflow-y-auto p-5">
+          {error ? (
+            <div className="mb-4 flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
+              <AlertCircleIcon className="mt-0.5 size-3.5 shrink-0" />
+              <span className="leading-relaxed">{error}</span>
+            </div>
+          ) : null}
+
+          {!raw && !streaming && !error ? (
+            <p className="py-10 text-center text-xs text-muted-foreground">
+              勾好 Reference Space 之後按「產生 Draft Reply」。草稿永遠只是草稿，一定要你看過、改過、確認後才會送出。
+            </p>
+          ) : null}
+
+          {raw || streaming ? (
+            <div className="space-y-4">
+              {meta ? (
+                <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                  <span className="font-mono">
+                    討論串 {meta.thread_message_count ?? 0} 則
+                  </span>
+                  {(meta.reference_spaces ?? []).map((ref) => (
+                    <span
+                      key={ref.space_id}
+                      className="rounded border border-border bg-muted/50 px-1.5 py-0.5"
+                    >
+                      {ref.space_name} · {ref.message_count} 則
+                    </span>
+                  ))}
+                  {streaming ? (
+                    <span className="flex items-center gap-1">
+                      <Loader2Icon className="size-3 animate-spin" />
+                      串流中
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
+
+              <section>
+                <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold">
+                  <CompassIcon className="size-4 text-sky-500" />
+                  脈絡分析
+                </h3>
+                <Markdown
+                  source={sections.context}
+                  typing={streaming && !sections.replyStarted}
+                  className="rounded-xl border border-border bg-card/60 p-4"
+                />
+              </section>
+
+              <section>
+                <div className="mb-2 flex items-center gap-1.5">
+                  <MessageSquareQuoteIcon className="size-4 text-emerald-500" />
+                  <h3 className="text-sm font-semibold">建議回話</h3>
+                  <span className="text-[11px] text-muted-foreground">（可直接編輯）</span>
+                  <Button
+                    size="sm"
+                    className="ml-auto"
+                    onClick={() => setConfirmOpen(true)}
+                    disabled={streaming || sending || !replyText.trim()}
+                  >
+                    <SendIcon />
+                    送出回話
+                  </Button>
+                </div>
+                <Textarea
+                  value={replyText}
+                  onChange={(event) => setReplyText(event.target.value)}
+                  rows={10}
+                  placeholder="建議回話會串流到這裡，你可以直接修改。"
+                  className="min-h-48 font-mono text-xs leading-relaxed"
+                />
+              </section>
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title="送出這則回話？"
+        description={
+          <>
+            將以<strong className="text-foreground">你本人的身分</strong>送出，並回到原討論串（
+            <strong className="text-foreground">{mention.space_name}</strong>）。
+            送出後這則 Mention 會自動變成已處理。
+            {selectedNames.length > 0 ? (
+              <>
+                <br />
+                本次參考的 Reference Space：{selectedNames.join('、')}
+              </>
+            ) : null}
+          </>
+        }
+        preview={replyText}
+        previewLabel="回話全文預覽"
+        confirmLabel="確認送出"
+        pending={sending}
+        onConfirm={() => void handleSend()}
+      />
+    </div>
+  )
+}
