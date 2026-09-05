@@ -62,7 +62,7 @@
         "--with", "google-auth-httplib2",
         "--with", "requests",
         "python3",
-        "/絕對路徑/google-chat-bot/src/mcp_server.py"
+        "/絕對路徑/google-chat-bot/mcp_app/mcp_server.py"
       ]
     }
   }
@@ -74,6 +74,11 @@
 
 重啟 Claude 即可開始使用！
 
+> **Claude Desktop 使用者必讀**：Desktop 是 GUI 程式，**不會讀取 `~/.zshrc`**，
+> 所以 `GOOGLE_API_KEY` 必須寫在上面 JSON 的 `env` 區塊裡顯式提供，否則
+> MCP server 啟動時就會因為找不到 Gemini API key 而失敗。
+> 從終端啟動的 Claude Code 會繼承 shell 環境，不受此限。
+
 ---
 
 ## 常用對話範例 (自然語言指令)
@@ -84,8 +89,10 @@
   > 「幫我看一下我的 Google Chat 有哪些群組，找找看『北市府』相關的」
 - **抓取與摘要對話**：
   > 「讀取『1.BU2-PG』最近 100 筆對話，並幫我整理重點與 Action Items」
+- **指定摘要風格**（三種：`general` 通用、`technical` 技術細節、`action_only` 只要待辦）：
+  > 「用技術細節的風格摘要『[技術發問區] SmartRobot / SmartBC』最近 100 則」
 - **摘要並回推**：
-  > 「分析『0.暫存』最近 30 則訊息，並把摘要結果發送回群組」
+  > 「分析『0.暫存』最近 50 則訊息，並把摘要結果發送回群組」
 - **發送文字**：
   > 「幫我在『0.暫存』發送：今天下午 3:00 開會」
 
