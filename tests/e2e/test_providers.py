@@ -86,7 +86,10 @@ def main() -> int:
     # 正對照：塞一把假金鑰進環境，別名應改選 API。
     # 只驗「選擇邏輯」，不會真的拿這把假金鑰去打 API。
     saved = os.environ.get("ANTHROPIC_API_KEY")
-    os.environ["ANTHROPIC_API_KEY"] = "sk-ant-not-a-real-key-selection-test"
+    # 值刻意**不長得像金鑰**：這個測試只驗「有沒有設環境變數」的選擇邏輯，
+    # 不會拿它去打 API。用 sk-ant- 前綴會被 GitHub 的 secret scanning
+    # push protection 當成外洩憑證擋下推送。
+    os.environ["ANTHROPIC_API_KEY"] = "dummy-value-for-provider-selection-test"
     try:
         with_key = providers.resolve_name("claude")
     finally:
