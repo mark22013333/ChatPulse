@@ -31,8 +31,9 @@
 - **狀態**：規格書 v2.0 的 Phase 0／1／2 全部完成，21 條驗收條件逐條有證據
 - **分支**：`main`。2026-09-05 的工作共 13 個 commit
 - **服務**：`./scripts/start-web.sh` → http://localhost:8000
-- **AI 供應商**：預設 Claude。`claude_cli`（吃本機 Claude Code 訂閱，零設定）／
-  `claude_api`（需 `ANTHROPIC_API_KEY`）／`gemini`（每天 20 次）
+- **AI 供應商**：兩個實作——`claude_cli`（吃本機 Claude Code 訂閱，零設定）與
+  `gemini`（每天 20 次）；另有 `claude`／`auto` 兩個別名，預設 `claude`。
+  `claude_api`（Anthropic API）已於 2026-09-05 移除，理由見 SPECIFICATION.md 3.2
 
 ---
 
@@ -58,8 +59,8 @@ npm --prefix dashboard/frontend run test              # 前端 31 項
 
 | 項目 | 狀態 | 下一步 |
 | :--- | :--- | :--- |
-| **推送到遠端** | `main` 領先 `origin/main` 13 個 commit，**尚未 push** | `git push origin main`（AI 的 PreToolUse hook 會擋推送到 main，要由人執行） |
-| **`claude_api` 供應商從未對真實 API 跑過** | 只驗過匯入與參數組裝——這台機器沒有 `ANTHROPIC_API_KEY` 也沒有 `ant` CLI | 設好金鑰後跑 `tests/e2e/test_providers.py`；模組開頭已標明這件事 |
+| ~~**推送到遠端**~~ **已完成** | 2026-09-05 確認 `main` 與 `origin/main` 同步，那 13 個 commit 已推上去 | — |
+| ~~**`claude_api` 供應商從未對真實 API 跑過**~~ **已消解** | 2026-09-05 決定**移除**這個供應商而不是留著等金鑰。未驗證的分支不該留在契約與前端選單裡 | 實作留在 git 歷史（`core/providers/claude_api.py`）；要接回來見 SPECIFICATION.md 3.2 的說明 |
 | **「兩位真人 Viewer 各自 OAuth」未驗** | 只有一個 Google 帳號。授權隔離邏輯已用「資料庫建第二位 viewer + session」走 HTTP 層驗過 | 找同事用他的帳號跑一次登入 |
 | **D-2：建議更換 Gemini API key** | 程式面已修（無硬編碼）。金鑰本身建議換 | 理由見 SPECIFICATION.md 3.3「憑證絕不進 repo」下方的收斂結論 |
 | **`docs/index.html` 系統手冊** | 只修了過時的 MCP 路徑與則數預設值 | 尚未針對儀表板的 Phase 2 功能與供應商選擇改寫 |
@@ -109,7 +110,7 @@ npm --prefix dashboard/frontend run test              # 前端 31 項
 
 ```
 core/            共用封裝（Google Chat／AI 供應商／SQLite／加密／名錄／採集器）
-  providers/     AI 供應商：base 介面 ＋ claude_cli／claude_api／gemini 三個實作
+  providers/     AI 供應商：base 介面 ＋ claude_cli／gemini 兩個實作
 mcp_app/         MCP 入口（5 個工具）、CLI 摘要、OAuth 授權精靈
 dashboard/       FastAPI 後端 ＋ React 19 前端
 tests/e2e/       七套端對端測試，對真實 API 取證、不用 mock

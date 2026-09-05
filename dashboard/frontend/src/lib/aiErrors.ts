@@ -9,8 +9,6 @@
 /** 供應商實作名稱 → 給人看的短名（找不到就退回原名）。 */
 export function providerShortName(name: string | null | undefined): string {
   switch (name) {
-    case 'claude_api':
-      return 'Claude（Anthropic API）'
     case 'claude_cli':
       return 'Claude Code CLI'
     case 'gemini':

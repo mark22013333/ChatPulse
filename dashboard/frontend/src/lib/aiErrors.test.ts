@@ -38,8 +38,7 @@ describe('streamErrorMessage', () => {
 })
 
 describe('providerShortName', () => {
-  it('三個實作名稱都有中文短名', () => {
-    expect(providerShortName('claude_api')).toContain('Claude')
+  it('兩個實作名稱都有中文短名', () => {
     expect(providerShortName('claude_cli')).toContain('Claude Code')
     expect(providerShortName('gemini')).toBe('Gemini')
   })

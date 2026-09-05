@@ -9,9 +9,14 @@ import {
 import type { AIProvider } from '@/lib/types'
 
 const PROVIDERS: AIProvider[] = [
-  { name: 'claude_api', label: 'Claude（Anthropic API）', model: 'claude-opus-5', available: false, reason: '找不到 Anthropic 憑證' },
   { name: 'claude_cli', label: 'Claude Code（本機 CLI）', model: 'claude-cli:opus', available: true, reason: '使用本機 claude' },
   { name: 'gemini', label: 'Gemini（Google AI Studio）', model: 'gemini-3.6-flash', available: true, reason: '使用 GOOGLE_API_KEY' },
+]
+
+/** 同一份清單，但 gemini 不可用（現實情境：這台機器沒設 GOOGLE_API_KEY）。 */
+const WITH_UNAVAILABLE: AIProvider[] = [
+  PROVIDERS[0],
+  { ...PROVIDERS[1], available: false, reason: '缺 GOOGLE_API_KEY' },
 ]
 
 beforeEach(() => {
@@ -42,7 +47,11 @@ describe('resolveSelected', () => {
   })
 
   it('偏好指到已不可用的供應商時退回自動', () => {
-    expect(resolveSelected(PROVIDERS, 'gemini', 'claude_api')).toBe(AUTO_PROVIDER)
+    expect(resolveSelected(WITH_UNAVAILABLE, 'claude_cli', 'gemini')).toBe(AUTO_PROVIDER)
+  })
+
+  it('偏好指到已經不存在的供應商時退回自動（例：舊偏好裡的 claude_api）', () => {
+    expect(resolveSelected(PROVIDERS, 'claude_cli', 'claude_api')).toBe(AUTO_PROVIDER)
   })
 })
 
@@ -50,7 +59,7 @@ describe('applyServerConfig', () => {
   it('第一次套用會依偏好決定選擇', () => {
     useProviderStore.getState().applyServerConfig({ default: 'claude', providers: PROVIDERS }, 'gemini')
     expect(useProviderStore.getState().selected).toBe('gemini')
-    expect(useProviderStore.getState().providers).toHaveLength(3)
+    expect(useProviderStore.getState().providers).toHaveLength(2)
   })
 
   it('之後 /me 再刷新不可以蓋掉使用者當下的選擇', () => {
