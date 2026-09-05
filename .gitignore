@@ -39,6 +39,8 @@ token.key
 # ── 測試工具產出 ──────────────────────────────────
 # Playwright MCP 會把快照、截圖與 console log 丟在這裡
 .playwright-mcp/
+# E2E 報告的預設落點（含 add_samples.json 這類真實對話樣本，不該進版控）
+tests/e2e/reports/
 
 # ── 作業系統與編輯器 ───────────────────────────────
 .DS_Store

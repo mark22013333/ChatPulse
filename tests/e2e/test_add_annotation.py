@@ -17,8 +17,10 @@ import sys
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
-sys.path.insert(0, "/Users/cheng/google-chat-bot")
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# 專案根＝tests/e2e 往上兩層。不寫死絕對路徑，同事 clone 到別的位置也要能跑
+E2E_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(E2E_DIR)))
+sys.path.insert(0, E2E_DIR)
 
 from core.chat_client import GoogleChatClient, parse_rfc3339  # noqa: E402
 from core.mentions import is_mention_of  # noqa: E402
@@ -26,7 +28,7 @@ from e2e_lib import check, info, section, set_report, summary  # noqa: E402
 
 REPORT = os.environ.get(
     "E2E_REPORT",
-    "/private/tmp/claude-501/-Users-cheng-google-chat-bot/e23e39c0-7bfd-493e-8211-f63e32bb9432/scratchpad/e2e-add.md",
+    os.path.join(E2E_DIR, "reports", "e2e-add.md"),
 )
 MY_ID = "users/109827265019732088641"
 SCAN_SPACES = 60
@@ -157,10 +159,9 @@ def main() -> int:
             "`user.name`，每一則 @全部 都會湧進每個人的收件匣。"
         )
 
-        with open(
-            "/private/tmp/claude-501/-Users-cheng-google-chat-bot/e23e39c0-7bfd-493e-8211-f63e32bb9432/scratchpad/add_samples.json",
-            "w",
-        ) as f:
+        samples_path = os.path.join(E2E_DIR, "reports", "add_samples.json")
+        os.makedirs(os.path.dirname(samples_path), exist_ok=True)
+        with open(samples_path, "w") as f:
             json.dump(
                 {
                     "total_samples": len(add_samples),

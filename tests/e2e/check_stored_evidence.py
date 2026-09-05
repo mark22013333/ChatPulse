@@ -13,8 +13,10 @@
 import os
 import sys
 
-sys.path.insert(0, "/Users/cheng/google-chat-bot")
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# 專案根＝tests/e2e 往上兩層。不寫死絕對路徑，同事 clone 到別的位置也要能跑
+E2E_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(E2E_DIR)))
+sys.path.insert(0, E2E_DIR)
 
 from core import config as cfg  # noqa: E402
 from core import db  # noqa: E402
@@ -22,7 +24,7 @@ from e2e_lib import blocked, check, info, section, set_report, summary  # noqa: 
 
 REPORT = os.environ.get(
     "E2E_REPORT",
-    "/private/tmp/claude-501/-Users-cheng-google-chat-bot/e23e39c0-7bfd-493e-8211-f63e32bb9432/scratchpad/e2e-stored-evidence.md",
+    os.path.join(E2E_DIR, "reports", "e2e-stored-evidence.md"),
 )
 
 # 每種風格**自己的**預期章節。用 general 的章節名去檢查 action_only 會得到
