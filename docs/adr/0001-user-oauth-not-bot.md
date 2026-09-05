@@ -5,8 +5,9 @@ ChatPulse 讀寫 Google Chat 一律使用 **Viewer 本人的 OAuth 憑證**，�
 > **措辭更正（2026-09-05）：本文原本寫「不註冊 Chat App」，那是不精確的。**
 > 官方明寫「To perform create, update, and delete API calls, you must also configure
 > the Chat API」——**要用 API 送訊息，就必須在 GCP 專案裡配置一份 Chat app**。
-> 本專案確實有一份，名為 `T-Bot`（`user_directory` 表裡有它的紀錄：
-> `users/100963859070884172925`，因為它曾被加進「0.暫存」）。
+> 本專案確實有一份。它原本叫 `T-Bot`（`user_directory` 表裡還留著那個名字：
+> `users/100963859070884172925`，因為它曾被加進「0.暫存」），
+> **2026-09-06 已改名為 `MarkCheng`**——理由見下方「歸屬標示」。
 >
 > 這個決策真正成立的部分是：**不用 app 憑證驗證、不靠 Chat app 的 interaction event
 > 收訊息、不把它當成會說話的機器人**。所有讀寫都以 Viewer 本人身分進行，
@@ -28,7 +29,7 @@ ChatPulse 讀寫 Google Chat 一律使用 **Viewer 本人的 OAuth 憑證**，�
 - 每位 Viewer 都要各自跑一次 OAuth 授權，無法用一組共用憑證。
 - **歸屬標示拿不掉（2026-09-05 查證）**：透過 API 送出的訊息，Chat 會在發送者名字旁邊
   顯示 Chat app 的名稱。官方 `create-messages` 逐字寫著「Chat also attributes the Chat app
-  to the message by displaying its name」，UI 上呈現為 `你 [T-Bot] 12:36` 這樣的灰底標籤。
+  to the message by displaying its name」，UI 上呈現為 `你 [MarkCheng] 12:36` 這樣的灰底標籤。
   - **無法關閉**：`spaces.messages.create` 的 request body 沒有任何 attribution 相關欄位，
     也沒有對應的 scope 或 Console 開關。**但要精確地說——這是「官方未提供任何關閉手段」，
     不是「官方明令禁止」**，我們找不到方法，不代表方法不存在。
@@ -45,3 +46,6 @@ ChatPulse 讀寫 Google Chat 一律使用 **Viewer 本人的 OAuth 憑證**，�
   - **這個標籤與本決策的方向相反**：架構上一切以本人身分發話，UI 上卻掛著一個
     看起來像機器人的名字。緩解方式是把 App name 取成一望即知是「某人的工具」
     而不是「一隻機器人」的名字。
+  - **2026-09-06 已據此改名：`T-Bot` → `MarkCheng`。** 原本的 `T-Bot` 會讓收訊息的人
+    以為是機器人在講話，與本決策（一切以本人身分發話）正好相反；改成人名之後，
+    標籤讀起來是「這則是某人透過工具送的」，與實際行為一致。
