@@ -2,8 +2,15 @@
 
 規格對應：SPECIFICATION.md 2.4、3.3（MCP 註冊路徑與 GOOGLE_API_KEY 環境變數）、4.2（Scope）。
 
-授權時只要 `cfg.CHAT_SCOPES`（讀 Space／讀訊息／發訊息）——MCP 與 CLI 這兩個入口
-不需要身分 scope。儀表板另需 `cfg.DASHBOARD_SCOPES`（含 userinfo），走它自己的登入流程。
+**授權時要 `cfg.DASHBOARD_SCOPES`（六個），不是只有 `cfg.CHAT_SCOPES`（三個）。**
+
+MCP 與 CLI 本身只需要三個 chat scope，但一次要滿六個是刻意的：儀表板需要
+身分 scope（要知道你是誰，才判斷得出誰 @ 了你），若精靈只要三個，同事裝完
+MCP 之後到儀表板還得再跑一次 Google 授權——多一次授權就是多一個放棄點。
+拿到的 token 是超集，MCP 與 CLI 只會用到其中三個，不受影響。
+
+附帶好處：token 帶了 identity scope 之後，儀表板的 `POST /api/v1/auth/bootstrap`
+就解析得出身分，不必再設 `CHATPULSE_BOOTSTRAP_USER_ID` 這個逃生門。
 """
 
 import os
@@ -63,11 +70,24 @@ def check_and_auth_token():
     # core/config.py 現在的正式名稱是 LEGACY_TOKEN_FILE（TOKEN_FILE 只是相容別名）
     token_path = cfg.LEGACY_TOKEN_FILE
     creds = None
+    token_scopes = set()
     if os.path.exists(token_path):
         try:
+            import json
+
+            with open(token_path) as f:
+                token_scopes = set(json.load(f).get("scopes") or [])
             creds = Credentials.from_authorized_user_file(token_path, cfg.CHAT_SCOPES)
         except Exception:
             creds = None
+
+    # 舊版精靈只授權三個 chat scope。那種 token 對 MCP 夠用，但儀表板會因為
+    # 缺身分 scope 而無法判斷「你是誰」。偵測到就重新授權，不要讓人以為裝好了。
+    missing = set(cfg.DASHBOARD_SCOPES) - token_scopes
+    if creds and creds.valid and missing:
+        print(f"⚠️ 現有 Token 缺少 {len(missing)} 個權限，Web 儀表板會不能用。")
+        print("   （這是舊版精靈只授權三個權限造成的，重新授權一次就好）")
+        creds = None
 
     if creds and creds.valid:
         print(f"✅ 已檢測到有效 Token: {token_path}")
@@ -87,8 +107,12 @@ def check_and_auth_token():
     # 觸發本地授權視窗
     print("\n👉 即將開啟瀏覽器跳出 Google 帳號授權頁面...")
     print("   請點選您的公司 Google Workspace 帳號，並同意授權。")
+    print("   同意畫面會一併要求「查看你的基本個人資料」——那是給 Web 儀表板用的")
+    print("   （它要知道你是誰，才判斷得出誰 @ 了你）。一次授權，兩個入口都能用。")
     try:
-        flow = InstalledAppFlow.from_client_secrets_file(cfg.CLIENT_SECRET_FILE, cfg.CHAT_SCOPES)
+        flow = InstalledAppFlow.from_client_secrets_file(
+            cfg.CLIENT_SECRET_FILE, cfg.DASHBOARD_SCOPES
+        )
         creds = flow.run_local_server(port=0)
         with open(token_path, 'w') as f:
             f.write(creds.to_json())
