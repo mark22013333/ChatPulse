@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/dialog'
 import { SpaceList } from '@/components/SpaceList'
 import { relativeTime } from '@/lib/format'
+import { onEnter } from '@/lib/keyboard'
 import { filterSpaces, useSpacesStore } from '@/store/spaces'
 import type { Space } from '@/lib/types'
 
@@ -118,9 +119,9 @@ export function SpacesRail() {
               maxLength={60}
               placeholder="例如：王小明（某某廠商）"
               onChange={(e) => setAliasDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') void submitRename()
-              }}
+              // onEnter 會擋掉輸入法組字中的 Enter——注音選字時按 Enter
+              // 是「選這個字」，不是「儲存」。見 lib/keyboard.ts
+              onKeyDown={onEnter(() => void submitRename())}
             />
             <p className="text-[11px] text-muted-foreground">
               清空後儲存＝取消自訂，回到自動辨識的結果。這個名字只有你看得到，
