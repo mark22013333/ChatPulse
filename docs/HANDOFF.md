@@ -146,6 +146,16 @@ npm --prefix dashboard/frontend run test              # 前端 32 項
   直接寫 fd，於是引導訊息全部堆到子行程輸出**後面**，順序亂到看不懂。
   `webapp.unbuffer_output()` 在任何輸出前處理掉這件事（順帶把編碼錯誤設成
   `errors="replace"`，免得沒經過 .bat 時 cp950 主控台印中文直接拋例外中止）。
+- **`chatpulse.bat` 必須全檔 ASCII，不可加中文註解**（2026-09-06 實機回報）。
+  症狀是啟動時先噴幾行 `'cp950，' is not recognized as an internal or external
+  command`，而那些字串正是 `.bat` 裡中文註解的**後半段**。
+  機制：cmd.exe 用**位元組偏移**記住批次檔讀到哪，但用**當前碼頁**解碼；
+  `chcp 65001` 在檔案中間切換碼頁後，後續位元組改以 UTF-8 解讀，字元邊界跟著位移，
+  讀取位置就落到某個中文字（UTF-8 佔 3 位元組）的中間，於是註解的後半段被當成
+  指令送去執行。ASCII 位元組在 cp950 與 UTF-8 下完全相同，所以 ASCII-only 不會漂移。
+  修法是把註解與 `:nopython` 訊息全改英文，中文一律交給 Python 印（它的編碼由
+  `PYTHONUTF8` 管，不受這個問題影響）。**這個坑會靜默復發**——任何人日後在
+  `.bat` 加一行中文註解就會重現，所以檔案開頭有一段全大寫的警告。
 - **`.bat` 必須是 CRLF**。cmd.exe 執行 `goto` 時用位元組偏移量重新定位並逐行重讀，
   對 LF-only 批次檔的處理不穩，而 `chatpulse.bat` 剛好有 `goto` 跳轉、標籤、
   多行 `( )` 區塊三個高風險特徵。原本這件事取決於每位同事的 `core.autocrlf`

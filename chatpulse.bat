@@ -1,24 +1,48 @@
 @echo off
 setlocal enabledelayedexpansion
 
-REM ChatPulse 啟動器（Windows）
+REM ============================================================================
+REM  ChatPulse launcher (Windows)
 REM
-REM 這個檔案刻意很薄：引導流程的邏輯全部在 scripts\onboard.py，與 macOS/Linux
-REM 的 chatpulse.sh 共用同一份。各寫一份必然漂移，而 Windows 那份的坑，
-REM 用 macOS 的維護者永遠踩不到——所以這裡只做一件事：找到能跑的 Python。
+REM  *** THIS FILE MUST STAY PURE ASCII. DO NOT ADD CHINESE TEXT OR EMOJI. ***
 REM
-REM 用法（可直接雙擊，或在命令提示字元執行）：
-REM   chatpulse.bat          完整安裝引導（可重複執行）
-REM   chatpulse.bat check    只檢查安裝狀態
-REM   chatpulse.bat auth     只重新做 Google 授權
-REM   chatpulse.bat web      只啟動 Web 儀表板
+REM  Why: cmd.exe remembers its position in a batch file as a BYTE offset, but
+REM  decodes the bytes using the CURRENT code page. The `chcp 65001` below
+REM  switches that code page mid-file, so every byte after it is re-decoded as
+REM  UTF-8. Any multi-byte character (Chinese is 3 bytes in UTF-8) shifts the
+REM  character boundaries, the read position lands in the MIDDLE of a character,
+REM  and cmd starts executing the second half of a comment line as a command.
+REM
+REM  Reported 2026-09-06 on a real Windows machine. The visible symptom was:
+REM      'cp950,' is not recognized as an internal or external command
+REM  which is the tail of a Chinese REM line that used to sit right below chcp.
+REM  ASCII bytes are identical in cp950 and UTF-8, so ASCII-only cannot drift.
+REM
+REM  Chinese explanations for this file live in docs/HANDOFF.md, not here.
+REM ============================================================================
+REM
+REM  This launcher is deliberately thin: the whole onboarding flow lives in
+REM  scripts\onboard.py, shared with chatpulse.sh on macOS/Linux. Keeping two
+REM  copies guarantees drift, and the Windows-only potholes are exactly the ones
+REM  a macOS maintainer never steps in. So this file does one thing: find a
+REM  usable Python and hand over.
+REM
+REM  Usage (double-click, or run from a command prompt):
+REM    chatpulse.bat          full guided install (safe to re-run)
+REM    chatpulse.bat check    check install status only
+REM    chatpulse.bat auth     redo the Google authorisation only
+REM    chatpulse.bat web      start the web dashboard only
+REM    chatpulse.bat web --dev  ... with auto-reload for development
 
-REM 切成 UTF-8，否則下面與 Python 輸出的中文會變成亂碼
+REM Switch the console to UTF-8, otherwise the Chinese that Python prints
+REM below turns into garbage. Everything after this line must be ASCII.
 chcp 65001 >nul 2>&1
 
-REM 強制 Python 以 UTF-8 讀寫。chcp 只管 console 顯示，管不到 Python 的
-REM stdout 編碼——一旦輸出被導向檔案或 pipe，就會退回 cp950，
-REM 那時所有中文與 emoji 會直接拋 UnicodeEncodeError 讓程式中止。
+REM Force Python itself to read and write UTF-8. chcp only covers what the
+REM console displays; it does not reach Python's own stdout encoding. Once the
+REM output is redirected to a file or a pipe, Python falls back to the legacy
+REM code page and every Chinese character raises UnicodeEncodeError, which
+REM kills the process outright.
 set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
 
@@ -27,20 +51,31 @@ if "%BASE_DIR:~-1%"=="\" set "BASE_DIR=%BASE_DIR:~0,-1%"
 set "ONBOARD=%BASE_DIR%\scripts\onboard.py"
 set "VENV_PYTHON=%BASE_DIR%\.venv\Scripts\python.exe"
 
-REM 判斷是不是被雙擊執行的：是的話結尾要停住，否則視窗會直接關掉，
-REM 使用者連錯誤訊息都看不到
+REM Detect a double-click: if so, hold the window open at the end, otherwise it
+REM vanishes and the user never gets to read the error. Both conditions matter
+REM - a plain `cmd /c something-else` also carries /c, but only a double-click
+REM puts this file's own name on the command line.
+REM Kept as two flat probes plus a nested `if defined`: a `&&` followed by a
+REM parenthesised block containing a pipe is exactly the kind of cmd parsing
+REM corner that cannot be tested from macOS. The quotes around %CMDCMDLINE%
+REM matter too - an unquoted `&` in the path would split the echo itself.
 set "DOUBLE_CLICKED="
-echo %CMDCMDLINE% | find /i "/c" >nul 2>&1 && set "DOUBLE_CLICKED=1"
+set "_HAS_SLASH_C="
+set "_HAS_SELF="
+echo "%CMDCMDLINE%" | find /i "/c" >nul 2>&1 && set "_HAS_SLASH_C=1"
+echo "%CMDCMDLINE%" | find /i "%~nx0" >nul 2>&1 && set "_HAS_SELF=1"
+if defined _HAS_SLASH_C if defined _HAS_SELF set "DOUBLE_CLICKED=1"
 
-REM 1) 專案自己的環境優先——版本正確且套件都裝好了
+REM 1) Prefer the project's own environment - right version, packages present.
 if exist "%VENV_PYTHON%" (
     "%VENV_PYTHON%" "%ONBOARD%" %*
     set "EXITCODE=!ERRORLEVEL!"
     goto :finish
 )
 
-REM 2) 還沒建環境時，找一個系統 Python 來跑引導（它會負責建 .venv）
-REM    py.exe 是 Windows 的 Python Launcher，最可靠，優先用它指定版本
+REM 2) No environment yet: find any system Python to run the onboarding, which
+REM    is what creates .venv. py.exe (the Python Launcher) is the most reliable
+REM    way to ask for a specific version, so try it first.
 set "PYBIN="
 for %%V in (3.12 3.13) do (
     if not defined PYBIN (
@@ -61,15 +96,19 @@ set "EXITCODE=!ERRORLEVEL!"
 goto :finish
 
 :nopython
+REM ASCII only here too - see the header. The Chinese version of this message
+REM is in SETUP_GUIDE.md (Q7), which is where the docs point people anyway.
 echo.
-echo   [X] 找不到可用的 Python（需要 3.10 以上，建議 3.12）
+echo   [X] No usable Python found (need 3.10 or newer, 3.12 recommended)
 echo.
-echo       請到 https://www.python.org/downloads/ 下載安裝。
+echo       Download it here:  https://www.python.org/downloads/
 echo.
-echo       安裝時務必勾選 "Add python.exe to PATH"（在安裝畫面最下方），
-echo       否則裝完這裡還是找不到它。
+echo       IMPORTANT: tick "Add python.exe to PATH" near the bottom of the
+echo       installer screen. Without it this script still cannot find Python.
 echo.
-echo       裝好之後重新執行：chatpulse.bat
+echo       Then run chatpulse.bat again.
+echo.
+echo       Chinese instructions: see SETUP_GUIDE.md, section Q7.
 echo.
 set "EXITCODE=1"
 
