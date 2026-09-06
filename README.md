@@ -107,6 +107,9 @@ Viewer 也可以把選擇存成偏好（`default_provider`）。
 - **Mention 收件匣**：跨所有 Space 找出誰 @ 了你，待處理／已處理兩種狀態
 - **Draft Reply**：可勾選 1~N 個 **Reference Space** 補充脈絡（預設不勾），
   串流輸出「脈絡分析」與「建議回話」，改完後以你本人身分回到原討論串
+- **參考專案**：登錄本機 git repo 並指定哪個分支是正式、哪個是 UAT，草稿就能
+  引用**實際程式碼**回答「這段邏輯為什麼這樣寫」，並明確標示是哪個環境的哪個
+  commit（[ADR-0006](docs/adr/0006-manual-reference-projects-over-code-rag.md)）
 
 ## CLI 單群摘要
 
@@ -171,3 +174,8 @@ tests/e2e/   端對端測試
 產生摘要與草稿，**包含公部門與金融客戶專案群組**。對話全文不落地，但摘要與草稿會以
 明文存在本機 SQLite 中 90 天。這是已經做出的決定，理由與代價寫在
 `SPECIFICATION.md` 第十節，團隊共用前請先讀那一節。
+
+**參考專案會把原始碼片段送給 AI**：只限你自己登錄的 repo（不是自動掃描），
+片段本身不落地，但草稿裡的程式碼會跟著草稿存 90 天。`.env` 之類的路徑整份跳過、
+片段內的金鑰會遮蔽，但那是 best-effort。要全面關閉：`CHATPULSE_CODE=0`。
+細節見 `SPECIFICATION.md` 10.4。
