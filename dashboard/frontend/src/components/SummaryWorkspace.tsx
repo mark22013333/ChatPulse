@@ -55,13 +55,25 @@ export function SummaryWorkspace({ space }: SummaryWorkspaceProps) {
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [publishing, setPublishing] = useState(false)
 
-  // 切換 Space 時中止仍在跑的串流並清空畫面，避免 setState-after-unmount 與殘留內容
-  useEffect(() => {
-    reset()
-  }, [space?.id, reset])
+  // store 記著「目前這份摘要是哪個 Space 的」，用它判斷要不要清空
+  const streamedSpaceId = useSummaryStore((state) => state.streamedSpaceId)
 
-  // 元件卸載時中止串流
-  useEffect(() => () => abort(), [abort])
+  // 只有**真的換了 Space** 才清空。
+  //
+  // 以前這裡是無條件 reset()，而 App.tsx 的頁籤是條件渲染（不是隱藏），
+  // 切頁籤會把這個元件整個卸載重掛——掛載時的 reset() 就把還在串流的
+  // 摘要清光了。原註解擔心的 setState-after-unmount 不會發生：狀態在
+  // zustand store 裡，不是元件狀態。
+  useEffect(() => {
+    const id = space?.id ?? null
+    if (id !== null && streamedSpaceId !== null && id !== streamedSpaceId) {
+      reset()
+    }
+  }, [space?.id, streamedSpaceId, reset])
+
+  // 這裡刻意**不**在卸載時 abort：理由同 DraftReplyWorkspace——
+  // 切頁籤不該中止已經在燒額度的生成，而且後端要整段跑完才落盤。
+  // 要停止請按畫面上的停止鍵。
 
   const canStart = Boolean(space) && !streaming && !limitError
 
