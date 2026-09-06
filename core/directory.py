@@ -103,11 +103,63 @@ def remember(user_id: str, display_name: str, source: str = "identity") -> None:
     )
 
 
+# 私訊空間的對方也記在 user_directory 裡，key 加這個前綴與真人的 users/{id} 區隔。
+# 用既有的表而不另開一張：那張表的主鍵是自由字串，而這件事的形狀
+# （id -> 顯示名稱，會被覆寫更新）跟人名名錄完全一樣。
+_DM_PREFIX = "dm:"
+
+
 def load_all() -> Dict[str, str]:
+    """人名名錄。**不含**私訊對照那類非真人的記錄。"""
     return {
         r["user_id"]: r["display_name"]
-        for r in db.query_all("SELECT user_id, display_name FROM user_directory")
+        for r in db.query_all(
+            "SELECT user_id, display_name FROM user_directory WHERE source != 'dm_peer'"
+        )
     }
+
+
+def remember_dm_peer(space_id: str, display_name: str) -> None:
+    """記住某個私訊空間的對方是誰，之後 Space 清單就能顯示名字而不是「未命名空間」。"""
+    if not space_id or not display_name:
+        return
+    remember(f"{_DM_PREFIX}{space_id}", display_name, source="dm_peer")
+
+
+def load_dm_peers() -> Dict[str, str]:
+    """回傳 {space_id: 對方名字}，給 Space 清單組裝顯示名稱用。"""
+    return {
+        r["user_id"][len(_DM_PREFIX):]: r["display_name"]
+        for r in db.query_all(
+            "SELECT user_id, display_name FROM user_directory WHERE source = 'dm_peer'"
+        )
+        if r["user_id"].startswith(_DM_PREFIX)
+    }
+
+
+def peer_name_from_messages(
+    messages: Iterable[Dict[str, Any]],
+    self_user_id: Optional[str],
+    resolve: Callable[[Optional[str]], str],
+) -> Optional[str]:
+    """從私訊的訊息裡找出「不是我」的那個人，回傳解析得到的名字。
+
+    Google Chat 在使用者驗證下**不回傳 sender.displayName**（只有 users/{id}），
+    而私訊的 space 物件也沒有 displayName，所以對方是誰只能這樣推：
+    拿一則訊息的 sender，再交給名錄解析。
+
+    名錄是全域的——只要對方曾在任何群組被 @ 過就查得到。2026-09-06 取樣
+    12 個私訊實測，10 個解析得到（83%）。查不到就回 None，由呼叫端決定顯示什麼；
+    這裡刻意不回退成「成員…8641」那種代號，清單上放代號比放「私訊」更難懂。
+    """
+    for msg in messages:
+        uid = (msg.get("sender") or {}).get("name")
+        if not uid or uid == self_user_id:
+            continue
+        name = resolve(uid)
+        if name and not name.startswith("成員…") and name != "未知成員":
+            return name
+    return None
 
 
 def short_code(user_id: str) -> str:

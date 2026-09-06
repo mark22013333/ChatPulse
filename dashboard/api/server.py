@@ -169,18 +169,89 @@ def get_provider(
     return providers.resolve(name, usage_recorder=_recorder)
 
 
+# 背景補齊私訊對象時，同一個 viewer 不要同時跑兩份
+_dm_fill_running: set = set()
+_dm_fill_lock = threading.Lock()
+
+#: 每輪背景解析的上限。使用者可能有上百個私訊，一次全解會撞配額也拖很久；
+#: 按最後活動排序取前面這些，多刷新幾次就補完了。
+DM_FILL_BATCH = 25
+
+
+def _fill_dm_peers_bg(viewer_id: int, spaces: List[Dict[str, Any]]) -> None:
+    """背景把還不認得的私訊對方補齊，不阻塞 /api/v1/spaces 的回應。
+
+    為什麼要背景做：私訊的對方是誰，只能靠讀一則訊息看 sender 再查名錄
+    （Google Chat 對 DIRECT_MESSAGE 不回 displayName，而 members.list 需要
+    我們沒有的 scope）。使用者有上百個私訊，同步解析要幾十秒，清單會卡住。
+
+    db 模組是 thread-local 連線（core/db.py），所以背景寫入安全。
+    """
+    with _dm_fill_lock:
+        if viewer_id in _dm_fill_running:
+            return
+        _dm_fill_running.add(viewer_id)
+    try:
+        known = directory.load_dm_peers()
+        todo = [
+            s for s in spaces
+            if s["type"] == "DIRECT_MESSAGE" and not known.get(s["id"])
+        ]
+        if not todo:
+            return
+        # 最近活動的排前面——那些是使用者最可能在清單上看到的
+        todo.sort(key=lambda s: s.get("lastActiveTime") or "", reverse=True)
+        todo = todo[:DM_FILL_BATCH]
+
+        self_id = (repo.get_viewer(viewer_id) or {}).get("google_user_id")
+        client = get_client(viewer_id)
+        resolve = directory.make_resolver()
+        found = 0
+        for s in todo:
+            try:
+                msgs = client.fetch_recent_messages(s["id"], limit=3)
+                peer = directory.peer_name_from_messages(msgs, self_id, resolve)
+                if peer:
+                    directory.remember_dm_peer(s["id"], peer)
+                    found += 1
+            except Exception:
+                continue  # 單一 space 失敗不影響其他
+        if found:
+            log.info("背景辨識私訊對象：這輪認出 %d/%d 個", found, len(todo))
+    except Exception:
+        log.exception("背景辨識私訊對象失敗（不影響清單）")
+    finally:
+        with _dm_fill_lock:
+            _dm_fill_running.discard(viewer_id)
+
+
 def list_spaces_cached(viewer_id: int, refresh: bool = False) -> Dict[str, Any]:
     entry = _spaces_cache.get(viewer_id)
     now = time.time()
     if refresh or not entry or (now - entry["timestamp"] > SPACES_CACHE_TTL):
         raw = get_client(viewer_id).list_spaces()
+        # 私訊沒有 displayName（Google Chat 對 DIRECT_MESSAGE 不回傳），
+        # 但我們可能已經從讀過的訊息認出對方是誰，那份對照就在名錄裡。
+        dm_peers = directory.load_dm_peers()
         formatted = []
         for s in raw:
             member = s.get("membershipCount") or {}
+            space_id = s.get("name")
+            display = s.get("displayName")
+            if not display:
+                # 認得出對方就顯示名字；認不出來寧可寫「私訊」也不要寫
+                # 「成員…8641」那種代號——清單上放代號比不放還難懂
+                peer = dm_peers.get(space_id)
+                if peer:
+                    display = peer
+                elif s.get("spaceType") == "DIRECT_MESSAGE":
+                    display = "（私訊）"
+                else:
+                    display = "（未命名空間）"
             formatted.append(
                 {
-                    "id": s.get("name"),
-                    "displayName": s.get("displayName") or "（私訊／未命名空間）",
+                    "id": space_id,
+                    "displayName": display,
                     "type": s.get("spaceType", "UNKNOWN"),
                     "lastActiveTime": s.get("lastActiveTime"),
                     "memberCount": member.get("joinedDirectHumanUserCount"),
@@ -188,6 +259,13 @@ def list_spaces_cached(viewer_id: int, refresh: bool = False) -> Dict[str, Any]:
             )
         entry = {"timestamp": now, "data": formatted, "was_cached": False}
         _spaces_cache[viewer_id] = entry
+        # 還沒認出來的私訊，丟到背景慢慢補。下次刷新（或快取過期）就看得到名字了。
+        threading.Thread(
+            target=_fill_dm_peers_bg,
+            args=(viewer_id, formatted),
+            name=f"chatpulse-dm-fill-{viewer_id}",
+            daemon=True,
+        ).start()
     else:
         entry = {**entry, "was_cached": True}
     return entry
@@ -215,6 +293,30 @@ def learn_names(messages: List[Dict[str, Any]]) -> None:
         directory.learn_from_messages(messages)
     except Exception:
         log.exception("名錄學習失敗（不影響主流程）")
+
+
+def learn_dm_peer(
+    viewer: Dict[str, Any], space_id: str, messages: List[Dict[str, Any]]
+) -> None:
+    """讀過某個私訊的訊息時，順手認出對方是誰並記下來。
+
+    零額外 API 成本：摘要與採集器本來就會讀這些訊息，這裡只是多看一眼 sender。
+    記下來之後，Space 清單就能顯示對方名字，而不是「（私訊）」。
+    認不出來（對方從沒在任何群組被 @ 過）就什麼都不做，下次再試。
+    """
+    try:
+        if not any(
+            s["id"] == space_id and s["type"] == "DIRECT_MESSAGE"
+            for s in list_spaces_cached(viewer["id"])["data"]
+        ):
+            return
+        peer = directory.peer_name_from_messages(
+            messages, viewer.get("google_user_id"), name_resolver_for(viewer)
+        )
+        if peer:
+            directory.remember_dm_peer(space_id, peer)
+    except Exception:
+        log.exception("私訊對象辨識失敗（不影響主流程）")
 
 
 # ==========================================================================
@@ -555,6 +657,7 @@ def get_messages(
     client = get_client(viewer["id"])
     messages = client.fetch_recent_messages(space_id, limit=limit)
     learn_names(messages)
+    learn_dm_peer(viewer, space_id, messages)
     resolve = name_resolver_for(viewer)
 
     formatted = []
@@ -698,6 +801,7 @@ def summarize_stream(req: SummarizeRequest, viewer: Dict[str, Any] = ViewerDep):
             ai = get_provider(viewer_id, req_provider)
             messages = client.fetch_recent_messages(space_id, limit=limit)
             learn_names(messages)
+            learn_dm_peer(viewer, space_id, messages)
             conversation = format_conversation(messages, name_resolver_for(viewer))
             count = len(messages)
 
