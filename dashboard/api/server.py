@@ -623,6 +623,30 @@ def sse_response(generator: Generator[str, None, None]) -> StreamingResponse:
     )
 
 
+def save_partial(save, kind: str, partial: str) -> None:
+    """串流沒能正常跑完時，把已經生成的內容補存下來。
+
+    **為什麼需要這個**：兩個串流端點原本都是「整段跑完 → 寫進資料庫 → 送 done」。
+    但客戶端一旦中途斷線（使用者切走頁籤、關掉分頁、網路斷、重新整理），
+    下一個 `yield` 就會拋 GeneratorExit，迴圈當場中止——寫入資料庫那行永遠
+    到不了。結果是 AI 額度已經燒掉、內容也生成了，卻整份丟掉，使用者回來
+    什麼都沒有。
+
+    這裡在 finally 補存一次。GeneratorExit 期間不能再 yield（會 RuntimeError），
+    但寫資料庫沒問題，所以只落檔、不回報事件。
+
+    `save` 是一個只收內容字串的 callable，由呼叫端把其餘欄位綁好。
+    """
+    if not partial.strip():
+        return
+    try:
+        save(partial)
+        log.info("%s串流未正常結束，已補存 %d 字的內容", kind, len(partial))
+    except Exception:
+        # 補存失敗不能再往外拋——這裡已經在收尾路徑上，拋出去只會蓋掉原本的錯誤
+        log.exception("%s在斷線後補存內容失敗", kind)
+
+
 class SummarizeRequest(BaseModel):
     space_id: str
     #: AI 供應商；省略時用 Viewer 偏好或伺服器預設
@@ -662,6 +686,11 @@ def summarize_stream(req: SummarizeRequest, viewer: Dict[str, Any] = ViewerDep):
     resolved_provider = providers.resolve_name(req_provider)
 
     def generate() -> Generator[str, None, None]:
+        # 這三個放在 try 外面：客戶端中途斷線時 yield 會拋 GeneratorExit，
+        # finally 仍要看得到已收到的內容才補存得了（見 save_partial）
+        collected: List[str] = []
+        saved = False
+        count = 0
         try:
             client = get_client(viewer_id)
             # 供應商在 meta 之前就要建好——meta 事件要帶 model，而 model
@@ -709,7 +738,6 @@ def summarize_stream(req: SummarizeRequest, viewer: Dict[str, Any] = ViewerDep):
             )
 
             prompt = prompts.summary_prompt(display, conversation, count, style)
-            collected: List[str] = []
             for chunk in ai.stream_text(prompt, operation="summarize", images=images):
                 collected.append(chunk)
                 yield sse({"type": "chunk", "text": chunk})
@@ -720,6 +748,7 @@ def summarize_stream(req: SummarizeRequest, viewer: Dict[str, Any] = ViewerDep):
                 summary_id = repo.create_summary(
                     viewer_id, space_id, display, style, count, content
                 )
+            saved = True
             yield sse({"type": "done", "summary_id": summary_id})
         except ChatPulseError as exc:
             yield sse(exc.to_sse_event())
@@ -728,6 +757,15 @@ def summarize_stream(req: SummarizeRequest, viewer: Dict[str, Any] = ViewerDep):
             yield sse(
                 {"type": "error", "code": "INTERNAL_ERROR", "message": f"摘要失敗：{exc}"}
             )
+        finally:
+            if not saved:
+                save_partial(
+                    lambda text: repo.create_summary(
+                        viewer_id, space_id, display, style, count, text
+                    ),
+                    "摘要",
+                    "".join(collected),
+                )
 
     return sse_response(generate())
 
@@ -923,6 +961,10 @@ def draft_stream(
     req_provider = req.provider
 
     def generate() -> Generator[str, None, None]:
+        # 放在 try 外面：客戶端中途斷線時 yield 會拋 GeneratorExit，
+        # finally 仍要看得到已收到的內容才補存得了（見 save_partial）
+        collected: List[str] = []
+        saved = False
         try:
             client = get_client(viewer_id)
             ai = get_provider(viewer_id, req_provider)
@@ -1013,13 +1055,13 @@ def draft_stream(
                 reference_blocks=ref_blocks,
             )
 
-            collected: List[str] = []
             for chunk in ai.stream_text(prompt, operation="draft_reply", images=images):
                 collected.append(chunk)
                 yield sse({"type": "chunk", "text": chunk})
 
             content = "".join(collected)
             draft_id = repo.create_draft(mention_id, content) if content.strip() else None
+            saved = True
             yield sse({"type": "done", "draft_id": draft_id})
         except ChatPulseError as exc:
             yield sse(exc.to_sse_event())
@@ -1028,6 +1070,13 @@ def draft_stream(
             yield sse(
                 {"type": "error", "code": "INTERNAL_ERROR", "message": f"草稿產生失敗：{exc}"}
             )
+        finally:
+            if not saved:
+                save_partial(
+                    lambda text: repo.create_draft(mention_id, text),
+                    "草稿",
+                    "".join(collected),
+                )
 
     return sse_response(generate())
 
