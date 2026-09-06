@@ -69,6 +69,10 @@ npm --prefix dashboard/frontend run test              # 前端 32 項
 
 | 項目 | 狀態 | 下一步 |
 | :--- | :--- | :--- |
+| **Draft Reply 的脈絡只有 1 則（私訊）** | 設計已完成並經第二意見批判，**尚未實作**。完整方案見 `docs/draft-context-design.md`（463 行，含逐行改動表）。使用者已同意方向 | 照設計實作 `core/draft_context.py`；動 prompt 簽章前先補單元測試當安全網 |
+| **程式碼佐證的前端 UI** | 後端已完成（CRUD 端點 + draft_stream 串接 + `code_meta` SSE 事件），**前端沒有設定頁**，目前只能用 curl 操作 | 做專案設定頁 + 草稿工作區的專案選擇器 + 顯示 `code_meta` |
+| **儀表板自動 bootstrap** | 首次進入要手動按「匯入既有憑證」 | 偵測本機有有效 token 就自動匯入 |
+| **推播摘要／送出回話的狀態在元件 useState** | 切走頁籤會遺失，有重複送出的風險。短操作，影響小 | 搬進 store（與串流狀態同樣的處理） |
 | **`chatpulse.bat` 的 Windows 實測** | 2026-09-06 首次實機跑過，**抓到一個真 bug**：`onboard.py` 的 Windows 分支直接跑 uvicorn、跳過前端建置，使用者一開瀏覽器就撞見「找不到前端建置產物」。已修（見下方「Windows 啟動儀表板」）。**修法本身仍未經 Windows 實機驗證** | 請原回報者再跑一次 `chatpulse.bat web`，確認看到畫面而不是那段文字 |
 | **Chat app 名稱要改成工具名** | 原為 `T-Bot`，2026-09-06 一度改成 `MarkCheng`，但那是錯的——App name 是**專案層級共用設定**，取人名會讓同事的訊息顯示成 `王小明 [MarkCheng]` | 改成 `ChatPulse` 之類的工具名。位置見 ADR-0001 |
 | **Gemini 的圖片路徑未驗** | `inlineData` 依官方文件實作，但沒對真實 API 跑過（不想燒每天 20 次配額） | 有配額餘裕時送一張圖驗一次；欄位名與大小上限都未實測 |
