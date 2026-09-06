@@ -52,6 +52,7 @@ from core import (
 from core import repository as repo
 from core.chat_client import (
     GoogleChatClient,
+    attachment_note,
     format_conversation,
     validate_limit,
 )
@@ -928,15 +929,33 @@ def get_spaces(
 def get_messages(
     space_id: str = Query(..., description="完整 Space 資源名，例如 spaces/AAAAxLxqJxY"),
     limit: Optional[int] = Query(default=None),
+    thread_name: Optional[str] = Query(
+        default=None,
+        description="給了就回傳整個討論串（忽略 limit 的『最近 N 則』語意）",
+    ),
     viewer: Dict[str, Any] = ViewerDep,
 ):
-    """訊息列表（8.2）。space_id 走 query string，不放 path（8.1）。"""
+    """訊息列表（8.2）。space_id 走 query string，不放 path（8.1）。
+
+    **回傳的是扁平訊息流，討論串回覆混在裡面**——Google 的 `messages.list`
+    沒有參數可以排除它們，所以「包含討論串」是預設行為，不是選項。
+    但同一串常常只被切到片段（`limit` 是按 createTime 取最近 N 則），
+    所以每則都帶 `thread_name`，呼叫端可以自己分組；要看完整的一串就再打一次
+    這個端點並帶 `thread_name`。
+    """
     limit = validate_limit(limit)
     if not space_id.startswith("spaces/"):
         raise InvalidParameter(f"space_id 必須是完整資源名（spaces/…），收到 {space_id!r}")
+    if thread_name and not thread_name.startswith(f"{space_id}/threads/"):
+        raise InvalidParameter(
+            f"thread_name 必須屬於 {space_id}，收到 {thread_name!r}"
+        )
 
     client = get_client(viewer["id"])
-    messages = client.fetch_recent_messages(space_id, limit=limit)
+    if thread_name:
+        messages = client.list_thread_messages(space_id, thread_name, limit=limit)
+    else:
+        messages = client.fetch_recent_messages(space_id, limit=limit)
     learn_names(messages)
     learn_dm_peer(viewer, space_id, messages)
     resolve = name_resolver_for(viewer)
@@ -944,7 +963,12 @@ def get_messages(
     formatted = []
     for m in messages:
         text = (m.get("text") or "").strip()
-        if not text:
+        # 只有圖、沒有文字的訊息**也要回**。在此之前這裡直接 continue 掉，
+        # 於是工作群組最常見的「@某人 ＋ 一張截圖」在清單上整則消失，
+        # 而且看不出漏了東西——只會覺得「怎麼比我要的少幾則」。
+        # 這與 chat_client.format_conversation 的處理一致，用同一個佔位符函式。
+        note = attachment_note(m)
+        if not text and not note:
             continue
         sender_obj = m.get("sender") or {}
         formatted.append(
@@ -954,11 +978,17 @@ def get_messages(
                 "sender_id": sender_obj.get("name"),
                 "time": (m.get("createTime") or "")[:16].replace("T", " "),
                 "text": text,
+                #: 附件的人話描述（含「存放於 Drive，本系統無權讀取」那種）。
+                #: 沒有附件就是空字串。
+                "attachment_note": note,
+                #: 這則屬於哪一串。私訊幾乎每則各自一串，群組才看得出結構。
+                "thread_name": (m.get("thread") or {}).get("name"),
             }
         )
     return {
         "space_id": space_id,
         "space_name": space_display_name(viewer["id"], space_id),
+        "thread_name": thread_name,
         "count": len(formatted),
         "messages": formatted,
     }

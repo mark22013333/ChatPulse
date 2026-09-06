@@ -51,9 +51,10 @@ export CHATPULSE_BOOTSTRAP_USER_ID=users/109827265019732088641
 .venv/bin/python tests/e2e/test_attachments.py        # 圖片附件與視覺
 .venv/bin/python tests/e2e/test_static.py             # 靜態托管、授權迴歸
 .venv/bin/python tests/e2e/test_add_annotation.py     # Mention 判定條件
-npm --prefix dashboard/frontend run test              # 前端 60 項
-.venv/bin/python -m unittest discover -s tests/unit   # 單元 78 項（零 API、零配額、0.01 秒）
+npm --prefix dashboard/frontend run test              # 前端 72 項
+.venv/bin/python -m unittest discover -s tests/unit   # 單元 88 項（零 API、零配額、0.01 秒）
 node tests/e2e/test_merge_reply.cjs                   # 收件匣多選合併 11 項
+node tests/e2e/test_message_preview.cjs               # 最近訊息預覽 16 項（唯讀、零 AI）
 ```
 
 **跑 e2e 之前先確認 8000 埠上是誰的服務**：那幾支 `.cjs` 會走 `/api/v1/auth/bootstrap`，
@@ -76,6 +77,7 @@ node tests/e2e/test_merge_reply.cjs                   # 收件匣多選合併 11
 
 | 項目 | 狀態 | 下一步 |
 | :--- | :--- | :--- |
+| **看一眼 Space 裡在講什麼，要先跑一次摘要** | **2026-09-07 已實作**：摘要工作台點 Space 就顯示最近 10／20／30 則（可選），討論串標同色左邊框＋徽章，可按「展開整串」補齊被切掉的部分（按了才打 API）。順手修掉 `/api/v1/messages` 會丟掉純圖片訊息的問題 | 若覺得每次點 Space 都打一次 API 太積極，改成按鈕觸發即可（`store/preview.ts` 的 `load`） |
 | **同一個人連問兩件事只能分兩次回** | **2026-09-07 已實作**：收件匣可多選（限同一個 Space；分串聊天室還要同一串），合併成一份草稿、送出一則、一次結掉全部。prompt 加了〈逐則確認〉欄位，漏回一題會被看見 | 觀察合併後的回話會不會太長。真的太長就把 `server.MERGE_MAX`（5）調小 |
 | **Draft Reply 的脈絡只有 1 則（私訊）** | **2026-09-06 已實作**（`core/draft_context.py` ＋ 47 項單元測試）。同一個私訊實測：脈絡 1 則→7 則、圖片 1 張→3 張；群組長串驗證與改動前逐則相同 | 觀察一段時間。若「隔很久重問同一件事」常被 48h 上界切掉，把 `DRAFT_WINDOW_HOURS` 調成 168（不要拿掉）；若群組薄串開始張冠李戴，設 `CHATPULSE_DRAFT_CROSS_THREAD=0` |
 | **程式碼佐證的前端 UI** | 後端已完成（CRUD 端點 + draft_stream 串接 + `code_meta` SSE 事件），**前端沒有設定頁**，目前只能用 curl 操作 | 做專案設定頁 + 草稿工作區的專案選擇器 + 顯示 `code_meta` |

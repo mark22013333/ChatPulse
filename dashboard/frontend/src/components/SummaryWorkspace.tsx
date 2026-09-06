@@ -23,7 +23,9 @@ import { ActionItems } from '@/components/ActionItems'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { Markdown } from '@/components/Markdown'
 import { ProviderSelect } from '@/components/ProviderSelect'
+import { SpaceMessagePreview } from '@/components/SpaceMessagePreview'
 import { api, errorMessage } from '@/lib/api'
+import { cn } from '@/lib/utils'
 import { copyText } from '@/lib/clipboard'
 import { providerLabel, useProviderStore } from '@/store/providers'
 import { useSummaryStore } from '@/store/summary'
@@ -253,13 +255,28 @@ export function SummaryWorkspace({ space, onDraftCreated }: SummaryWorkspaceProp
           </div>
         ) : null}
 
+        {/* 訊息預覽。選了 Space 就看得到最近幾則在講什麼，不必先跑一次摘要
+            （也不必為了看一眼就燒 AI 額度）。有摘要時預設收起來讓摘要當主角。 */}
+        {space ? (
+          <div className="mb-4">
+            <SpaceMessagePreview space={space} defaultCollapsed={Boolean(text) || streaming} />
+          </div>
+        ) : null}
+
         {!text && !streaming && !error ? (
-          <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
+          <div
+            className={cn(
+              'flex flex-col items-center justify-center gap-3 text-center',
+              space ? 'py-8' : 'h-full',
+            )}
+          >
             <span className="flex size-12 items-center justify-center rounded-full bg-muted text-sky-500">
               <WandSparklesIcon className="size-5" />
             </span>
             <div>
-              <p className="text-sm font-medium">選一個 Space，產生一份結構化 Summary</p>
+              <p className="text-sm font-medium">
+                {space ? '按「開始摘要」產生一份結構化 Summary' : '選一個 Space，產生一份結構化 Summary'}
+              </p>
               <p className="mx-auto mt-1 max-w-sm text-xs text-muted-foreground">
                 摘要只屬於你本人，其他 Viewer 看不到。三種風格會產生不同深度的結果：通用、技術細節、只要待辦。
               </p>

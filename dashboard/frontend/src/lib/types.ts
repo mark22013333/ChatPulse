@@ -115,6 +115,32 @@ export interface SpacesResponse {
   spaces: Space[]
 }
 
+/** `GET /api/v1/messages` 的一則訊息。 */
+export interface ChatMessage {
+  name: string
+  sender: string
+  sender_id: string | null
+  /** 已經是 `YYYY-MM-DD HH:mm` 格式（後端切好的，與送進模型的時間戳一致） */
+  time: string
+  text: string
+  /**
+   * 附件的人話描述，例如 `[圖片：shot.png（AI 未讀取內容）]`。
+   * 只有圖沒有文字的訊息 `text` 會是空字串、靠這欄才看得出有東西。
+   */
+  attachment_note?: string
+  /** 這則屬於哪一串。私訊幾乎每則各自一串，群組才看得出結構。 */
+  thread_name?: string | null
+}
+
+export interface MessagesResponse {
+  space_id: string
+  space_name: string
+  /** 有值代表這次回的是「整個討論串」而不是最近 N 則 */
+  thread_name?: string | null
+  count: number
+  messages: ChatMessage[]
+}
+
 export type SummaryStyleValue = 'general' | 'technical' | 'action_only'
 
 export interface SummaryStyle {
