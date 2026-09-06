@@ -18,7 +18,7 @@ from . import config as cfg
 
 _local = threading.local()
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -134,6 +134,42 @@ CREATE TABLE IF NOT EXISTS sessions (
     expires_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_viewer ON sessions(viewer_id);
+
+-- 參考專案：Viewer 手動登錄的本機 git repo（ADR-0006）
+-- 與 Reference Space 同一個哲學：由人指定，系統不自動發現。
+-- 只存「去哪裡找」，不存程式碼內容——原始碼落地的風險見規格第十節。
+CREATE TABLE IF NOT EXISTS code_projects (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    viewer_id         INTEGER NOT NULL REFERENCES viewers(id) ON DELETE CASCADE,
+    name              TEXT NOT NULL,
+    repo_path         TEXT NOT NULL,
+    default_env       TEXT NOT NULL DEFAULT 'production',
+    include_globs     TEXT NOT NULL DEFAULT '[]',
+    exclude_globs     TEXT NOT NULL DEFAULT '[]',
+    enabled           INTEGER NOT NULL DEFAULT 1,
+    -- 登錄時就驗證並把結果存下來，讓設定頁能顯示「這個分支已經不在了」。
+    -- 等到產草稿時才發現，代價高得多。
+    last_verified_at  TEXT,
+    last_verify_error TEXT,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    UNIQUE(viewer_id, name)
+);
+CREATE INDEX IF NOT EXISTS idx_code_projects_viewer ON code_projects(viewer_id, enabled);
+
+-- 分支→環境對照。這是整個功能的重點：查問題時不能查錯環境。
+-- UNIQUE 是 (project_id, environment) 而不是反過來：實務上問的是
+-- 「正式環境跑的是哪一版？」，不會是「main 用在哪些環境？」。
+CREATE TABLE IF NOT EXISTS code_project_branches (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id  INTEGER NOT NULL REFERENCES code_projects(id) ON DELETE CASCADE,
+    environment TEXT NOT NULL,
+    branch      TEXT NOT NULL,
+    note        TEXT,
+    created_at  TEXT NOT NULL,
+    UNIQUE(project_id, environment)
+);
+CREATE INDEX IF NOT EXISTS idx_code_branches_project ON code_project_branches(project_id);
 """
 
 
@@ -168,6 +204,10 @@ def close_connection() -> None:
 #: 否則舊資料庫升級後會在查詢時才炸「no such column」。
 _ADD_COLUMNS = [
     ("preferences", "default_provider", "TEXT"),
+    # ADR-0006：草稿頁預選用的純量預設。這兩個是 per-viewer 單值（不是實體），
+    # 所以放 preferences 而不是開新表；專案本體在 code_projects。
+    ("preferences", "default_code_project_id", "INTEGER"),
+    ("preferences", "default_code_environment", "TEXT"),
 ]
 
 

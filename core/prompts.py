@@ -97,6 +97,80 @@ def summary_prompt(
     )
 
 
+#: 引用程式碼的規則。這段是承重牆——比照 _BASE_RULES 對圖片佔位符的處理：
+#: 模型看到函式名就會腦補實作，看到片段就會當成整個專案，兩者都會產出
+#: 「看起來有憑有據、實際上錯」的答案，而那比不回答更糟。
+_CODE_RULES = """
+引用程式碼時的規則（違反其中任何一條，這份草稿就是錯的）：
+
+1. **只講你在上面片段裡真的看得到的程式碼。** 不要補完沒有貼出來的函式，
+   不要推論「這裡應該還會呼叫 X」，不要從函式名稱臆測它的實作。
+2. **每一個關於程式碼的說法都要附 `檔案路徑:行號`**，讓對方可以自己打開來對。
+   行號用上面標註的行號，不要自己重新數。
+3. **一定要講清楚這段程式碼是哪個環境的。** 例如「正式環境（main 分支，commit a3f91c2）
+   的 app/services/session.py:88 是這樣寫的」。絕對不要在沒有指明環境的情況下說
+   「程式碼是這樣寫的」——提問者關心的往往正是「正式環境到底跑的是哪一版」。
+4. **不要跨環境混用。** 若上面同時有正式環境與 UAT 的片段，兩者的差異要分開講，
+   不能把 UAT 的行為說成正式環境的行為。
+5. **上面的片段是搜尋結果，不是整個專案。** 沒搜到不等於不存在。若片段不足以回答問題，
+   就在回話中說明「我查了 X 分支的 A、B 檔案，沒有看到相關邏輯」，並問回去需要什麼資訊，
+   不要用猜的補足。
+6. 片段裡若出現 `«已遮蔽»`，那是被系統遮蔽的敏感值，不要臆測它的內容，
+   也不要在回話中重述任何看起來像密鑰或密碼的字串。
+"""
+
+
+def _code_section(code_blocks: Optional[List[Dict[str, Any]]]) -> str:
+    """組裝【參考專案原始碼】區塊。
+
+    三種狀態必須讓模型分得出來：
+      * 沒選專案 → 不要對程式碼做任何陳述
+      * 選了但零命中 → 「我查了正式環境，沒找到」**是有用的回答**，不能沉默
+      * 有命中 → 附環境、分支、commit、行號
+    第二種最容易被實作成跟第一種一樣，那會讓使用者以為系統沒查。
+    """
+    if not code_blocks:
+        return (
+            "\n\n【參考專案原始碼】Viewer 未指定任何參考專案，"
+            "因此你看不到任何程式碼。不要在回話中對程式碼實作做任何陳述。"
+        )
+
+    parts: List[str] = []
+    for b in code_blocks:
+        label = b.get("environment_label") or b.get("environment", "")
+        header = (
+            f"\n--- 專案「{b['project_name']}」／{label}（{b['environment']}）／"
+            f"分支 {b['branch']} @ {b['commit_sha']}"
+        )
+        if b.get("commit_date"):
+            header += f"（{str(b['commit_date'])[:10]}）"
+        header += " ---"
+        parts.append(header)
+
+        if b.get("terms"):
+            parts.append("搜尋關鍵字：" + "、".join(b["terms"]))
+        for note in b.get("notes") or []:
+            parts.append(f"※ {note}")
+
+        hits = b.get("hits") or []
+        if not hits:
+            parts.append(
+                "搜尋結果：以上述關鍵字在此分支中**沒有找到**相符的程式碼。"
+                "（這代表「查過了但沒有」，不是「沒有查」——回話時可以照實這樣說。）"
+            )
+            continue
+        for h in hits:
+            parts.append(f"\n【{h['path']}:{h['start_line']}-{h['end_line']}】\n{h['text']}")
+
+    return (
+        "\n\n【參考專案原始碼】以下是 Viewer 指定的專案原始碼，"
+        "讀自特定分支的特定 commit（不是他本機未提交的版本）。\n"
+        + "\n".join(parts)
+        + "\n"
+        + _CODE_RULES
+    )
+
+
 def draft_reply_prompt(
     *,
     mention_text: str,
@@ -104,11 +178,16 @@ def draft_reply_prompt(
     space_name: str,
     thread_text: str,
     reference_blocks: List[Dict[str, Any]],
+    code_blocks: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """組裝 Draft Reply prompt（七節）。
 
     輸出兩段：脈絡分析與可直接送出的回話。reference_blocks 是 Reference Space 的
     近期對話，存在的理由是「@ 提出的問題，答案經常不在提問的那個 Space 裡」（ADR-0003）。
+
+    code_blocks 是同一個洞見再往前一步：有時答案不在任何 Space，而在程式碼裡
+    （ADR-0006）。它一定帶著環境與 commit——PM 問的往往正是「正式環境到底跑哪一版」，
+    答案沒有指明環境就等於沒有回答。
     """
     refs = ""
     if reference_blocks:
@@ -127,6 +206,8 @@ def draft_reply_prompt(
     else:
         refs = "\n\n【參考聊天室的脈絡】Viewer 未指定任何參考聊天室，僅依討論串本身作答。"
 
+    code = _code_section(code_blocks)
+
     return f"""你的任務是幫一位工程師草擬「回覆別人 @ 他的那則訊息」的回話。
 
 【被 @ 的訊息】
@@ -137,6 +218,7 @@ def draft_reply_prompt(
 【該討論串的完整對話】
 {thread_text}
 {refs}
+{code}
 
 【輸出格式】嚴格依下列兩個章節輸出，不要增加其他章節：
 
@@ -144,6 +226,7 @@ def draft_reply_prompt(
 - **發生什麼事**：（這個討論串在講什麼，提問者想知道什麼）
 - **關鍵決策**：（已經定案的事）
 - **未解問題**：（還沒有答案的部分，以及回話時要小心的地方）
+- **程式碼佐證**：（若有查程式碼，寫明查的是哪個環境／分支／commit，以及關鍵的檔案:行號；沒查就寫「未查程式碼」，查了但沒相符結果就寫「查了 X 分支，無相符」）
 
 ### ✍️ 建議回話
 （一段可以直接複製送出的回話。要求：\
