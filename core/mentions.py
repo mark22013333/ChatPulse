@@ -267,12 +267,12 @@ class PollingCollector(MentionCollector):
                     # 認出來之後 Space 清單就不會再顯示「（私訊）」。
                     if not display and space_obj.get("spaceType") == "DIRECT_MESSAGE" and msgs:
                         try:
-                            peer = directory.peer_name_from_messages(
-                                msgs, google_user_id, resolve_peer
-                            )
-                            if peer:
-                                directory.remember_dm_peer(space_id, peer)
-                                display = peer
+                            peer_id = directory.peer_id_from_messages(msgs, google_user_id)
+                            if peer_id:
+                                directory.link_dm_peer(space_id, peer_id)
+                                name = resolve_peer(peer_id)
+                                if name and not name.startswith("成員…"):
+                                    display = name
                         except Exception:
                             log.exception("私訊對象辨識失敗（不影響採集）")
                     hits = [m for m in msgs if is_mention_of(m, google_user_id)]
