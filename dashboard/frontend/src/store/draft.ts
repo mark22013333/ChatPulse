@@ -3,7 +3,7 @@ import { api, errorMessage, LIMIT_DEFAULT, streamUrls } from '@/lib/api'
 import { streamSse } from '@/lib/sse'
 import { streamErrorMessage } from '@/lib/aiErrors'
 import { providerRequestField } from '@/store/providers'
-import type { Mention, SseMeta } from '@/lib/types'
+import type { CodeEnvironment, Mention, SseMeta } from '@/lib/types'
 
 /** 建議回話段落的標題（契約：`### ✍️ 建議回話`）。容忍 emoji 與空白差異。 */
 const REPLY_HEADING = /^#{2,4}\s*.*建議回話.*$/m
@@ -35,9 +35,17 @@ function stripContextHeading(text: string): string {
   return text.slice(match.index + match[0].length).replace(/^\n+/, '')
 }
 
+/** 一次草稿要查的專案與環境。同一個 project_id 配不同環境＝比對正式與 UAT。 */
+export interface CodeRefSelection {
+  project_id: number
+  environment: CodeEnvironment
+}
+
 interface DraftState {
   /** 勾選的 Reference Space —— 規格 7.3：預設一個都不勾 */
   referenceSpaceIds: string[]
+  /** 勾選的參考專案 —— 與 Reference Space 同樣預設不勾（ADR-0006） */
+  codeRefs: CodeRefSelection[]
   referenceSearch: string
   refLimit: number
   refLimitError: string | null
@@ -59,6 +67,8 @@ interface DraftState {
 
   toggleReference: (spaceId: string) => void
   clearReferences: () => void
+  toggleCodeRef: (projectId: number, environment: CodeEnvironment) => void
+  clearCodeRefs: () => void
   setReferenceSearch: (value: string) => void
   setRefLimit: (raw: string) => void
   setReplyText: (text: string) => void
@@ -72,6 +82,7 @@ let controller: AbortController | null = null
 
 export const useDraftStore = create<DraftState>((set, get) => ({
   referenceSpaceIds: [],
+  codeRefs: [],
   referenceSearch: '',
   refLimit: LIMIT_DEFAULT,
   refLimitError: null,
@@ -96,6 +107,22 @@ export const useDraftStore = create<DraftState>((set, get) => ({
     })),
 
   clearReferences: () => set({ referenceSpaceIds: [] }),
+
+  toggleCodeRef: (projectId, environment) =>
+    set((state) => {
+      const exists = state.codeRefs.some(
+        (r) => r.project_id === projectId && r.environment === environment,
+      )
+      return {
+        codeRefs: exists
+          ? state.codeRefs.filter(
+              (r) => !(r.project_id === projectId && r.environment === environment),
+            )
+          : [...state.codeRefs, { project_id: projectId, environment }],
+      }
+    }),
+
+  clearCodeRefs: () => set({ codeRefs: [] }),
   setReferenceSearch: (value) => set({ referenceSearch: value }),
 
   setRefLimit: (raw) => {
@@ -119,7 +146,7 @@ export const useDraftStore = create<DraftState>((set, get) => ({
   setReplyText: (text) => set({ replyText: text, replyEdited: true }),
 
   generate: async (mentionId) => {
-    const { refLimit, refLimitError, referenceSpaceIds } = get()
+    const { refLimit, refLimitError, referenceSpaceIds, codeRefs } = get()
     if (refLimitError || !Number.isInteger(refLimit)) return
 
     controller?.abort()
@@ -140,7 +167,12 @@ export const useDraftStore = create<DraftState>((set, get) => ({
     await streamSse(
       streamUrls.draft(mentionId),
       // provider 是選填：選「自動」時整個欄位不出現，交給伺服器解析
-      { reference_space_ids: referenceSpaceIds, limit: refLimit, ...providerRequestField() },
+      {
+        reference_space_ids: referenceSpaceIds,
+        code_refs: codeRefs,
+        limit: refLimit,
+        ...providerRequestField(),
+      },
       {
         onMeta: (meta) => set({ meta }),
         onChunk: (chunk) =>
