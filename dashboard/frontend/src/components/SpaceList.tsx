@@ -1,6 +1,6 @@
 import { useRef } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { HashIcon, Loader2Icon, UserIcon } from 'lucide-react'
+import { HashIcon, Loader2Icon, PencilIcon, UserIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { relativeTime, spaceTypeLabel } from '@/lib/format'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -16,6 +16,8 @@ interface SpaceListProps {
   /** 複選模式（Draft Reply 的 Reference Space） */
   checkedIds?: string[]
   onToggle?: (space: Space) => void
+  /** 給 renamable 的空間（私訊／未命名）取別名。有給才會出現鉛筆。 */
+  onRename?: (space: Space) => void
   className?: string
 }
 
@@ -31,6 +33,7 @@ export function SpaceList({
   onSelect,
   checkedIds,
   onToggle,
+  onRename,
   className,
 }: SpaceListProps) {
   const parentRef = useRef<HTMLDivElement>(null)
@@ -73,7 +76,7 @@ export function SpaceList({
               key={space.id}
               data-index={row.index}
               ref={virtualizer.measureElement}
-              className="absolute top-0 left-0 w-full px-0.5 py-0.5"
+              className="group absolute top-0 left-0 w-full px-0.5 py-0.5"
               style={{ transform: `translateY(${row.start}px)` }}
             >
               <button
@@ -112,6 +115,27 @@ export function SpaceList({
                   </span>
                 </span>
               </button>
+
+              {/* 改名鈕放在項目 button 的**外面**——HTML 不允許 button 巢狀，
+                  放進去瀏覽器會把 DOM 拆掉。用 absolute 疊在右側。 */}
+              {onRename && space.renamable && !multi ? (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onRename(space)
+                  }}
+                  title={space.nameSource === 'dm_manual' ? '改這個名字' : '這個名字是猜的，可以自己取'}
+                  aria-label={`為 ${space.displayName} 取名`}
+                  className={cn(
+                    'absolute top-1/2 right-2 -translate-y-1/2 rounded p-1 text-muted-foreground',
+                    'opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100',
+                    'hover:bg-accent hover:text-foreground',
+                  )}
+                >
+                  <PencilIcon className="size-3" />
+                </button>
+              ) : null}
             </div>
           )
         })}

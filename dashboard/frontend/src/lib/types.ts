@@ -95,6 +95,10 @@ export interface Space {
   lastActiveTime: string | null
   memberCount?: number | null
   pinned?: boolean
+  /** 這個空間沒有官方名稱（私訊／未命名），可以自己取一個 */
+  renamable?: boolean
+  /** 目前的名字是誰取的：dm_peer=自動認出、dm_manual=你自己取的 */
+  nameSource?: 'dm_peer' | 'dm_manual' | null
 }
 
 export interface SpacesResponse {

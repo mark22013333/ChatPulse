@@ -18,6 +18,8 @@ interface SpacesState {
   load: (options?: { refresh?: boolean }) => Promise<void>
   setSearch: (value: string) => void
   select: (id: string | null) => void
+  /** 給空間取別名。傳空字串＝清除，回到自動辨識的名字。 */
+  rename: (spaceId: string, alias: string) => Promise<void>
 }
 
 export const useSpacesStore = create<SpacesState>((set) => ({
@@ -51,6 +53,30 @@ export const useSpacesStore = create<SpacesState>((set) => ({
 
   setSearch: (value) => set({ search: value }),
   select: (id) => set({ selectedId: id }),
+
+  rename: async (spaceId, alias) => {
+    const trimmed = alias.trim()
+    try {
+      await api.setSpaceAlias({ space_id: spaceId, alias: trimmed })
+    } catch (err) {
+      set({ error: errorMessage(err) })
+      return
+    }
+    // 就地更新，不重抓整份清單——後端已經清掉快取，但重抓 436 筆只為了
+    // 改一個名字太浪費，而且會讓捲動位置跳掉。
+    set((state) => ({
+      items: state.items.map((s) =>
+        s.id === spaceId
+          ? {
+              ...s,
+              // 清除別名時先顯示佔位字串；下次載入清單才會拿回自動辨識的結果
+              displayName: trimmed || (s.type === 'DIRECT_MESSAGE' ? '（私訊）' : '（未命名空間）'),
+              nameSource: trimmed ? 'dm_manual' : null,
+            }
+          : s,
+      ),
+    }))
+  },
 }))
 
 /** 依搜尋字串過濾（不分大小寫），並把已釘選的排前面。 */
