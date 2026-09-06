@@ -330,14 +330,19 @@ def list_mentions(
          WHERE viewer_id = ?
     """
     params: List[Any] = [viewer_id]
-    if state:
+    if state == "pending":
+        # manual（從摘要工作台按「產生回覆草稿」挑的）**也算待處理**。
+        #
+        # 一開始的判斷是把它排除，理由是「那不是有人 @ 你，混進來會讓待辦
+        # 清單失真」。但那是從資料來源看事情——從使用者的角度，他按下那個
+        # 按鈕的意思就是「我要回這則」，跟被 @ 一樣是一件待辦。排除的結果是
+        # 他產完草稿切到收件匣，兩個分頁都找不到自己剛做的事。
+        # 至於「私訊會不會淹沒清單」：不會，只有他主動按按鈕的才會建立。
+        sql += " AND state IN (?, ?)"
+        params += ["pending", MANUAL_STATE]
+    elif state:
         sql += " AND state = ?"
         params.append(state)
-    else:
-        # 沒指定狀態時排除手動草稿目標——那些不是「有人 @ 你」，
-        # 混進收件匣會讓待辦清單失真
-        sql += " AND state != ?"
-        params.append(MANUAL_STATE)
     sql += " ORDER BY create_time DESC LIMIT ?"
     params.append(limit)
     return db.query_all(sql, params)
@@ -365,7 +370,11 @@ def count_mentions(viewer_id: int) -> Dict[str, int]:
     )
     out = {"pending": 0, "resolved": 0}
     for r in rows:
-        out[r["state"]] = r["n"]
+        # manual 併進 pending（理由見 list_mentions）。用 += 而不是 =，
+        # 因為 pending 與 manual 是兩列，直接賦值會讓後來的那列蓋掉前面的。
+        key = "pending" if r["state"] in ("pending", MANUAL_STATE) else r["state"]
+        if key in out:
+            out[key] += r["n"]
     return out
 
 
