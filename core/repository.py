@@ -253,6 +253,49 @@ def upsert_mention(viewer_id: int, mention: Dict[str, Any]) -> bool:
     return True
 
 
+#: 手動指定的草稿目標。不是真的被 @，只是為了讓草稿有東西可以掛（見 upsert_draft_target）
+MANUAL_STATE = "manual"
+
+
+def upsert_draft_target(viewer_id: int, mention: Dict[str, Any]) -> int:
+    """為「手動挑的一則訊息」建立草稿目標，回傳 mention id。
+
+    草稿的資料模型綁在 mentions 上（`draft_replies.mention_id` 是外鍵），
+    但私訊不會產生 mention——沒人會在私訊裡 @ 你。這裡合成一筆
+    state='manual' 的記錄，讓「對任何對話產生回覆」重用整條既有的草稿流程，
+    不必改 schema。這種記錄會被收件匣過濾掉（見 list_mentions）。
+
+    冪等：同一則訊息重複建立會拿回同一筆。若那則訊息**本來就是**真的 mention
+    （你確實被 @ 了），直接沿用原記錄，不把它降級成 manual。
+    """
+    existing = db.query_one(
+        "SELECT id FROM mentions WHERE viewer_id = ? AND message_name = ?",
+        (viewer_id, mention["message_name"]),
+    )
+    if existing:
+        return int(existing["id"])
+    cur = db.execute(
+        """
+        INSERT INTO mentions(viewer_id, space_id, space_name, message_name, thread_name,
+                             sender_name, sender_display, create_time, state, detected_at)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            viewer_id,
+            mention["space_id"],
+            mention.get("space_name"),
+            mention["message_name"],
+            mention.get("thread_name"),
+            mention.get("sender_name"),
+            mention.get("sender_display"),
+            mention["create_time"],
+            MANUAL_STATE,
+            _now(),
+        ),
+    )
+    return int(cur.lastrowid)
+
+
 def list_mentions(
     viewer_id: int, state: Optional[str] = None, limit: int = 200
 ) -> List[Dict[str, Any]]:
@@ -264,6 +307,11 @@ def list_mentions(
     if state:
         sql += " AND state = ?"
         params.append(state)
+    else:
+        # 沒指定狀態時排除手動草稿目標——那些不是「有人 @ 你」，
+        # 混進收件匣會讓待辦清單失真
+        sql += " AND state != ?"
+        params.append(MANUAL_STATE)
     sql += " ORDER BY create_time DESC LIMIT ?"
     params.append(limit)
     return db.query_all(sql, params)
