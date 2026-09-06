@@ -26,7 +26,9 @@
 | Windows | 雙擊 `chatpulse.bat` |
 | macOS / Linux | `./chatpulse.sh` |
 
-子命令：`check`（檢查狀態）／`auth`（重新授權）／`web`（只啟動儀表板）。
+子命令：`web`（啟動儀表板，日常最常用）／`check`（檢查狀態）／`auth`（重新授權）／
+`mcp`（重新註冊 MCP 入口）。裝好之後直接下子命令即可，不必再跑完整引導——
+引導本身也會跳過已完成的步驟。
 
 引導流程的邏輯在 `scripts/onboard.py`，**兩個平台共用同一份**——
 `.sh` 與 `.bat` 只負責找到 Python。各寫一份腳本必然漂移，

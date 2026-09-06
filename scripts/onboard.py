@@ -10,6 +10,7 @@
 才知道自己卡在哪。
 """
 
+import json
 import os
 import platform
 import shutil
@@ -422,7 +423,29 @@ def step_choose_entry() -> bool:
     延後的理由：uvicorn 會佔住這個視窗直到 Ctrl+C，排在它後面的說明
     使用者永遠看不到——包括「以後要怎麼再啟動」這種最需要看到的東西。
     """
-    step(4, "選擇你要用哪個入口")
+    step(4, "你的入口")
+
+    mcp_ok = mcp_registered()
+    ui_ok = webapp.frontend_state() != "missing"
+
+    # 已經裝好的就不要再問一次。這一步是**一次性的安裝設定**，
+    # 每跑一次引導就問一次「你想用哪個」，等於在問使用者
+    # 「你上次裝的還算數嗎」——他每次都得重新讀一遍三個選項才能回答。
+    if mcp_ok:
+        ok("Claude Code 入口已就緒（MCP 已註冊）")
+    if ui_ok:
+        ok("Web 儀表板入口已就緒（畫面已備妥）")
+
+    if mcp_ok and ui_ok:
+        explain(
+            """
+            兩個入口都可以用了。
+            Claude Code：在對話裡直接說「摘要某個群組」。
+            Web 儀表板：有 Mention 收件匣與回話草稿。
+            """
+        )
+        return ask_yes("現在啟動 Web 儀表板？", default=False)
+
     explain(
         """
         兩個入口用的是同一套功能，差別在你想在哪裡操作。
@@ -433,11 +456,12 @@ def step_choose_entry() -> bool:
         "你想用哪個",
         [
             (
-                "在 Claude Code 裡用（推薦，最輕）",
+                "在 Claude Code 裡用（推薦，最輕）"
+                + ("　※ 已裝好" if mcp_ok else ""),
                 "在對話中直接說「摘要某個群組」。",
             ),
             (
-                "Web 儀表板（功能完整）",
+                "Web 儀表板（功能完整）" + ("　※ 已備妥" if ui_ok else ""),
                 "瀏覽器介面，有 Mention 收件匣與回話草稿。畫面已經隨專案附上，開了就能用。",
             ),
             ("兩個都裝", "先裝 MCP，再啟動儀表板。"),
@@ -447,6 +471,41 @@ def step_choose_entry() -> bool:
     if idx in (0, 2):
         _install_mcp()
     return idx in (1, 2)
+
+
+MCP_NAME = "google-chat"
+
+
+def mcp_registered() -> bool:
+    """`google-chat` 這個 MCP 是不是已經註冊進 Claude Code 了。
+
+    優先讀 `~/.claude.json`：`claude mcp list` 會對每一台 MCP server 做健康
+    檢查，實測要 7 秒，放進引導流程等於每跑一次就卡 7 秒。讀檔是毫秒級。
+
+    那個檔案的格式是 Claude Code 的內部細節、可能會變，所以讀不到時退回
+    CLI；CLI 也不行就當作沒註冊——寧可多問一次，也不要誤判成「已裝好」
+    而讓使用者以為自己裝過了。
+    """
+    config = os.path.expanduser("~/.claude.json")
+    try:
+        with open(config, "r", encoding="utf-8") as fh:
+            if MCP_NAME in (json.load(fh).get("mcpServers") or {}):
+                return True
+    except (OSError, ValueError, AttributeError):
+        pass
+    except Exception:
+        pass
+
+    claude = shutil.which("claude") or shutil.which("claude.cmd")
+    if not claude:
+        return False
+    try:
+        out = subprocess.run(
+            [claude, "mcp", "list"], capture_output=True, text=True, timeout=20
+        )
+        return MCP_NAME in (out.stdout or "")
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 def _windows_path_hazard() -> str:
@@ -557,10 +616,11 @@ def step_done(authorised: bool) -> None:
     launcher = "chatpulse.bat" if IS_WINDOWS else "./chatpulse.sh"
     width = len(launcher) + 8
     for suffix, desc in (
-        ("", "再跑一次這個引導（隨時可重複執行）"),
-        ("web", "只啟動 Web 儀表板"),
+        ("web", "啟動 Web 儀表板（日常最常用的就這個）"),
         ("check", "檢查安裝狀態"),
-        ("auth", "只重新授權"),
+        ("auth", "重新授權（換 Google 帳號時）"),
+        ("mcp", "重新註冊 Claude Code 的 MCP 入口"),
+        ("", "再跑一次完整引導（重裝或重新設定時才需要）"),
     ):
         cmd = f"{launcher} {suffix}".strip()
         print(f"    {c('1', cmd.ljust(width))}  {desc}")
@@ -693,6 +753,10 @@ def main() -> int:
         # 明講要重新授權就照做，不要因為「已經授權過」而跳過——
         # 會下這個子指令的人多半正是要換帳號或修權限
         return 0 if step_authorise(force=True) else 1
+    if arg == "mcp":
+        # 同理：明講要裝 MCP 就直接裝（重跑會覆蓋既有註冊，是安全的）
+        _install_mcp()
+        return 0
     if arg == "web":
         # 明確指定要 web 就不擋——即使沒有畫面，API 本身仍然可用，
         # 缺什麼由 webapp 在視窗裡講清楚。

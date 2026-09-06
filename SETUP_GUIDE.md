@@ -48,13 +48,17 @@ Python 與 `uv` **不用自己準備**——安裝腳本偵測不到 `uv` 會自
 它會依序處理：Python 環境 → 憑證檢查 → Google 授權 → 選擇入口並安裝。
 中途卡住的話，每一項都會直接告訴你下一步該做什麼。
 
-其他常用子命令（Windows 把 `./chatpulse.sh` 換成 `chatpulse.bat`）：
+**裝好之後就不必再跑它了。** 引導會偵測已完成的步驟直接跳過（授權過就不再問、
+入口裝好了就不再選），但日常使用請直接下子命令：
 
 ```bash
-./chatpulse.sh check    # 只檢查安裝狀態，不動任何東西
-./chatpulse.sh auth     # 只重新做 Google 授權
-./chatpulse.sh web      # 只啟動 Web 儀表板
+./chatpulse.sh web      # 啟動 Web 儀表板 ← 日常最常用的就這個
+./chatpulse.sh check    # 檢查安裝狀態，不動任何東西
+./chatpulse.sh auth     # 重新做 Google 授權（換帳號時）
+./chatpulse.sh mcp      # 重新註冊 Claude Code 的 MCP 入口
 ```
+
+（Windows 把 `./chatpulse.sh` 換成 `chatpulse.bat`。）
 
 > **Windows 使用者請先看這兩點**
 > 1. **裝 Python 時務必勾選「Add python.exe to PATH」**（在安裝畫面最下方）。
