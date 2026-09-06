@@ -62,13 +62,27 @@ export function DraftReplyWorkspace({ mention }: DraftReplyWorkspaceProps) {
 
   const [confirmOpen, setConfirmOpen] = useState(false)
 
-  // 換一則 Mention 就中止串流並清空草稿
-  useEffect(() => {
-    reset()
-  }, [mention?.id, reset])
+  // store 記著「目前這份草稿是誰的」，用它判斷要不要清空，元件自己不必追蹤
+  const streamedMentionId = useDraftStore((state) => state.mentionId)
 
-  // 元件卸載時中止串流
-  useEffect(() => () => abort(), [abort])
+  // 只有**真的換了一則 Mention** 才清空。
+  //
+  // 以前這裡是無條件 reset()，而 App.tsx 的頁籤是條件渲染（不是隱藏），
+  // 切頁籤會把這個元件整個卸載重掛——於是每次切回來，掛載時的 reset()
+  // 就把還在串流的草稿清光了，使用者什麼都看不到。
+  useEffect(() => {
+    const id = mention?.id ?? null
+    if (id !== null && streamedMentionId !== null && id !== streamedMentionId) {
+      reset()
+    }
+  }, [mention?.id, streamedMentionId, reset])
+
+  // 這裡刻意**不**在卸載時 abort。
+  //
+  // 串流狀態全部住在 store，元件只是畫面；卸載就中止等於「切個頁籤就把
+  // 已經燒掉的 AI 額度丟掉」，而且後端要整段跑完才落盤（server.py 的
+  // create_draft），內容會一起消失。要停止請按畫面上的停止鍵——那才是
+  // 使用者明確表達的意圖。
 
   const sections = useMemo(() => splitDraft(raw), [raw])
   const referenceCandidates = useMemo(
