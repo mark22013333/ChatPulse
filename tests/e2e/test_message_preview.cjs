@@ -8,10 +8,12 @@
  *   1. 沒選 Space 時不出現面板
  *   2. 點了 Space 會打 /api/v1/messages，預設 20 則
  *   3. 10／20／30 切換會重打並真的改變顯示則數
- *   4. **討論串看得出來**，而且可以「展開整串」補齊被 limit 切掉的部分——
- *      而且是按了才打 API，不預先撈（一個視窗可能有二十幾串）
- *   5. 私訊每則各自成一串，不可以整排都被標成討論串（那等於沒標）
- *   6. **純圖片、沒有文字的訊息要看得見**。這個端點原本 `if not text: continue`，
+ *   4. **討論串在外層只佔一列**，點開才看得到內容。點開時順便補齊被 limit
+ *      切掉的部分——而且是按了才打 API，不預先撈（一個視窗可能有二十幾串）
+ *   5. **同一則訊息不會出現兩次**（用 data-message-name 直接驗）。
+ *      這是使用者回報的缺陷：外層把整串每一則印一次、點開又印一次
+ *   6. 私訊每則各自成一串，不可以整排都被收合（那等於沒有清單）
+ *   7. **純圖片、沒有文字的訊息要看得見**。這個端點原本 `if not text: continue`，
  *      那種訊息會整則消失，表現是「我要 20 則怎麼只有 17 則」而找不到原因
  *
  * 全程唯讀，不寫任何東西、不燒 AI 額度。
@@ -90,21 +92,40 @@ const check = (label, ok, detail = '') => {
   const shown30 = Number(header30.match(/顯示 (\d+) 則/)?.[1] ?? -1)
   check('30 則比 10 則多', shown30 > shown, `${shown} → ${shown30}`)
 
-  console.log('\n【5】討論串可以展開整串')
-  const expandBtn = page.getByText(/展開整串（這裡只看得到 \d+ 則）/).first()
-  if (await expandBtn.count()) {
+  console.log('\n【5】討論串在外層只佔一列，點開才看得到內容')
+  const panel = page.locator('section:has-text("最近訊息")').first()
+  const threadRow = panel.locator('button[aria-expanded="false"]:has-text("討論串")').first()
+  if (await threadRow.count()) {
+    const collapsedText = await panel.innerText()
+    // 收合時整串的內容不該出現在外層——這正是使用者回報的重複問題
+    const rowLabel = await threadRow.innerText()
+    const threadLen = Number(rowLabel.match(/討論串 (\d+) 則/)?.[1] ?? 0)
+    check('收合列寫出這一串有幾則', threadLen >= 2, `${threadLen} 則`)
+
     const beforeCalls = msgCalls.length
-    await expandBtn.click()
+    await threadRow.click()
     await page.waitForTimeout(2500)
     const added = msgCalls.slice(beforeCalls)
     check('按了才打 API（不預先撈整串）', added.length === 1, added[0]?.split('?')[1]?.slice(0, 80))
     check('帶了 thread_name', (added[0] ?? '').includes('thread_name='))
-    check('變成「收起整串」', (await page.getByText(/收起整串（共 \d+ 則）/).count()) > 0)
+
+    const expandedText = await panel.innerText()
+    check('點開後畫面變長（內容真的展開了）', expandedText.length > collapsedText.length,
+      `${collapsedText.length} → ${expandedText.length} 字`)
+    check(
+      '變成可收起（aria-expanded=true）',
+      (await panel.locator('button[aria-expanded="true"]:has-text("討論串")').count()) > 0,
+    )
+
+    // 再點一次要收回去，而且長度回到原本
+    await panel.locator('button[aria-expanded="true"]:has-text("討論串")').first().click()
+    await page.waitForTimeout(600)
+    check('再點一次收回去', (await panel.innerText()).length <= collapsedText.length + 5)
   } else {
     check('找到可展開的討論串', false, '這個 Space 目前沒有多則的討論串')
   }
 
-  console.log('\n【6】切到私訊：每則各自一串，不該整排都是徽章')
+  console.log('\n【6】切到私訊：每則各自一串，不該整排都被收合')
   msgCalls.length = 0
   await page.getByText(DM_WITH_IMAGES).first().click()
   await page.waitForTimeout(3000)
@@ -113,11 +134,29 @@ const check = (label, ok, detail = '') => {
   check('換 Space 有重新讀取', msgCalls.length > 0)
   check('私訊沒有被標成一堆討論串', !/[5-9]\d* 個討論串/.test(dmHeader), dmHeader.match(/\d+ 個討論串/)?.[0] ?? '0 個')
 
-  console.log('\n【7】純圖片訊息看得見')
+  console.log('\n【7】同一則訊息不會出現兩次（使用者回報的重複問題）')
+  const dupCheck = async (tag) => {
+    const names = await page
+      .locator('section:has-text("最近訊息") [data-message-name]')
+      .evaluateAll((els) => els.map((e) => e.getAttribute('data-message-name')))
+    const seen = new Set(names)
+    check(`${tag}：沒有重複的訊息`, seen.size === names.length, `${names.length} 列 / ${seen.size} 則不重複`)
+  }
+  await dupCheck('收合時')
+  const anyThread = page
+    .locator('section:has-text("最近訊息") button[aria-expanded="false"]:has-text("討論串")')
+    .first()
+  if (await anyThread.count()) {
+    await anyThread.click()
+    await page.waitForTimeout(2500)
+    await dupCheck('展開後')
+  }
+
+  console.log('\n【8】純圖片訊息看得見')
   const bodyText = await page.locator('section:has-text("最近訊息")').first().innerText()
   check('畫面上看得到圖片附件標示', bodyText.includes('[圖片'), bodyText.match(/\[圖片[^\]]{0,30}/)?.[0] ?? '無')
 
-  console.log('\n【8】沒有 console error')
+  console.log('\n【9】沒有 console error')
   check('沒有 console error', errs.length === 0, errs.slice(0, 2).join(' | '))
 
   const pass = results.filter((r) => r.ok).length

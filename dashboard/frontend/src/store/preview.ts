@@ -24,7 +24,10 @@ interface PreviewState {
   messages: ChatMessage[]
   loading: boolean
   error: string | null
-  /** 使用者按過「展開整串」的討論串，thread_name -> 整串訊息 */
+  /** 目前打開的討論串（收合列被點開）。與 `expanded` 分開：一個是「要不要顯示」，
+   *  另一個是「整串抓回來了沒」——抓回來之前先用視窗裡已有的那幾則頂著。 */
+  openThreads: string[]
+  /** 已經抓回整串的快取，thread_name -> 整串訊息 */
   expanded: Record<string, ChatMessage[]>
   expanding: string | null
   /**
@@ -36,8 +39,8 @@ interface PreviewState {
 
   load: (spaceId: string, options?: { force?: boolean }) => Promise<void>
   setLimit: (limit: PreviewLimit) => void
-  expandThread: (spaceId: string, threadName: string) => Promise<void>
-  collapseThread: (threadName: string) => void
+  /** 點開／收起一串。第一次點開會順便去抓完整的那一串。 */
+  toggleThread: (spaceId: string, threadName: string) => void
   setCollapsed: (value: boolean) => void
   reset: () => void
 }
@@ -48,6 +51,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
   messages: [],
   loading: false,
   error: null,
+  openThreads: [],
   expanded: {},
   expanding: null,
   collapsedOverride: null,
@@ -69,7 +73,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
       loading: true,
       error: null,
       ...(current !== spaceId
-        ? { messages: [], expanded: {}, collapsedOverride: null }
+        ? { messages: [], expanded: {}, openThreads: [], collapsedOverride: null }
         : {}),
     })
     try {
@@ -91,29 +95,32 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     if (spaceId) void get().load(spaceId, { force: true })
   },
 
-  expandThread: async (spaceId, threadName) => {
-    if (get().expanded[threadName]) return
-    set({ expanding: threadName })
-    try {
-      const data = await api.messages({
-        space_id: spaceId,
-        thread_name: threadName,
-        limit: 200,
-      })
-      set((state) => ({ expanded: { ...state.expanded, [threadName]: data.messages ?? [] } }))
-    } catch (err) {
-      set({ error: errorMessage(err) })
-    } finally {
-      set({ expanding: null })
+  toggleThread: (spaceId, threadName) => {
+    const open = get().openThreads.includes(threadName)
+    if (open) {
+      set((state) => ({ openThreads: state.openThreads.filter((t) => t !== threadName) }))
+      return
     }
-  },
+    // 先打開，畫面立刻用視窗裡已有的那幾則顯示，不要等 API 才有反應
+    set((state) => ({ openThreads: [...state.openThreads, threadName] }))
+    if (get().expanded[threadName] || get().expanding === threadName) return
 
-  collapseThread: (threadName) =>
-    set((state) => {
-      const next = { ...state.expanded }
-      delete next[threadName]
-      return { expanded: next }
-    }),
+    // 補齊被 limit 切掉的部分。只在點開時抓——一個視窗可能有二十幾串，
+    // 預先全抓是二十幾次往返。
+    set({ expanding: threadName })
+    void api
+      .messages({ space_id: spaceId, thread_name: threadName, limit: 200 })
+      .then((data) => {
+        set((state) => ({ expanded: { ...state.expanded, [threadName]: data.messages ?? [] } }))
+      })
+      .catch((err) => {
+        // 抓不到整串不是致命的——視窗裡那幾則還在，照樣看得到東西
+        set({ error: errorMessage(err) })
+      })
+      .finally(() => {
+        if (get().expanding === threadName) set({ expanding: null })
+      })
+  },
 
   setCollapsed: (value) => set({ collapsedOverride: value }),
 
@@ -122,43 +129,72 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
       spaceId: null,
       messages: [],
       error: null,
+      openThreads: [],
       expanded: {},
       expanding: null,
       collapsedOverride: null,
     }),
 }))
 
-export interface ThreadGroup {
-  threadName: string
-  /** 這一串在目前這個視窗裡有幾則 */
-  countInWindow: number
-  /** 第幾串（1 起算），用來給人看的「討論串 1」 */
-  index: number
-}
+/** 清單上的一列：一則獨立訊息，或一整串收合成的一列。 */
+export type PreviewItem =
+  | { kind: 'message'; key: string; message: ChatMessage }
+  | {
+      kind: 'thread'
+      key: string
+      threadName: string
+      /** 第幾串（1 起算），用來配顏色與「討論串 N」 */
+      index: number
+      /** 這一串**在目前這個視窗裡**的訊息（點開前先顯示這些，不必等 API） */
+      messages: ChatMessage[]
+    }
 
 /**
- * 標出哪些訊息屬於「在這個視窗裡不只一則」的討論串。
+ * 把扁平訊息流整理成清單要畫的列：**同一串收合成一列，外層不重複**。
  *
- * 為什麼只標多則的：私訊幾乎每則訊息各自成一個 thread（Google Chat 的行為），
- * 全部都標的話整個清單都是徽章，等於沒標。只有真的看得出「這是一串對話」
- * 的才值得標出來。
+ * 在此之前外層把整串的每一則各印一次，點開之後又把整串再印一次——同樣的訊息
+ * 在畫面上出現兩遍。使用者要的是「討論串點開看就好，外層不用重複」。
+ *
+ * 兩個決定：
+ *   1. **只收合「視窗裡不只一則」的串。** 私訊幾乎每則訊息各自成一個 thread
+ *      （Google Chat 的行為），全部都收合的話整個清單都是折疊列，等於沒有清單。
+ *   2. **收合列擺在該串「最後一則」的位置**，不是第一則。這個面板叫「最近訊息」，
+ *      一串剛剛有人回過，就該讀起來是新的；擺在第一則會讓它沉到很上面。
  */
-export function threadGroups(messages: ChatMessage[]): Map<string, ThreadGroup> {
+export function buildPreviewItems(messages: ChatMessage[]): PreviewItem[] {
   const counts = new Map<string, number>()
-  for (const m of messages) {
-    if (!m.thread_name) continue
+  const lastIndex = new Map<string, number>()
+  messages.forEach((m, i) => {
+    if (!m.thread_name) return
     counts.set(m.thread_name, (counts.get(m.thread_name) ?? 0) + 1)
-  }
-  const out = new Map<string, ThreadGroup>()
-  let index = 0
-  // 依照第一次出現的順序編號，讀起來才跟畫面由上而下一致
-  for (const m of messages) {
-    const name = m.thread_name
-    if (!name || out.has(name)) continue
-    const countInWindow = counts.get(name) ?? 0
-    if (countInWindow < 2) continue
-    index += 1
-    out.set(name, { threadName: name, countInWindow, index })
-  }
+    lastIndex.set(m.thread_name, i)
+  })
+
+  const isFolded = (m: ChatMessage) =>
+    Boolean(m.thread_name) && (counts.get(m.thread_name!) ?? 0) >= 2
+
+  // 編號依「收合列出現的先後」給，讀起來才跟畫面由上而下一致
+  const order: string[] = []
+  messages.forEach((m, i) => {
+    if (isFolded(m) && lastIndex.get(m.thread_name!) === i) order.push(m.thread_name!)
+  })
+
+  const out: PreviewItem[] = []
+  messages.forEach((m, i) => {
+    if (!isFolded(m)) {
+      out.push({ kind: 'message', key: m.name, message: m })
+      return
+    }
+    const name = m.thread_name!
+    // 只在該串的最後一則那個位置放一列，其餘位置略過（這就是「外層不重複」）
+    if (lastIndex.get(name) !== i) return
+    out.push({
+      kind: 'thread',
+      key: `thread:${name}`,
+      threadName: name,
+      index: order.indexOf(name) + 1,
+      messages: messages.filter((x) => x.thread_name === name),
+    })
+  })
   return out
 }
