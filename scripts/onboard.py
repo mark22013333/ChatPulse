@@ -335,8 +335,35 @@ def step_choose_entry() -> bool:
     return idx in (1, 2)
 
 
+def _windows_path_hazard() -> str:
+    """回傳專案路徑中會讓 Windows 的 .cmd 呼叫出錯的字元（沒有就回空字串）。
+
+    Claude Code 在 Windows 上是 `claude.cmd`，而 subprocess 執行 .cmd 目標時
+    會隱式經過 cmd.exe——引數等於被解析兩次。路徑裡一個 `&` 就會讓 cmd 在那裡
+    把命令切成兩段，後半段變成另一條指令去執行；`C:\\Users\\me\\R&D\\proj`
+    這種資料夾名在研發單位並不罕見。`%VAR%` 形態與 `^` 也會出事。
+
+    macOS 上 `claude` 是真正的執行檔，不會有二次解析，所以維護者踩不到——
+    又是一個「只有 Windows 使用者會遇到」的坑，所以寧可先講。
+    """
+    if not IS_WINDOWS:
+        return ""
+    return "".join(sorted({ch for ch in BASE_DIR if ch in '&|<>^%'}))
+
+
 def _install_mcp() -> None:
     print()
+    hazard = _windows_path_hazard()
+    if hazard:
+        warn(f"專案路徑含特殊字元 {hazard}，Windows 上註冊 MCP 可能會失敗")
+        explain(
+            f"""
+            這些字元對 Windows 的命令列有特殊意義，而 claude 指令在 Windows 上
+            是批次檔，路徑會被多解析一次。若下面的註冊失敗，把整個專案搬到
+            不含這些字元的路徑（例如 C:\\ChatPulse）再跑一次就好。
+            目前路徑：{BASE_DIR}
+            """
+        )
     claude = shutil.which("claude") or shutil.which("claude.cmd")
     if not claude:
         bad(
@@ -367,6 +394,9 @@ def _install_mcp() -> None:
               「摘要『0.暫存』最近 50 則對話」
             """
         )
+    elif hazard:
+        bad("自動註冊失敗",
+            f"很可能就是路徑裡的 {hazard} 造成的——把專案搬到不含這些字元的路徑再試一次")
     else:
         bad("自動註冊失敗", "改用手動設定，步驟見 SETUP_GUIDE.md")
 
@@ -466,12 +496,14 @@ def cmd_check() -> int:
 
     token = os.path.join(CONFIG_DIR, "google_chat_token.json")
     if os.path.exists(token) and os.path.exists(VENV_PYTHON):
+        # 路徑走 argv，不要內嵌進原始碼——含單引號的路徑（O'Brien 這種姓氏）
+        # 會讓探針語法錯誤，而錯誤被 capture_output 吃掉，變成安靜的誤判。
         probe = subprocess.run(
             [VENV_PYTHON, "-c",
-             "import json,sys;sys.path.insert(0,r'%s');"
+             "import json,sys;sys.path.insert(0,sys.argv[1]);"
              "from core import config as cfg;"
              "have=set(json.load(open(cfg.LEGACY_TOKEN_FILE)).get('scopes') or []);"
-             "print(len(set(cfg.DASHBOARD_SCOPES)-have))" % BASE_DIR],
+             "print(len(set(cfg.DASHBOARD_SCOPES)-have))", BASE_DIR],
             capture_output=True, text=True,
         )
         missing = (probe.stdout or "").strip()
@@ -490,10 +522,10 @@ def cmd_check() -> int:
     if os.path.exists(VENV_PYTHON):
         probe = subprocess.run(
             [VENV_PYTHON, "-c",
-             "import sys;sys.path.insert(0,r'%s');"
+             "import sys;sys.path.insert(0,sys.argv[1]);"
              "from core import providers;"
-             "print('|'.join(d['name'] for d in providers.describe_all() if d['available']))"
-             % BASE_DIR],
+             "print('|'.join(d['name'] for d in providers.describe_all() if d['available']))",
+             BASE_DIR],
             capture_output=True, text=True,
         )
         avail = (probe.stdout or "").strip()

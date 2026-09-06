@@ -144,7 +144,22 @@ npm --prefix dashboard/frontend run test              # 前端 32 項
   npm 實際是 `npm.cmd`，`subprocess` 不套用 PATHEXT，直接傳 `"npm"` 會 FileNotFoundError。
 - **輸出緩衝**：stdout 不是終端機時 Python 會整批緩衝，而子行程（pip/npm/uvicorn）
   直接寫 fd，於是引導訊息全部堆到子行程輸出**後面**，順序亂到看不懂。
-  `webapp.unbuffer_output()` 在任何輸出前處理掉這件事。
+  `webapp.unbuffer_output()` 在任何輸出前處理掉這件事（順帶把編碼錯誤設成
+  `errors="replace"`，免得沒經過 .bat 時 cp950 主控台印中文直接拋例外中止）。
+- **`.bat` 必須是 CRLF**。cmd.exe 執行 `goto` 時用位元組偏移量重新定位並逐行重讀，
+  對 LF-only 批次檔的處理不穩，而 `chatpulse.bat` 剛好有 `goto` 跳轉、標籤、
+  多行 `( )` 區塊三個高風險特徵。原本這件事取決於每位同事的 `core.autocrlf`
+  設定（Git for Windows 精靈預設 true 會沒事，改過的人就中獎），
+  現在由 `.gitattributes` 的 `*.bat text eol=crlf` 保證。
+  實測：clone 出來的 chatpulse.bat 是 81 行全 CRLF。
+- **專案路徑不要含 `& | < > ^ %`**。`claude` 在 Windows 上是 `claude.cmd`，
+  subprocess 執行 .cmd 會隱式經過 cmd.exe，引數被解析兩次——路徑裡一個 `&`
+  就會讓 cmd 在那裡把命令切成兩段（`C:\Users\me\R&D\proj` 這種資料夾名
+  在研發單位不罕見）。`onboard.py` 的 `_windows_path_hazard()` 會事先偵測並警告。
+- **不要把路徑內嵌進 `python -c` 的原始碼字串**，用 `sys.argv` 傳。
+  含單引號的路徑（`C:\Users\O'Brien\…`）會讓探針語法錯誤，而錯誤被
+  `capture_output` 吃掉，表現是「AI 供應商」那一項安靜地什麼都不顯示——
+  是靜默誤判，不是報錯。
 
 ### 這台機器與工具
 

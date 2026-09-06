@@ -197,14 +197,18 @@ def build_frontend(npm: str, log=print) -> bool:
 # 供應商檢查
 # ----------------------------------------------------------------------
 
+# 專案路徑用 argv 傳進去，不要內嵌進原始碼字串。內嵌的話路徑含單引號
+# （`C:\Users\O'Brien\…` 這種姓氏並不罕見）會讓探針語法錯誤，而錯誤被
+# capture_output 吃掉，結果是「AI 供應商」那一項安靜地什麼都不顯示。
 _PROVIDER_PROBE = (
-    "import sys; sys.path.insert(0, r'{base}')\n"
+    "import sys\n"
+    "sys.path.insert(0, sys.argv[1])\n"
     "from core import providers\n"
     "avail = [d for d in providers.describe_all() if d['available']]\n"
     "if avail:\n"
     "    print('OK|' + '、'.join(d['name'] for d in avail) + '|' + providers.default_name())\n"
     "else:\n"
-    "    print('NONE|' + '；'.join(f\"{{d['name']}}：{{d['reason']}}\" for d in providers.describe_all()))\n"
+    "    print('NONE|' + '；'.join(f\"{d['name']}：{d['reason']}\" for d in providers.describe_all()))\n"
 )
 
 
@@ -213,7 +217,7 @@ def provider_summary(python: str = "") -> tuple:
     python = python or (VENV_PYTHON if os.path.exists(VENV_PYTHON) else sys.executable)
     try:
         out = subprocess.run(
-            [python, "-c", _PROVIDER_PROBE.format(base=BASE_DIR)],
+            [python, "-c", _PROVIDER_PROBE, BASE_DIR],
             capture_output=True, text=True, cwd=BASE_DIR, timeout=60,
         )
     except (OSError, subprocess.SubprocessError):
@@ -285,7 +289,12 @@ def start(ui, dev: bool = False) -> int:
 
     python = VENV_PYTHON if os.path.exists(VENV_PYTHON) else sys.executable
     if not os.path.exists(VENV_PYTHON):
-        ui.warn("找不到專案環境，改用目前的 Python（建議先跑一次完整引導）")
+        # macOS 走 start-web.sh 進來時 ensure_venv 已經建好環境了，Windows 沒有
+        # 對應物。與其在這裡再造一套建環境邏輯（那又是一份會漂移的實作），
+        # 不如指回完整引導——它本來就負責這件事。
+        ui.warn("找不到專案環境（.venv），先用目前的 Python 試試看")
+        launcher = "chatpulse.bat" if IS_WINDOWS else "./chatpulse.sh"
+        ui.arrow(f"若下面出現套件錯誤，跑一次完整引導建好環境：{launcher}")
 
     # 依賴檢查要擋在最前面。少了 uvicorn 而讓流程繼續，使用者會先看到我們
     # 一路報「畫面已備妥」，最後才吃到一行 Python 的 ModuleNotFoundError。
