@@ -251,13 +251,30 @@ class PollingCollector(MentionCollector):
         matched_rows: List[Dict[str, Any]] = []
         if candidates:
             workers = min(cfg.MENTION_POLL_WORKERS, max(1, len(candidates)))
+            # 名錄在迴圈外載入一次。迴圈裡每個 space 都重載會變成上百次 DB 查詢，
+            # 而本輪新學到的名字下一輪才用得到也無妨。
+            resolve_peer = directory.make_resolver()
             with futures.ThreadPoolExecutor(max_workers=workers) as pool:
                 for space_id, msgs, err in pool.map(poll_one, candidates):
                     result.api_calls += 1
                     if err:
                         result.errors.append(err)
                         continue
-                    display = (by_id.get(space_id) or {}).get("displayName")
+                    space_obj = by_id.get(space_id) or {}
+                    display = space_obj.get("displayName")
+                    # 私訊沒有 displayName，順手從訊息認出對方是誰。
+                    # 這一輪本來就讀了這些訊息，所以是零額外 API 成本；
+                    # 認出來之後 Space 清單就不會再顯示「（私訊）」。
+                    if not display and space_obj.get("spaceType") == "DIRECT_MESSAGE" and msgs:
+                        try:
+                            peer = directory.peer_name_from_messages(
+                                msgs, google_user_id, resolve_peer
+                            )
+                            if peer:
+                                directory.remember_dm_peer(space_id, peer)
+                                display = peer
+                        except Exception:
+                            log.exception("私訊對象辨識失敗（不影響採集）")
                     hits = [m for m in msgs if is_mention_of(m, google_user_id)]
                     if hits:
                         # 被 @ 的訊息必然帶 USER_MENTION annotation，是名錄最可靠的來源
