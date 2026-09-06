@@ -22,7 +22,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any, Dict, Generator, List, Optional
+from typing import Any, Dict, Generator, List, Optional, Tuple
 
 from fastapi import Depends, FastAPI, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -38,7 +38,7 @@ if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
 from core import config as cfg
-from core import attachments, crypto, db, directory, identity, prompts, providers
+from core import attachments, code_search, crypto, db, directory, identity, prompts, providers
 from core import repository as repo
 from core.chat_client import (
     GoogleChatClient,
@@ -47,6 +47,7 @@ from core.chat_client import (
 )
 from core.errors import (
     ChatPulseError,
+    CodeProjectNotFound,
     ConfigurationError,
     InvalidParameter,
     MentionNotFound,
@@ -614,6 +615,116 @@ class PreferencesRequest(BaseModel):
     default_provider: Optional[str] = None
 
 
+# ==========================================================================
+# 參考專案（Draft Reply 的程式碼佐證）
+# ==========================================================================
+
+class CodeProjectRequest(BaseModel):
+    """登錄一個本機 git repo 當作草稿的程式碼佐證來源。
+
+    `branches` 是 environment -> branch 的對照，例如
+    `{"production": "main", "uat": "release/uat"}`。分開存的理由是
+    「PM 問的往往正是『正式環境到底跑哪一版』」——拿 UAT 的程式碼回答
+    正式環境的問題，會產生看似有憑有據、實則錯誤的答案。
+    """
+
+    name: str = Field(min_length=1, max_length=80)
+    repo_path: str = Field(min_length=1)
+    branches: Dict[str, str] = Field(default_factory=dict)
+    default_env: str = cfg.CODE_ENV_DEFAULT
+    include_globs: List[str] = Field(default_factory=list)
+    exclude_globs: List[str] = Field(default_factory=list)
+
+
+class CodeProjectPatch(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    repo_path: Optional[str] = None
+    branches: Optional[Dict[str, str]] = None
+    default_env: Optional[str] = None
+    include_globs: Optional[List[str]] = None
+    exclude_globs: Optional[List[str]] = None
+    enabled: Optional[bool] = None
+
+
+def _validate_branches(branches: Dict[str, str]) -> Dict[str, str]:
+    """環境名稱是封閉字彙，擋掉 uat/UAT/staging 這種同義混寫。"""
+    if not branches:
+        raise InvalidParameter("至少要指定一個環境對應的分支，例如 production")
+    out: Dict[str, str] = {}
+    for env, branch in branches.items():
+        out[code_search.validate_environment(env)] = (branch or "").strip()
+        if not out[code_search.validate_environment(env)]:
+            raise InvalidParameter(f"環境 {env} 的分支名稱不可空白")
+    return out
+
+
+@app.get("/api/v1/code-projects")
+def get_code_projects(viewer: Dict[str, Any] = ViewerDep):
+    return {
+        "projects": repo.list_code_projects(viewer["id"]),
+        "environments": [
+            {"value": e, "label": cfg.CODE_ENV_LABELS.get(e, e)} for e in cfg.CODE_ENVIRONMENTS
+        ],
+        "max_per_draft": cfg.CODE_MAX_PROJECTS_PER_DRAFT,
+        "enabled": cfg.CODE_ENABLED,
+    }
+
+
+@app.post("/api/v1/code-projects/verify")
+def verify_code_project(req: CodeProjectRequest, viewer: Dict[str, Any] = ViewerDep):
+    """建立前先驗一次：路徑是不是 git repo、每個分支存不存在。
+
+    分開成一個端點而不是在建立時才驗，是因為使用者最常打錯的就是分支名，
+    而那個錯誤要等到產草稿時才炸出來就太晚了。
+    """
+    return code_search.verify_project(req.repo_path, _validate_branches(req.branches))
+
+
+@app.post("/api/v1/code-projects")
+def post_code_project(req: CodeProjectRequest, viewer: Dict[str, Any] = ViewerDep):
+    branches = _validate_branches(req.branches)
+    project_id = repo.create_code_project(
+        viewer["id"],
+        name=req.name.strip(),
+        repo_path=req.repo_path.strip(),
+        branches=branches,
+        default_env=code_search.validate_environment(req.default_env),
+        include_globs=req.include_globs,
+        exclude_globs=req.exclude_globs,
+    )
+    return repo.get_code_project(viewer["id"], project_id)
+
+
+@app.patch("/api/v1/code-projects/{project_id}")
+def patch_code_project(
+    project_id: int, req: CodeProjectPatch, viewer: Dict[str, Any] = ViewerDep
+):
+    if not repo.get_code_project(viewer["id"], project_id):
+        raise CodeProjectNotFound(f"找不到參考專案 {project_id}")
+    branches = _validate_branches(req.branches) if req.branches is not None else None
+    repo.update_code_project(
+        viewer["id"],
+        project_id,
+        name=req.name.strip() if req.name else None,
+        repo_path=req.repo_path.strip() if req.repo_path else None,
+        branches=branches,
+        default_env=(
+            code_search.validate_environment(req.default_env) if req.default_env else None
+        ),
+        include_globs=req.include_globs,
+        exclude_globs=req.exclude_globs,
+        enabled=req.enabled,
+    )
+    return repo.get_code_project(viewer["id"], project_id)
+
+
+@app.delete("/api/v1/code-projects/{project_id}")
+def remove_code_project(project_id: int, viewer: Dict[str, Any] = ViewerDep):
+    if not repo.delete_code_project(viewer["id"], project_id):
+        raise CodeProjectNotFound(f"找不到參考專案 {project_id}")
+    return {"deleted": project_id}
+
+
 class DraftTargetRequest(BaseModel):
     """指定一個 Space，對「對方最後說的話」產生回覆草稿。"""
 
@@ -1166,6 +1277,91 @@ class DraftRequest(BaseModel):
     provider: Optional[str] = None
     limit: int = Field(default=cfg.LIMIT_DEFAULT, ge=cfg.LIMIT_MIN, le=cfg.LIMIT_MAX)
 
+    #: 要拿來當程式碼佐證的參考專案。空陣列＝不查程式碼（預設）
+    code_project_ids: List[int] = Field(default_factory=list)
+    #: 查哪個環境的分支。沒給就用各專案自己的 default_env
+    code_environment: Optional[str] = None
+    #: 覆寫自動抽出的搜尋關鍵字。自動抽詞是刻意做弱的（見 code_search
+    #: 的說明），猜錯時使用者可以直接指定
+    code_terms: List[str] = Field(default_factory=list)
+    #: 直接指定要看的檔案，跳過搜尋
+    code_paths: List[str] = Field(default_factory=list)
+
+
+def _code_block(ctx: "code_search.CodeContext") -> Dict[str, Any]:
+    """CodeContext -> prompts._code_section 吃的 dict。"""
+    return {
+        "project_name": ctx.project_name,
+        "environment": ctx.environment,
+        "environment_label": code_search.environment_label(ctx.environment),
+        "branch": ctx.branch,
+        "commit_sha": ctx.commit_sha,
+        "commit_date": ctx.commit_date,
+        "terms": list(ctx.terms),
+        "notes": list(ctx.notes),
+        "hits": [
+            {
+                "path": h.path,
+                "start_line": h.start_line,
+                "end_line": h.end_line,
+                "text": h.text,
+            }
+            for h in ctx.hits
+        ],
+    }
+
+
+def collect_code_context(
+    viewer_id: int, req: DraftRequest, mention_text: str, thread_text: str
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """依請求指定的專案去查程式碼。回傳 (code_blocks, skipped)。
+
+    沒指定專案就回空的——「沒查」與「查了沒找到」對模型是兩種不同的事實，
+    prompts._code_section 會分別講清楚，這裡不要混為一談。
+
+    路徑或分支不存在會往外拋（CodeRepoNotFound／CodeBranchNotFound），
+    由呼叫端轉成 SSE error 事件。那是硬失敗而不是降級：使用者要的就是
+    有依據的草稿，靜默給一份沒依據的更糟。
+    """
+    if not cfg.CODE_ENABLED or not req.code_project_ids:
+        return [], []
+
+    ids = list(dict.fromkeys(req.code_project_ids))[: cfg.CODE_MAX_PROJECTS_PER_DRAFT]
+    terms = [t.strip() for t in req.code_terms if t.strip()] or code_search.extract_search_terms(
+        mention_text, thread_text
+    )
+
+    blocks: List[Dict[str, Any]] = []
+    skipped: List[str] = []
+    for pid in ids:
+        project = repo.get_code_project(viewer_id, pid)
+        if not project:
+            skipped.append(f"找不到參考專案 {pid}")
+            continue
+        if not project.get("enabled", True):
+            skipped.append(f"參考專案「{project['name']}」已停用")
+            continue
+        env = code_search.validate_environment(req.code_environment or project["default_env"])
+        branch = repo.resolve_branch(viewer_id, pid, env)
+        if not branch:
+            skipped.append(
+                f"參考專案「{project['name']}」沒有設定 {env} 環境的分支"
+            )
+            continue
+        ctx, ctx_skipped = code_search.collect(
+            repo_path=project["repo_path"],
+            project_name=project["name"],
+            environment=env,
+            branch=branch,
+            terms=terms,
+            include_globs=project.get("include_globs") or (),
+            exclude_globs=project.get("exclude_globs") or (),
+            explicit_paths=req.code_paths,
+        )
+        blocks.append(_code_block(ctx))
+        skipped.extend(ctx_skipped)
+    return blocks, skipped
+
 
 @app.post("/api/v1/mentions/{mention_id}/draft/stream")
 def draft_stream(
@@ -1277,12 +1473,39 @@ def draft_stream(
                 }
             )
 
+            # 程式碼佐證。放在 prompt 組裝之前，因為查失敗要能變成 error 事件——
+            # 使用者指定了專案卻拿到一份沒查程式碼的草稿，比直接報錯更糟。
+            code_blocks, code_skipped = collect_code_context(
+                viewer_id, req, mention_text, thread_text
+            )
+            if code_blocks or code_skipped:
+                yield sse(
+                    {
+                        "type": "code_meta",
+                        "projects": [
+                            {
+                                "project_name": b["project_name"],
+                                "environment": b["environment"],
+                                "environment_label": b["environment_label"],
+                                "branch": b["branch"],
+                                "commit_sha": b["commit_sha"],
+                                "terms": b["terms"],
+                                "hit_count": len(b["hits"]),
+                                "notes": b["notes"],
+                            }
+                            for b in code_blocks
+                        ],
+                        "skipped": code_skipped,
+                    }
+                )
+
             prompt = prompts.draft_reply_prompt(
                 mention_text=mention_text,
                 mention_sender=mention_sender,
                 space_name=mention.get("space_name") or mention["space_id"],
                 thread_text=thread_text,
                 reference_blocks=ref_blocks,
+                code_blocks=code_blocks or None,
             )
 
             for chunk in ai.stream_text(prompt, operation="draft_reply", images=images):
