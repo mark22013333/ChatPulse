@@ -39,7 +39,11 @@ VENV_PYTHON = os.path.join(
 FRONTEND_DIR = os.path.join(BASE_DIR, "dashboard", "frontend")
 DIST_DIR = os.path.join(FRONTEND_DIR, "dist")
 DIST_INDEX = os.path.join(DIST_DIR, "index.html")
-BUILDINFO = os.path.join(DIST_DIR, ".buildinfo.json")
+# 蓋章檔刻意放在 dist **外面**：vite 的 build.emptyOutDir 會在每次建置時清空
+# dist/，放裡面的話任何人直接跑 `npm run build` 都會把它一起刪掉，而缺少蓋章
+# 時 frontend_state() 會退回「視為 ready」——漂移偵測就這樣靜默失效了。
+# 放外面最差的情況只是多重建一次（hash 對不上而已），不會失去保護。
+BUILDINFO = os.path.join(FRONTEND_DIR, ".buildinfo.json")
 
 HOST = "127.0.0.1"
 PORT = 8000
