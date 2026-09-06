@@ -216,6 +216,13 @@ export interface SseMeta {
   thread_message_count?: number
   reference_spaces?: DraftReferenceSpace[]
   /**
+   * 實際送進模型的圖片張數。後端一直有送這個欄位，但前端沒顯示，
+   * 於是使用者看不出附件到底有沒有被讀——只能從草稿內容有沒有提到圖片來猜。
+   */
+  image_count?: number
+  /** 有附件但沒送進去的原因（格式不支援、超過大小上限…） */
+  images_skipped?: string[]
+  /**
    * 伺服器實際採用的供應商與模型。要顯示「這份結果是誰產的」一律以這兩個欄位為準——
    * 送出前選的可能是別名，伺服器解析後用的未必是同一個。
    */

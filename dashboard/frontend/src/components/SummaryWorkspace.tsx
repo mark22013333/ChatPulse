@@ -127,6 +127,21 @@ export function SummaryWorkspace({ space, onDraftCreated }: SummaryWorkspaceProp
     }
   }
 
+  /**
+   * 把目前的抓取則數記成個人預設。
+   *
+   * 失敗只寫 console 不打擾使用者——這是順手記住的便利功能，
+   * 存不進去頂多下次要再改一次，不值得用一個錯誤提示打斷他。
+   */
+  const rememberLimit = async () => {
+    if (limitError || !Number.isInteger(limit)) return
+    try {
+      await api.updatePreferences({ default_limit: limit })
+    } catch (err) {
+      console.warn('抓取則數沒能存成預設：', err)
+    }
+  }
+
   const handleCopy = async () => {
     const ok = await copyText(text)
     if (ok) toast.success('已複製摘要 Markdown')
@@ -153,7 +168,15 @@ export function SummaryWorkspace({ space, onDraftCreated }: SummaryWorkspaceProp
           <Select
             items={styleItems}
             value={style}
-            onValueChange={(value) => setStyle(value as SummaryStyleValue)}
+            onValueChange={(value) => {
+              // Select 清除選擇時會給 null，那種情況不要動偏好
+              if (!value) return
+              setStyle(value as SummaryStyleValue)
+              // 與抓取則數同理：選了就記住，不必每次重選
+              void api
+                .updatePreferences({ default_style: value })
+                .catch((err) => console.warn('摘要風格沒能存成預設：', err))
+            }}
           >
             <SelectTrigger id="summary-style" size="sm" className="w-32">
               <SelectValue />
@@ -181,8 +204,12 @@ export function SummaryWorkspace({ space, onDraftCreated }: SummaryWorkspaceProp
             max={1000}
             value={Number.isNaN(limit) ? '' : limit}
             onChange={(event) => setLimit(event.target.value)}
+            // 離開輸入框時把值記成個人預設。以前改了只影響這一次，下次開啟
+            // 又跳回舊值——使用者得每次重打，那不叫「預設」。
+            onBlur={() => void rememberLimit()}
             className="h-7 w-28"
             aria-invalid={Boolean(limitError)}
+            title="改完離開這個欄位就會記住，下次開啟直接用這個值"
           />
         </div>
 
@@ -250,6 +277,7 @@ export function SummaryWorkspace({ space, onDraftCreated }: SummaryWorkspaceProp
                 {meta ? (
                   <span className="font-mono">
                     {meta.space} · 讀取 {meta.message_count} 則
+                    {meta.image_count !== undefined ? ` · 圖片 ${meta.image_count} 張` : ''}
                   </span>
                 ) : (
                   <span>正在準備…</span>
