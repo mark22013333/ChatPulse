@@ -228,6 +228,19 @@ Python 與 `uv` **不用自己準備**——安裝腳本偵測不到 `uv` 會自
    **請不要在共用電腦上使用**。這是作業系統差異，不是設定錯誤，
    `chatpulse.bat check` 也會提醒你這件事。
 3. **不要放在 OneDrive 同步資料夾**（見本文最上方的說明）。
+4. **`chatpulse.bat` 本身的訊息是英文的**。這個檔案必須全檔 ASCII——cmd.exe 用
+   位元組偏移記住批次檔讀到哪，而 `chcp 65001` 會讓後面的位元組改用 UTF-8 解讀，
+   中文字（3 位元組）一出現就會讓讀取位置落在字元中間，把註解的後半段當成指令執行
+   （症狀是一堆 `'xxx' is not recognized as an internal or external command`）。
+   Python 啟動之後的所有訊息都是中文，不受影響。
+   你只會在**找不到 Python** 時看到那段英文，它說的是：
+   - 到 <https://www.python.org/downloads/> 下載安裝（需要 3.10 以上，建議 3.12）
+   - **安裝時務必勾選「Add python.exe to PATH」**（在安裝畫面最下方），
+     否則裝完 `chatpulse.bat` 還是找不到它
+   - 裝好之後重新執行 `chatpulse.bat`
+5. **專案路徑不要含 `&`、`%`、`^`、`|`、`<`、`>`**（例如 `C:\Users\你\R&D\`）。
+   這些字元對 Windows 命令列有特殊意義，而 `claude` 指令在 Windows 上是批次檔，
+   路徑會被多解析一次，導致 MCP 註冊失敗。引導會事先偵測並提醒你。
 
 ### Q6：為什麼我送出的訊息旁邊多了一個灰色標籤？
 
