@@ -10,7 +10,12 @@ import {
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { PREVIEW_LIMITS, threadGroups, usePreviewStore, type PreviewLimit } from '@/store/preview'
+import {
+  PREVIEW_LIMITS,
+  buildPreviewItems,
+  usePreviewStore,
+  type PreviewLimit,
+} from '@/store/preview'
 import type { ChatMessage, Space } from '@/lib/types'
 
 interface SpaceMessagePreviewProps {
@@ -19,7 +24,7 @@ interface SpaceMessagePreviewProps {
   defaultCollapsed?: boolean
 }
 
-/** 同一串的訊息用同一個顏色，掃一眼就分得出哪幾則是同一段對話。 */
+/** 每一串一個顏色，掃一眼就分得出哪一列是哪一串。 */
 const THREAD_ACCENTS = [
   'border-l-sky-500/70',
   'border-l-emerald-500/70',
@@ -32,12 +37,9 @@ const THREAD_ACCENTS = [
 /**
  * Space 訊息預覽：點一個 Space 就看得到最近幾則在講什麼，不必先跑一次摘要。
  *
- * **討論串回覆本來就在裡面**——Google 的 `messages.list` 回的是扁平訊息流，
- * 沒有參數可以排除它們。問題是它們混在時間序裡看不出結構，而且「最近 N 則」
- * 常常把一串切成片段。所以這裡做兩件事：
- *   1. 同一串的訊息標上同色左邊框與「討論串 N」徽章（只標視窗內不只一則的，
- *      否則私訊每則各自一串，全部都有徽章等於沒標）
- *   2. 那些串可以按「展開整串」補齊被切掉的部分（按了才打 API，不預先撈）
+ * **討論串在外層只佔一列**（`buildPreviewItems`），點開才展開內容。
+ * 一開始是外層照樣把整串每一則印出來、點開又再印一次，同樣的訊息出現兩遍。
+ * 點開時會順便把被 limit 切掉的部分補齊——按了才打 API，不預先撈。
  */
 export function SpaceMessagePreview({ space, defaultCollapsed = false }: SpaceMessagePreviewProps) {
   const {
@@ -46,13 +48,13 @@ export function SpaceMessagePreview({ space, defaultCollapsed = false }: SpaceMe
     messages,
     loading,
     error,
+    openThreads,
     expanded,
     expanding,
     collapsedOverride,
     load,
     setLimit,
-    expandThread,
-    collapseThread,
+    toggleThread,
     setCollapsed,
   } = usePreviewStore()
 
@@ -61,14 +63,14 @@ export function SpaceMessagePreview({ space, defaultCollapsed = false }: SpaceMe
     if (currentSpaceId) void load(currentSpaceId)
   }, [currentSpaceId, load])
 
-  const groups = useMemo(() => threadGroups(messages), [messages])
+  // 換 Space 的那一瞬間 store 裡還是舊的資料，不要拿別的 Space 的訊息充數
+  const showing = spaceId && spaceId === currentSpaceId ? messages : []
+  const items = useMemo(() => buildPreviewItems(showing), [showing])
+  const threadCount = items.filter((i) => i.kind === 'thread').length
   // 使用者沒表示過意見就跟隨預設（有摘要時收起來）；按過就一直聽他的
   const isCollapsed = collapsedOverride ?? defaultCollapsed
 
   if (!space) return null
-
-  // 換 Space 的那一瞬間 store 裡還是舊的資料，不要拿別的 Space 的訊息充數
-  const showing = spaceId === space.id ? messages : []
 
   return (
     <section className="rounded-xl border border-border bg-card/40">
@@ -113,7 +115,7 @@ export function SpaceMessagePreview({ space, defaultCollapsed = false }: SpaceMe
         {!isCollapsed ? (
           <span className="text-[11px] text-muted-foreground">
             {loading ? '讀取中…' : `顯示 ${showing.length} 則`}
-            {groups.size > 0 ? ` · ${groups.size} 個討論串` : ''}
+            {threadCount > 0 ? ` · ${threadCount} 個討論串（點開看）` : ''}
           </span>
         ) : null}
 
@@ -139,53 +141,32 @@ export function SpaceMessagePreview({ space, defaultCollapsed = false }: SpaceMe
             </div>
           ) : null}
 
-          {!loading && !error && showing.length === 0 ? (
+          {!loading && !error && items.length === 0 ? (
             <p className="px-2 py-6 text-center text-xs text-muted-foreground">
               這個 Space 讀不到任何訊息。
             </p>
           ) : null}
 
           <ul className="space-y-1">
-            {showing.map((m) => {
-              const group = m.thread_name ? groups.get(m.thread_name) : undefined
-              const full = m.thread_name ? expanded[m.thread_name] : undefined
-              // 展開後只在該串的第一則底下印整串，不要每一則都印一次
-              const isFirstOfThread =
-                group && showing.find((x) => x.thread_name === m.thread_name)?.name === m.name
-              return (
-                <li key={m.name}>
-                  <MessageRow message={m} accentIndex={group ? group.index - 1 : undefined} />
-                  {group && isFirstOfThread ? (
-                    <div className="mt-0.5 mb-1 pl-4">
-                      <button
-                        type="button"
-                        className="text-[10px] text-sky-600 hover:underline dark:text-sky-400"
-                        onClick={() =>
-                          full
-                            ? collapseThread(m.thread_name!)
-                            : void expandThread(space.id, m.thread_name!)
-                        }
-                      >
-                        {expanding === m.thread_name
-                          ? '讀取整串中…'
-                          : full
-                            ? `收起整串（共 ${full.length} 則）`
-                            : `展開整串（這裡只看得到 ${group.countInWindow} 則）`}
-                      </button>
-                      {full ? (
-                        <ul className="mt-1 space-y-1 border-l border-dashed border-border pl-2">
-                          {full.map((t) => (
-                            <li key={`full-${t.name}`}>
-                              <MessageRow message={t} accentIndex={group.index - 1} muted />
-                            </li>
-                          ))}
-                        </ul>
-                      ) : null}
-                    </div>
-                  ) : null}
+            {items.map((item) =>
+              item.kind === 'message' ? (
+                <li key={item.key}>
+                  <MessageRow message={item.message} />
                 </li>
-              )
-            })}
+              ) : (
+                <li key={item.key}>
+                  <ThreadRow
+                    accentIndex={item.index - 1}
+                    open={openThreads.includes(item.threadName)}
+                    loading={expanding === item.threadName}
+                    // 整串抓回來之前先用視窗裡已有的那幾則頂著，點下去立刻有反應
+                    messages={expanded[item.threadName] ?? item.messages}
+                    windowCount={item.messages.length}
+                    onToggle={() => toggleThread(space.id, item.threadName)}
+                  />
+                </li>
+              ),
+            )}
           </ul>
         </div>
       )}
@@ -193,27 +174,93 @@ export function SpaceMessagePreview({ space, defaultCollapsed = false }: SpaceMe
   )
 }
 
-function MessageRow({
-  message,
+/** 收合起來的一整串。外層只佔這一列，內容要點開才出現。 */
+function ThreadRow({
   accentIndex,
-  muted = false,
+  open,
+  loading,
+  messages,
+  windowCount,
+  onToggle,
 }: {
-  message: ChatMessage
-  accentIndex?: number
-  muted?: boolean
+  accentIndex: number
+  open: boolean
+  loading: boolean
+  messages: ChatMessage[]
+  windowCount: number
+  onToggle: () => void
 }) {
-  const accent =
-    accentIndex === undefined
-      ? 'border-l-transparent'
-      : THREAD_ACCENTS[accentIndex % THREAD_ACCENTS.length]
+  const accent = THREAD_ACCENTS[accentIndex % THREAD_ACCENTS.length]
+  const last = messages[messages.length - 1]
+  const senders = [...new Set(messages.map((m) => m.sender))]
+  const preview = last?.text?.trim() || last?.attachment_note || ''
+
   return (
-    <div
-      className={cn(
-        'rounded-r border-l-2 py-1 pr-2 pl-2',
-        accent,
-        muted ? 'bg-transparent' : 'bg-background/40',
-      )}
-    >
+    <div className={cn('rounded-r border-l-2', accent)}>
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        className="flex w-full items-start gap-1.5 rounded-r bg-background/40 py-1 pr-2 pl-1.5 text-left hover:bg-accent/40"
+      >
+        {open ? (
+          <ChevronDownIcon className="mt-0.5 size-3 shrink-0 text-muted-foreground" />
+        ) : (
+          <ChevronRightIcon className="mt-0.5 size-3 shrink-0 text-muted-foreground" />
+        )}
+        <span className="min-w-0 flex-1">
+          <span className="flex flex-wrap items-baseline gap-x-2">
+            <span className="rounded bg-muted px-1 text-[10px] font-medium text-muted-foreground">
+              討論串 {messages.length} 則
+            </span>
+            <span className="truncate text-[11px] font-medium">{senders.join('、')}</span>
+            {last ? (
+              <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
+                {last.time}
+              </span>
+            ) : null}
+            {loading ? (
+              <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                <Loader2Icon className="size-2.5 animate-spin" />
+                補齊整串中…
+              </span>
+            ) : null}
+          </span>
+          {!open && preview ? (
+            <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
+              {preview}
+            </span>
+          ) : null}
+        </span>
+      </button>
+
+      {open ? (
+        <ul className="space-y-1 border-l border-dashed border-border/70 py-1 pl-2 ml-2">
+          {messages.map((m) => (
+            <li key={m.name}>
+              <MessageRow message={m} />
+            </li>
+          ))}
+          {/* 整串比視窗裡看得到的多，講清楚多出來的是從哪來的。
+              「最近 N 則」是按時間取的，常常把一串切成片段——不說的話
+              使用者會以為這幾則本來就在清單裡，只是他沒看到。 */}
+          {messages.length > windowCount ? (
+            <li className="pl-2 text-[10px] text-muted-foreground">
+              其中 {messages.length - windowCount} 則原本不在上面的清單範圍內，
+              是展開這一串時補回來的
+            </li>
+          ) : null}
+        </ul>
+      ) : null}
+    </div>
+  )
+}
+
+function MessageRow({ message }: { message: ChatMessage }) {
+  return (
+    // data-message-name 是給 e2e 驗「同一則不會出現兩次」用的。
+    // 收合前後都只該有一個——重複顯示正是這個面板最早的缺陷。
+    <div data-message-name={message.name} className="rounded bg-background/40 px-2 py-1">
       <div className="flex items-baseline gap-2">
         <span className="truncate text-[11px] font-medium">{message.sender}</span>
         <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
