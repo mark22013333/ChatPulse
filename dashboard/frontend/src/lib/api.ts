@@ -8,6 +8,7 @@ import type {
   MentionRefreshResponse,
   MentionState,
   MentionsResponse,
+  MessagesResponse,
   PublishResponse,
   ReplyResponse,
   SpacesResponse,
@@ -155,6 +156,18 @@ export const api = {
   // ── Phase 1 ────────────────────────────────────────────
   spaces: (params: { search?: string; refresh?: boolean } = {}) =>
     request<SpacesResponse>(`/spaces${query({ search: params.search, refresh: params.refresh })}`),
+  /**
+   * 某個 Space 的最近 N 則訊息（**討論串回覆混在裡面**，Google 沒有參數可以排除）。
+   * 帶 `thread_name` 就改成回傳完整的那一串——用來把被 limit 切斷的討論串補齊。
+   */
+  messages: (params: { space_id: string; limit?: number; thread_name?: string }) =>
+    request<MessagesResponse>(
+      `/messages${query({
+        space_id: params.space_id,
+        limit: params.limit,
+        thread_name: params.thread_name,
+      })}`,
+    ),
   styles: () => request<StylesResponse>('/styles', {}, { skipAuthRedirect: true }),
   summaries: (limit = 50) => request<SummariesResponse>(`/summaries${query({ limit })}`),
   publish: (body: { space_id: string; text: string; thread_name?: string | null }) =>

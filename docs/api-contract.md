@@ -144,15 +144,28 @@ scope 含 chat 三項 ＋ `openid`/`userinfo.email`/`userinfo.profile`。
 見 `core/draft_context.is_flat_space()`。
 
 ### `GET /api/v1/messages`
-需登入。query：`space_id`（**必填**）、`limit`（1~1000，預設 50）。
+需登入。query：`space_id`（**必填**）、`limit`（1~1000，預設 50）、
+`thread_name`（選填，給了就回**整個討論串**而不是最近 N 則；必須屬於 `space_id`，
+否則回 400）。
 訊息**由舊到新**排序（方便閱讀脈絡），內容為當下即時取回。
+
+**討論串回覆本來就在裡面**——`messages.list` 回的是扁平訊息流，Google 沒有參數
+可以排除它們。但「最近 N 則」常把一串切成片段，所以每則都帶 `thread_name`，
+呼叫端可以自己分組；要補齊被切掉的部分就帶 `thread_name` 再打一次。
+
+**只有附件、沒有文字的訊息也會回**（`text` 是空字串、靠 `attachment_note` 才看得出
+有東西）。這個端點原本 `if not text: continue`，於是「@某人 ＋ 一張截圖」整則消失，
+表現是「我要 20 則怎麼只有 17 則」而找不到原因。
 ```json
 {
   "space_id": "spaces/AAAAxLxqJxY",
   "space_name": "0.暫存",
+  "thread_name": null,
   "count": 50,
   "messages": [ { "name": "spaces/../messages/..", "sender": "鄭浩宇",
-                 "sender_id": "users/1098272650197...", "time": "2026-09-04 08:53", "text": "..." } ]
+                 "sender_id": "users/1098272650197...", "time": "2026-09-04 08:53",
+                 "text": "...", "attachment_note": "[圖片：shot.png（AI 未讀取內容）]",
+                 "thread_name": "spaces/../threads/.." } ]
 }
 ```
 
