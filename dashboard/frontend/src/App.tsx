@@ -16,6 +16,7 @@ import { useMentionsStore } from '@/store/mentions'
 import { useProviderStore } from '@/store/providers'
 import { findSpace, useSpacesStore } from '@/store/spaces'
 import { useSummaryStore } from '@/store/summary'
+import { useDraftStore } from '@/store/draft'
 
 type View = 'summary' | 'mentions'
 
@@ -27,6 +28,11 @@ export default function App() {
   const logout = useAuthStore((state) => state.logout)
 
   const [view, setView] = useState<View>('summary')
+
+  // 讓頁籤能顯示「另一邊還在生成」。訂閱的是布林值，只有開始／結束時才變，
+  // 不會每個 chunk 都讓整個 App 重繪。
+  const summaryStreaming = useSummaryStore((state) => state.streaming)
+  const draftStreaming = useDraftStore((state) => state.streaming)
 
   const spaces = useSpacesStore((state) => state.items)
   const selectedSpaceId = useSpacesStore((state) => state.selectedId)
@@ -123,6 +129,7 @@ export default function App() {
             onClick={() => setView('summary')}
             icon={<SparklesIcon className="size-3.5" />}
             label="摘要工作台"
+            busy={summaryStreaming}
           />
           <ViewTab
             active={view === 'mentions'}
@@ -130,6 +137,7 @@ export default function App() {
             icon={<InboxIcon className="size-3.5" />}
             label="Mention 收件匣"
             badge={pendingCount}
+            busy={draftStreaming}
           />
         </nav>
 
@@ -192,9 +200,11 @@ interface ViewTabProps {
   icon: ReactNode
   label: string
   badge?: number
+  /** 這個工作台正在跑 AI 生成。切走之後仍會繼續，用一個脈動點讓人知道。 */
+  busy?: boolean
 }
 
-function ViewTab({ active, onClick, icon, label, badge }: ViewTabProps) {
+function ViewTab({ active, onClick, icon, label, badge, busy }: ViewTabProps) {
   return (
     <button
       type="button"
@@ -208,6 +218,17 @@ function ViewTab({ active, onClick, icon, label, badge }: ViewTabProps) {
     >
       {icon}
       {label}
+      {busy ? (
+        <span
+          className="relative flex size-1.5"
+          title="正在生成，切到別的頁籤也會繼續"
+          aria-label="正在生成"
+        >
+          {/* motion-safe：尊重使用者的「減少動態效果」系統設定 */}
+          <span className="absolute inline-flex size-full rounded-full bg-sky-500 opacity-75 motion-safe:animate-ping" />
+          <span className="relative inline-flex size-1.5 rounded-full bg-sky-500" />
+        </span>
+      ) : null}
       {badge && badge > 0 ? (
         <span className="inline-flex min-w-4 items-center justify-center rounded-full bg-sky-500 px-1 text-[10px] font-semibold text-white">
           {badge}
