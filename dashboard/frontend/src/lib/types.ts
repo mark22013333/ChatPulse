@@ -92,6 +92,12 @@ export interface Space {
   id: string
   displayName: string
   type: string
+  /**
+   * Google 的 `spaceThreadingState`。**不可單獨拿它判斷有沒有討論串**：
+   * 實測 436 個 Space，私訊回報的是 `THREADED_MESSAGES` 而不是文件寫的
+   * `UNTHREADED_MESSAGES`。判準用 `isFlatSpace()`（與後端 draft_context 一致）。
+   */
+  threadingState?: string | null
   lastActiveTime: string | null
   memberCount?: number | null
   pinned?: boolean
@@ -183,7 +189,10 @@ export interface ReplyResponse {
   status: string
   message_id: string
   createTime: string
+  /** 主要那則（單則送出時的既有欄位） */
   mention: Mention
+  /** 這次實際結掉的全部（合併回覆時 > 1 則） */
+  mentions?: Mention[]
 }
 
 export interface UsageRow {
@@ -205,6 +214,13 @@ export interface DraftReferenceSpace {
   message_count: number
 }
 
+/** 合併回覆時，這份草稿實際會回掉的其中一則。 */
+export interface DraftAnsweringItem {
+  mention_id: number
+  sender_display?: string | null
+  create_time?: string | null
+}
+
 /** Draft Reply 的脈絡形狀（後端 `core/draft_context.py` 的 `DraftContext.to_meta()`）。 */
 export interface DraftContextMeta {
   /**
@@ -214,6 +230,8 @@ export interface DraftContextMeta {
    */
   mode: 'flat_window' | 'thread' | 'thread_thin'
   message_count: number
+  /** 這次要回覆的訊息有幾則（收件匣多選合併時 > 1） */
+  anchor_count?: number
   /** `partial` 代表系統沒能取回錨點周圍的完整對話（那則太舊了） */
   coverage: 'full' | 'partial'
   time_range: { start: string; end: string }
@@ -235,6 +253,11 @@ export interface SseMeta {
    * 差很多，而從草稿內容完全看不出來是哪一種。
    */
   context?: DraftContextMeta
+  /**
+   * 這份草稿會回掉哪幾則 Mention（合併回覆）。送出時要照這份走，
+   * 不要沿用送出前的勾選——伺服器實際採用的才算數。
+   */
+  answering?: DraftAnsweringItem[]
   reference_spaces?: DraftReferenceSpace[]
   /**
    * 實際送進模型的圖片張數。後端一直有送這個欄位，但前端沒顯示，

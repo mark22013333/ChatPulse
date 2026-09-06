@@ -164,7 +164,13 @@ export default function App() {
           {view === 'summary' ? (
             <SpacesRail />
           ) : (
-            <MentionInbox onSelect={(id) => selectMention(id)} />
+            <MentionInbox
+              onSelect={(id) => selectMention(id)}
+              onMergedGenerate={(primaryId, mergeIds) => {
+                selectMention(primaryId)
+                void useDraftStore.getState().generate(primaryId, mergeIds)
+              }}
+            />
           )}
         </aside>
 

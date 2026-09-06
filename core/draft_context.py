@@ -99,6 +99,9 @@ class DraftContext:
     mode: str  # "thread" | "flat_window" | "thread_thin"
     blocks: List[ContextBlock]
     anchor_run: List[Dict[str, Any]]
+    #: 這次要回覆的「訊息」有幾則（收件匣多選合併時 > 1）。
+    #: 注意這不是 len(anchor_run)——一個錨點可能是同一人的一串連發。
+    anchor_count: int
     anchor_text: str  # 帶發話者與時間，給 prompt 的【被 @ 的訊息】
     anchor_plain_text: str  # 只有內文，給 code_search 抽關鍵字
     image_messages: List[Dict[str, Any]]
@@ -128,6 +131,7 @@ class DraftContext:
         return {
             "mode": self.mode,
             "message_count": self.message_count,
+            "anchor_count": self.anchor_count,
             "coverage": self.coverage,
             "time_range": {"start": start, "end": end},
             "blocks": [
@@ -354,11 +358,18 @@ def build(
     space_type: Optional[str],
     threading_state: Optional[str],
     anchor_msg: Dict[str, Any],
+    extra_anchor_msgs: Sequence[Dict[str, Any]] = (),
     thread_name: Optional[str] = None,
     resolve: Optional[Callable[[Optional[str]], str]] = None,
     on_retrieved: Optional[Callable[[List[Dict[str, Any]]], Any]] = None,
 ) -> DraftContext:
     """依 Space 的結構語意決定脈絡的形狀。
+
+    `extra_anchor_msgs` 是「一起回」的其他錨點（收件匣多選合併）。同一個人在同一個
+    對話裡連問兩件事時，分兩次產草稿會得到兩份各自正確、但要分兩次送出的回話。
+    多錨點讓模型知道「這幾則要用**一則**回話一次回完」。
+    呼叫端必須先驗證所有錨點屬於同一個 Space（群組還要同一個討論串）——
+    回話只能送到一個 thread，跨串合併會讓其中一則的提問者看不到回覆。
 
     `client` 只需要三個方法：`fetch_recent_messages`、`list_messages_since`、
     `list_thread_messages`。傳 client 而不是 GoogleChatClient 型別是為了讓
@@ -380,51 +391,78 @@ def build(
         跨串小窗，兩者是**獨立區塊**。
     """
     label = space_type_label(space_type, threading_state)
+    anchors = _dedup_sorted([anchor_msg, *extra_anchor_msgs])
 
     if is_flat_space(space_type, threading_state):
-        return _build_flat(client, space_id, anchor_msg, resolve, label, on_retrieved)
+        return _build_flat(client, space_id, anchors, resolve, label, on_retrieved)
     return _build_threaded(
-        client, space_id, anchor_msg, thread_name, resolve, label, on_retrieved
+        client, space_id, anchors, thread_name, resolve, label, on_retrieved
     )
+
+
+def _run_start(window: Sequence[Dict[str, Any]], idx: int) -> int:
+    """錨點所屬「一串連發」的起始索引。"""
+    return idx - len(_collect_anchor_run(window, idx)) + 1
 
 
 def _build_flat(
     client: Any,
     space_id: str,
-    anchor_msg: Dict[str, Any],
+    anchors: List[Dict[str, Any]],
     resolve: Optional[Callable[[Optional[str]], str]],
     label: str,
     on_retrieved: Optional[Callable[[List[Dict[str, Any]]], Any]] = None,
 ) -> DraftContext:
-    window, idx, coverage = _load_window(
-        client, space_id, anchor_msg, cfg.DRAFT_WINDOW_FETCH
+    window, _, coverage = _load_window(
+        client, space_id, anchors[0], cfg.DRAFT_WINDOW_FETCH
     )
-    anchor_run = _collect_anchor_run(window, idx)
-    run_start = idx - len(anchor_run) + 1
-    anchor_time = _created_dt(anchor_msg)
+    # 其餘錨點可能落在窗外（例如兩則相隔很久），一律併進來再重算索引
+    if len(anchors) > 1:
+        window = _dedup_sorted(list(window) + anchors)
+    idxs = sorted(
+        i
+        for i in (_index_of(window, a.get("name") or "") for a in anchors)
+        if i is not None
+    )
+    if not idxs:  # 理論上不會發生（_load_window 保證錨點在窗裡）
+        window, idxs = _dedup_sorted(anchors), list(range(len(anchors)))
+        coverage = "partial"
 
-    before = list(window[max(0, run_start - cfg.DRAFT_CTX_BEFORE) : run_start])
-    after = list(window[idx + 1 : idx + 1 + cfg.DRAFT_CTX_AFTER])
+    # core＝從最早那個錨點的連發起點，到最晚那個錨點為止。錨點之間夾著的訊息
+    # （常見的是自己先前的回覆）也要留著——那是這幾則問題之間的來龍去脈。
+    first_idx = min(_run_start(window, i) for i in idxs)
+    last_idx = max(idxs)
+    core = list(window[first_idx : last_idx + 1])
+    anchor_names = {
+        window[j].get("name")
+        for i in idxs
+        for j in range(_run_start(window, i), i + 1)
+        if window[j].get("name")
+    }
+    anchor_run = [m for m in core if m.get("name") in anchor_names]
+
+    before = list(window[max(0, first_idx - cfg.DRAFT_CTX_BEFORE) : first_idx])
+    after = list(window[last_idx + 1 : last_idx + 1 + cfg.DRAFT_CTX_AFTER])
 
     before = _apply_time_bound(
         before,
-        anchor_time,
+        _created_dt(window[first_idx]),
         cfg.DRAFT_WINDOW_HOURS,
         min_keep=cfg.DRAFT_CTX_MIN_BEFORE,
         side="before",
     )
     # after 沒有保底：它的用途是「偵測已經有人回答了」，一個月後的訊息不是這件事的答案
     after = _apply_time_bound(
-        after, anchor_time, cfg.DRAFT_WINDOW_HOURS, min_keep=0, side="after"
+        after, _created_dt(window[last_idx]), cfg.DRAFT_WINDOW_HOURS, min_keep=0, side="after"
     )
 
-    messages = before + anchor_run + after
+    messages = before + core + after
     resolve = _apply_hook(on_retrieved, list(messages), resolve)
-    anchor_names = [m.get("name") for m in anchor_run if m.get("name")]
     image_before = before[-cfg.DRAFT_IMAGE_BEFORE :] if cfg.DRAFT_IMAGE_BEFORE else []
+    subject = "這幾則" if len(idxs) > 1 else "該則"
     block = ContextBlock(
         kind="flat_window",
-        label=f"這個{label}在該則前後的連續對話"
+        label=f"這個{label}在{subject}前後的連續對話"
         f"（前 {len(before)} 則、後 {len(after)} 則）",
         messages=messages,
         text=format_with_anchor(messages, resolve, anchor_names),
@@ -435,11 +473,14 @@ def _build_flat(
         mode="flat_window",
         blocks=[block],
         anchor_run=anchor_run,
+        anchor_count=len(idxs),
         anchor_text=format_with_anchor(anchor_run, resolve),
         anchor_plain_text=_plain_text(anchor_run),
+        # 用 core 而不是 anchor_run：多錨點時夾在中間的訊息也可能帶圖。
+        # 單錨點時 core 就等於 anchor_run，行為完全相同。
         # 排除 after：錨點之後的圖多半是別人回答時貼的，給模型看等於誘導它抄
         # 別人的答案，而使用者要的是自己的回話。那些訊息的**文字**仍在脈絡裡。
-        image_messages=_dedup_sorted(anchor_run + image_before),
+        image_messages=_dedup_sorted(core + image_before),
         coverage=coverage,
         space_type_label=label,
     )
@@ -448,12 +489,13 @@ def _build_flat(
 def _build_threaded(
     client: Any,
     space_id: str,
-    anchor_msg: Dict[str, Any],
+    anchors: List[Dict[str, Any]],
     thread_name: Optional[str],
     resolve: Optional[Callable[[Optional[str]], str]],
     label: str,
     on_retrieved: Optional[Callable[[List[Dict[str, Any]]], Any]] = None,
 ) -> DraftContext:
+    anchor_msg = anchors[0]
     if thread_name:
         thread_msgs = client.list_thread_messages(
             space_id, thread_name, limit=cfg.DRAFT_THREAD_LIMIT
@@ -461,10 +503,11 @@ def _build_threaded(
     else:
         # Google Chat 的 Message 必然帶 thread，這裡實務上不會執行；
         # 留著是因為「Google 破例不回」的成本是整個草稿失敗。
-        thread_msgs = [anchor_msg]
+        thread_msgs = list(anchors)
     thread_msgs = _dedup_sorted(thread_msgs)
-    if _index_of(thread_msgs, anchor_msg.get("name") or "") is None:
-        thread_msgs = _dedup_sorted(list(thread_msgs) + [anchor_msg])
+    missing = [a for a in anchors if _index_of(thread_msgs, a.get("name") or "") is None]
+    if missing:
+        thread_msgs = _dedup_sorted(list(thread_msgs) + missing)
 
     # 薄串的跨串小窗要在學名字之前取回來，否則那個區塊的發言者會全是「未知成員」
     cross: List[Dict[str, Any]] = []
@@ -474,7 +517,9 @@ def _build_threaded(
 
     resolve = _apply_hook(on_retrieved, list(thread_msgs) + list(cross), resolve)
 
-    anchor_names = [anchor_msg.get("name")] if anchor_msg.get("name") else []
+    # 討論串路徑**不**收攏「一串連發」：整串本來就都印出來了，收攏只會讓
+    # 【要回覆的訊息】區塊重複更多內容。這與 flat_window 的取捨不同，見 _collect_anchor_run。
+    anchor_names = [a.get("name") for a in anchors if a.get("name")]
     thread_block = ContextBlock(
         kind="thread",
         label=f"該討論串的完整對話（共 {len(thread_msgs)} 則）",
@@ -486,9 +531,10 @@ def _build_threaded(
         return DraftContext(
             mode="thread",
             blocks=[thread_block],
-            anchor_run=[anchor_msg],
-            anchor_text=format_with_anchor([anchor_msg], resolve),
-            anchor_plain_text=_plain_text([anchor_msg]),
+            anchor_run=list(anchors),
+            anchor_count=len(anchors),
+            anchor_text=format_with_anchor(anchors, resolve),
+            anchor_plain_text=_plain_text(anchors),
             image_messages=thread_msgs,
             coverage="full",
             space_type_label=label,
@@ -515,9 +561,10 @@ def _build_threaded(
     return DraftContext(
         mode="thread_thin",
         blocks=blocks,
-        anchor_run=[anchor_msg],
-        anchor_text=format_with_anchor([anchor_msg], resolve),
-        anchor_plain_text=_plain_text([anchor_msg]),
+        anchor_run=list(anchors),
+        anchor_count=len(anchors),
+        anchor_text=format_with_anchor(anchors, resolve),
+        anchor_plain_text=_plain_text(anchors),
         # 排除 cross_thread：別串的截圖幾乎必然不相關，而 attachments 依
         # 「越新越優先」排序，一張較新的無關圖會排在同串較舊的相關圖前面，
         # 把 8 張／8000 tokens 吃掉。priority_message_names 只保障第 1 張。

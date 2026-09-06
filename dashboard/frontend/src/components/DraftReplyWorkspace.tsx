@@ -66,6 +66,8 @@ function contextTitle(context: DraftContextMeta | undefined) {
 export function DraftReplyWorkspace({ mention }: DraftReplyWorkspaceProps) {
   const spaces = useSpacesStore((state) => state.items)
   const applyResolved = useMentionsStore((state) => state.applyResolved)
+  const applyResolvedMany = useMentionsStore((state) => state.applyResolvedMany)
+  const mergeIds = useMentionsStore((state) => state.mergeIds)
   const providers = useProviderStore((state) => state.providers)
 
   const {
@@ -114,6 +116,12 @@ export function DraftReplyWorkspace({ mention }: DraftReplyWorkspaceProps) {
   // 使用者明確表達的意圖。
 
   const sections = useMemo(() => splitDraft(raw), [raw])
+  // 只有「這一則自己也在勾選裡」時才算在合併——否則收件匣勾了 A、B，
+  // 使用者卻點開 C 去按產生，會把不相干的 A、B 一起回掉
+  const activeMergeIds = useMemo(
+    () => (mention && mergeIds.includes(mention.id) ? mergeIds : []),
+    [mergeIds, mention],
+  )
   const referenceCandidates = useMemo(
     () => filterSpaces(spaces, referenceSearch),
     [spaces, referenceSearch],
@@ -146,9 +154,13 @@ export function DraftReplyWorkspace({ mention }: DraftReplyWorkspaceProps) {
   const handleSend = async () => {
     try {
       const updated = await useDraftStore.getState().send(mention.id)
-      if (updated) applyResolved(updated)
+      if (updated.length) applyResolvedMany(updated)
       else applyResolved({ ...mention, state: 'resolved', resolved_at: new Date().toISOString() })
-      toast.success('已送出回話，該則 Mention 已標記為已處理')
+      toast.success(
+        updated.length > 1
+          ? `已送出回話，這 ${updated.length} 則都標記為已處理`
+          : '已送出回話，該則 Mention 已標記為已處理',
+      )
       setConfirmOpen(false)
     } catch (err) {
       toast.error(errorMessage(err))
@@ -259,11 +271,17 @@ export function DraftReplyWorkspace({ mention }: DraftReplyWorkspaceProps) {
             ) : (
               <Button
                 className="w-full"
-                onClick={() => void generate(mention.id)}
+                // 收件匣勾了要合併的話，這顆按鈕也要照著合併——不然
+                // 「勾了兩則卻只回到一則」是靜默的，使用者要送出後才發現
+                onClick={() => void generate(mention.id, activeMergeIds)}
                 disabled={Boolean(refLimitError)}
               >
                 <SparklesIcon />
-                {raw ? '重新產生 Draft Reply' : '產生 Draft Reply'}
+                {activeMergeIds.length > 1
+                  ? `${raw ? '重新產生' : '產生'} Draft Reply（合併 ${activeMergeIds.length} 則）`
+                  : raw
+                    ? '重新產生 Draft Reply'
+                    : '產生 Draft Reply'}
               </Button>
             )}
           </div>
@@ -300,6 +318,21 @@ export function DraftReplyWorkspace({ mention }: DraftReplyWorkspaceProps) {
                   >
                     {contextLabel(meta.context, meta.thread_message_count)}
                   </span>
+                  {/* 合併回覆時一定要顯示「這份草稿會回掉幾則」：從草稿內容
+                      看不出來它有沒有真的回到每一則，而送出會一次結掉全部。 */}
+                  {(meta.answering?.length ?? 0) > 1 ? (
+                    <span
+                      className="rounded border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 font-medium text-sky-600 dark:text-sky-400"
+                      title={(meta.answering ?? [])
+                        .map(
+                          (a) =>
+                            `${a.sender_display ?? '未知成員'} · ${formatDateTime(a.create_time)}`,
+                        )
+                        .join('\n')}
+                    >
+                      合併回覆 {meta.answering?.length} 則
+                    </span>
+                  ) : null}
                   {/* 圖片張數一定要顯示：附件有沒有被讀進去，從草稿內容看不出來，
                       使用者只能猜。顯示 0 張也有意義——那代表「讀了但沒有圖」。 */}
                   {meta.image_count !== undefined ? (
@@ -390,7 +423,18 @@ export function DraftReplyWorkspace({ mention }: DraftReplyWorkspaceProps) {
           <>
             將以<strong className="text-foreground">你本人的身分</strong>送出，並回到原討論串（
             <strong className="text-foreground">{mention.space_name}</strong>）。
-            送出後這則 Mention 會自動變成已處理。
+            {(meta?.answering?.length ?? 0) > 1 ? (
+              <>
+                {' '}
+                只會送出<strong className="text-foreground">這一則</strong>訊息，
+                但送出後<strong className="text-foreground">
+                  {meta?.answering?.length} 則
+                </strong>
+                會一起標成已處理——送出前請確認回話真的每一則都回到了。
+              </>
+            ) : (
+              <> 送出後這則 Mention 會自動變成已處理。</>
+            )}
             {selectedNames.length > 0 ? (
               <>
                 <br />

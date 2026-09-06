@@ -62,10 +62,23 @@ interface DraftState {
   setReferenceSearch: (value: string) => void
   setRefLimit: (raw: string) => void
   setReplyText: (text: string) => void
-  generate: (mentionId: number) => Promise<void>
+  /** `mergeIds` 是要「一起回」的其他 Mention（不含 mentionId 自己） */
+  generate: (mentionId: number, mergeIds?: number[]) => Promise<void>
   abort: () => void
   reset: () => void
-  send: (mentionId: number) => Promise<Mention | null>
+  send: (mentionId: number) => Promise<Mention[]>
+}
+
+/**
+ * 送出時要結掉哪幾則：以伺服器在 meta.answering 回報的為準。
+ *
+ * 不用送出前的勾選，是因為那兩份可能不一致——伺服器會擋掉不合規的項目，
+ * 沿用勾選會讓使用者以為某則回過了、其實沒有。meta 還沒到（草稿失敗、
+ * 舊版後端）就退回只回主要那則。
+ */
+function answeringIds(meta: SseMeta | null, mentionId: number): number[] {
+  const ids = (meta?.answering ?? []).map((a) => a.mention_id)
+  return ids.filter((id) => id !== mentionId)
 }
 
 let controller: AbortController | null = null
@@ -118,7 +131,7 @@ export const useDraftStore = create<DraftState>((set, get) => ({
 
   setReplyText: (text) => set({ replyText: text, replyEdited: true }),
 
-  generate: async (mentionId) => {
+  generate: async (mentionId, mergeIds = []) => {
     const { refLimit, refLimitError, referenceSpaceIds } = get()
     if (refLimitError || !Number.isInteger(refLimit)) return
 
@@ -140,7 +153,12 @@ export const useDraftStore = create<DraftState>((set, get) => ({
     await streamSse(
       streamUrls.draft(mentionId),
       // provider 是選填：選「自動」時整個欄位不出現，交給伺服器解析
-      { reference_space_ids: referenceSpaceIds, limit: refLimit, ...providerRequestField() },
+      {
+        reference_space_ids: referenceSpaceIds,
+        limit: refLimit,
+        merge_mention_ids: mergeIds.filter((id) => id !== mentionId),
+        ...providerRequestField(),
+      },
       {
         onMeta: (meta) => set({ meta }),
         onChunk: (chunk) =>
@@ -193,12 +211,18 @@ export const useDraftStore = create<DraftState>((set, get) => ({
   },
 
   send: async (mentionId) => {
-    const { replyText, draftId } = get()
-    if (!replyText.trim()) return null
+    const { replyText, draftId, meta } = get()
+    if (!replyText.trim()) return []
     set({ sending: true, error: null })
     try {
-      const result = await api.sendReply(mentionId, { text: replyText, draft_id: draftId })
-      return result.mention ?? null
+      const result = await api.sendReply(mentionId, {
+        text: replyText,
+        draft_id: draftId,
+        merge_mention_ids: answeringIds(meta, mentionId),
+      })
+      // 新版後端回 mentions（合併回覆時 > 1 則）；舊版只有 mention
+      if (result.mentions?.length) return result.mentions
+      return result.mention ? [result.mention] : []
     } catch (err) {
       set({ error: errorMessage(err) })
       throw err

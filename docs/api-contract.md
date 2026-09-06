@@ -257,9 +257,16 @@ mentions 表**只存識別資訊**，不存內容）。
 ### `POST /api/v1/mentions/{id}/draft/stream`
 需登入。**SSE**。產生 Draft Reply。body：
 ```json
-{ "reference_space_ids": ["spaces/BBB", "spaces/CCC"], "limit": 50, "provider": "claude_cli" }
+{ "reference_space_ids": ["spaces/BBB", "spaces/CCC"], "limit": 50, "provider": "claude_cli",
+  "merge_mention_ids": [46] }
 ```
 `reference_space_ids` **預設空陣列**（7.3：不自動選擇 Reference Space）。
+
+`merge_mention_ids`：一起回成一則的其他 Mention（收件匣多選）。URL 上那則是主要的，
+回話會送到它的討論串。三條限制，違反回 **400 INVALID_PARAMETER**（SSE 開始前就擋，
+不是變成 error 事件）：同一個 Space、分串聊天室還要同一個討論串、不能是已處理的；
+一次最多 5 則。**跨討論串是最危險的一種**——放行的話回話會送出成功，
+但只進得了其中一串，另一串的人永遠看不到，而兩則都被標成已處理。
 
 脈絡的**形狀由 Space 的結構語意決定**（`core/draft_context.py`），三種：
 
@@ -281,12 +288,17 @@ mentions 表**只存識別資訊**，不存內容）。
   "context": {
     "mode": "flat_window", "message_count": 12, "coverage": "full",
     "time_range": { "start": "2026-09-04T05:37:22Z", "end": "2026-09-06T12:32:57Z" },
-    "blocks": [ { "kind": "flat_window", "label": "這個一對一私訊在該則前後的連續對話（前 6 則、後 5 則）", "count": 12 } ]
+    "anchor_count": 2,
+    "blocks": [ { "kind": "flat_window", "label": "這個一對一私訊在這幾則前後的連續對話（前 6 則、後 5 則）", "count": 12 } ]
   },
+  "answering": [ { "mention_id": 45, "sender_display": "李小明", "create_time": "2026-09-06T11:33:28Z" },
+                 { "mention_id": 46, "sender_display": "李小明", "create_time": "2026-09-06T12:32:57Z" } ],
   "reference_spaces": [ { "space_id": "spaces/BBB", "space_name": "1.BU2-PG", "message_count": 50 } ],
   "provider": "claude_cli", "model": "claude-cli:opus",
   "image_count": 1, "images_skipped": [] }
 ```
+`answering` 是這份草稿會回掉的全部 Mention（合併時 > 1 則）。**送出時要照它走**，
+不要沿用送出前的勾選——伺服器實際採用的才算數。
 `thread_message_count` 保留舊名，值是 `context.message_count`（這次送進模型的對話則數）。
 `coverage: "partial"` 代表系統沒能取回錨點周圍的完整對話（那則太舊了），prompt 會據此
 要模型更保守，前端會把則數標成橘色。
@@ -296,13 +308,20 @@ mentions 表**只存識別資訊**，不存內容）。
 ### `POST /api/v1/mentions/{id}/reply`
 需登入。送出回話（**前端必須先二次確認**）。
 ```json
-{ "text": "編輯後的回話內容", "draft_id": 3 }
+{ "text": "編輯後的回話內容", "draft_id": 3, "merge_mention_ids": [46] }
 ```
 行為：以 Viewer 身分回到 `thread_name` 所在討論串 → 該 Mention **自動標記為 resolved**。
+`merge_mention_ids`（草稿 meta 的 `answering` 帶回來的）只送出**一則**訊息，
+但把被合併的那幾則一起標成 resolved。驗證與草稿端點共用同一個函式。
 ```json
 { "status": "success", "message_id": "...", "createTime": "...",
-  "mention": { "id": 7, "state": "resolved", "resolved_at": "..." } }
+  "mention": { "id": 7, "state": "resolved", "resolved_at": "..." },
+  "mentions": [ { "id": 7, "state": "resolved", "...": "..." },
+                { "id": 8, "state": "resolved", "...": "..." } ] }
 ```
+`mention` 是主要那則（既有欄位）；`mentions` 是這次實際結掉的全部。
+訊息送出後任何一則標記失敗都**不會**讓請求變成 500——那會讓人以為沒送出而再送一次，
+對方就收到兩則。失敗只寫 log。
 
 ---
 

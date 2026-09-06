@@ -19,8 +19,20 @@ interface MentionsState {
   error: string | null
   selectedId: number | null
 
+  /**
+   * 勾起來要「一起回成一則」的 Mention id。
+   *
+   * 空陣列＝沒有在合併，草稿只回 `selectedId` 那一則。長度 ≥ 1 時，
+   * 第一個是主要那則（回話會送到它的討論串），其餘一起被標成已處理。
+   */
+  mergeIds: number[]
+
   setTab: (tab: MentionState) => void
   select: (id: number | null) => void
+  toggleMerge: (id: number) => void
+  clearMerge: () => void
+  /** 送出成功後把整組一起就地更新，不必重新拉整份清單 */
+  applyResolvedMany: (mentions: Mention[]) => void
   /** 用 /api/v1/me 的 mention_counts 先把未處理數量填上，讓頂列 badge 不必等收件匣開啟 */
   seedCounts: (counts: MentionCounts) => void
   load: (options?: { silent?: boolean }) => Promise<void>
@@ -45,13 +57,27 @@ export const useMentionsStore = create<MentionsState>((set, get) => ({
   lastCheckStats: null,
   error: null,
   selectedId: null,
+  mergeIds: [],
 
   external: null,
 
-  setTab: (tab) => set({ tab }),
+  // 切換頁籤時清掉合併勾選：已處理那一頁勾起來要合併是沒有意義的，
+  // 而留著看不見的勾選會讓下一次產草稿悄悄多回幾則
+  setTab: (tab) => set({ tab, mergeIds: [] }),
   // 在收件匣點了別則，就不再是「清單外的那則」了，把 external 清掉
   select: (id) => set({ selectedId: id, external: null }),
-  selectExternal: (mention) => set({ external: mention, selectedId: mention.id }),
+  selectExternal: (mention) => set({ external: mention, selectedId: mention.id, mergeIds: [] }),
+
+  toggleMerge: (id) =>
+    set((current) => {
+      const next = current.mergeIds.includes(id)
+        ? current.mergeIds.filter((x) => x !== id)
+        : [...current.mergeIds, id]
+      // 勾第一則時順便把它設成當前選取，讓右邊的工作區跟著顯示同一個對話
+      return next.length === 1 ? { mergeIds: next, selectedId: next[0], external: null } : { mergeIds: next }
+    }),
+
+  clearMerge: () => set({ mergeIds: [] }),
 
   seedCounts: (counts) => {
     // 清單已經載入過就以清單為準，不要被 /me 的快照蓋回去
@@ -108,6 +134,13 @@ export const useMentionsStore = create<MentionsState>((set, get) => ({
       set({ error: errorMessage(err) })
       throw err
     }
+  },
+
+  applyResolvedMany: (mentions) => {
+    // 逐則套用既有邏輯，計數才會一則一則正確地扣。整批直接覆寫的話，
+    // 混著 manual 與 pending 時 counts 會失真而沒有任何跡象。
+    for (const m of mentions) get().applyResolved(m)
+    set({ mergeIds: [] })
   },
 
   applyResolved: (mention) => {
