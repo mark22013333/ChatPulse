@@ -69,6 +69,37 @@ class MentionNotFound(ChatPulseError):
     default_message = "找不到指定的 Mention"
 
 
+class CodeProjectNotFound(ChatPulseError):
+    code = "CODE_PROJECT_NOT_FOUND"
+    http_status = 404
+    default_message = "找不到指定的參考專案"
+
+
+class CodeProjectUnavailable(ChatPulseError):
+    """專案登錄還在，但本機路徑已經不是一個可讀的 git repo。
+
+    刻意與 CODE_BRANCH_NOT_FOUND 分開：兩者的下一步完全不同。
+    這個要去改路徑（或專案被搬走／磁碟沒掛上），那個要去改分支對應。
+    合成同一個錯誤碼會讓前端只能給一句模糊的「設定有問題」。
+    """
+
+    code = "CODE_PROJECT_UNAVAILABLE"
+    http_status = 409
+    default_message = "參考專案的路徑不存在或不是 git repo"
+
+
+class CodeBranchNotFound(ChatPulseError):
+    """環境對應到的分支在 repo 裡不存在。
+
+    這是硬失敗而不是降級：使用者要的就是「正式環境的程式碼」，
+    拿不到卻照樣產草稿，等於給他一份沒有依據、但看起來有依據的答案。
+    """
+
+    code = "CODE_BRANCH_NOT_FOUND"
+    http_status = 409
+    default_message = "環境對應的分支不存在"
+
+
 class RouteNotFound(ChatPulseError):
     """API 路徑不存在。
 
