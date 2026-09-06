@@ -131,6 +131,16 @@ export const api = {
   updatePreferences: (body: { default_provider?: string | null }) =>
     request<Preferences>('/preferences', { method: 'PATCH', body: JSON.stringify(body) }),
 
+  /**
+   * 對某個 Space「對方最後說的話」建立草稿目標，回傳可以拿去產草稿的 mention。
+   * 私訊不會產生 mention（沒人 @ 你），所以後端合成一筆給草稿流程掛。
+   */
+  createDraftTarget: (body: { space_id: string }) =>
+    post<{ mention_id: number; mention: Mention | null }>(
+      '/spaces/draft-target',
+      body as unknown as Json,
+    ),
+
   /** 給沒有官方名稱的空間（私訊）取別名。`alias` 傳空字串＝清除，回到自動辨識。 */
   setSpaceAlias: (body: { space_id: string; alias: string }) =>
     request<{ space_id: string; alias: string; ok: boolean }>('/spaces/alias', {

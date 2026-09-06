@@ -22,6 +22,12 @@ interface MentionsState {
   setMentionState: (id: number, state: MentionState) => Promise<void>
   /** 送出回話成功後就地更新該則狀態 */
   applyResolved: (mention: Mention) => void
+  /**
+   * 清單以外的當前 mention（從摘要工作台按「產生回覆草稿」建立的）。
+   * 那些是 state='manual'，收件匣刻意不列出來，但草稿工作區要畫得出來。
+   */
+  external: Mention | null
+  selectExternal: (mention: Mention) => void
 }
 
 export const useMentionsStore = create<MentionsState>((set, get) => ({
@@ -34,8 +40,12 @@ export const useMentionsStore = create<MentionsState>((set, get) => ({
   error: null,
   selectedId: null,
 
+  external: null,
+
   setTab: (tab) => set({ tab }),
-  select: (id) => set({ selectedId: id }),
+  // 在收件匣點了別則，就不再是「清單外的那則」了，把 external 清掉
+  select: (id) => set({ selectedId: id, external: null }),
+  selectExternal: (mention) => set({ external: mention, selectedId: mention.id }),
 
   seedCounts: (counts) => {
     // 清單已經載入過就以清單為準，不要被 /me 的快照蓋回去
