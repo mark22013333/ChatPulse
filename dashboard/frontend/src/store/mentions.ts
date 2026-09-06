@@ -1,6 +1,12 @@
 import { create } from 'zustand'
 import { api, errorMessage } from '@/lib/api'
-import type { CollectorRunStats, Mention, MentionCounts, MentionState } from '@/lib/types'
+import type {
+  CollectorRunStats,
+  Mention,
+  MentionCounts,
+  MentionState,
+  MentionStateValue,
+} from '@/lib/types'
 
 interface MentionsState {
   items: Mention[]
@@ -87,14 +93,17 @@ export const useMentionsStore = create<MentionsState>((set, get) => ({
   setMentionState: async (id, state) => {
     try {
       const updated = await api.updateMention(id, state)
-      set((current) => ({
-        items: current.items.map((item) =>
-          item.id === id
-            ? { ...item, state: updated.state ?? state, resolved_at: updated.resolved_at ?? null }
-            : item,
-        ),
-        counts: recount(current.counts, state),
-      }))
+      set((current) => {
+        const prev = current.items.find((item) => item.id === id)
+        return {
+          items: current.items.map((item) =>
+            item.id === id
+              ? { ...item, state: updated.state ?? state, resolved_at: updated.resolved_at ?? null }
+              : item,
+          ),
+          counts: recount(current.counts, prev?.state ?? 'manual', state),
+        }
+      })
     } catch (err) {
       set({ error: errorMessage(err) })
       throw err
@@ -102,22 +111,42 @@ export const useMentionsStore = create<MentionsState>((set, get) => ({
   },
 
   applyResolved: (mention) => {
-    set((current) => ({
-      items: current.items.map((item) =>
-        item.id === mention.id
-          ? { ...item, state: mention.state, resolved_at: mention.resolved_at }
-          : item,
-      ),
-      counts: recount(current.counts, mention.state),
-    }))
+    set((current) => {
+      const prev = current.items.find((item) => item.id === mention.id)
+      // 不在清單裡代表它原本是 manual（從摘要工作台挑的草稿目標），
+      // 收件匣刻意沒列出它。現在回話送出、狀態變成已處理了，就該補進清單——
+      // 否則使用者回覆完之後在「已處理」找不到自己剛做的事。
+      const from: MentionStateValue = prev?.state ?? 'manual'
+      const merged = { ...(prev ?? mention), ...mention }
+      return {
+        items: prev
+          ? current.items.map((item) => (item.id === mention.id ? merged : item))
+          : [merged, ...current.items],
+        counts: recount(current.counts, from, mention.state),
+      }
+    })
   },
 }))
 
-function recount(counts: MentionCounts, moveTo: MentionState): MentionCounts {
-  if (moveTo === 'resolved') {
-    return { pending: Math.max(0, counts.pending - 1), resolved: counts.resolved + 1 }
-  }
-  return { pending: counts.pending + 1, resolved: Math.max(0, counts.resolved - 1) }
+/**
+ * 依「從哪個狀態變到哪個狀態」重算計數。
+ *
+ * 一定要知道 `from`：以前這裡只看新狀態，變成 resolved 就把 pending 減一。
+ * 但從摘要工作台挑的草稿目標（state='manual'）本來就不算在待處理裡，
+ * 送出回話後被減這一下，「待處理」的數字會平白少一個。
+ * manual 不加也不減——它不屬於收件匣的任何分頁。
+ */
+function recount(
+  counts: MentionCounts,
+  from: MentionStateValue,
+  to: MentionStateValue,
+): MentionCounts {
+  const next = { ...counts }
+  if (from === 'pending') next.pending = Math.max(0, next.pending - 1)
+  if (from === 'resolved') next.resolved = Math.max(0, next.resolved - 1)
+  if (to === 'pending') next.pending += 1
+  if (to === 'resolved') next.resolved += 1
+  return next
 }
 
 export function selectMentionsByState(items: Mention[], state: MentionState): Mention[] {

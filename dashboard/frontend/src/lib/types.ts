@@ -142,7 +142,17 @@ export interface PublishResponse {
   thread_name: string | null
 }
 
+/** 使用者可以手動切換的狀態（收件匣的兩個分頁） */
 export type MentionState = 'pending' | 'resolved'
+
+/**
+ * 資料庫裡實際會出現的狀態。
+ *
+ * `manual` 是「從摘要工作台按『產生回覆草稿』挑的對話」——它不是有人 @ 你，
+ * 所以收件匣刻意不列出來，但草稿工作區要畫得出來。送出回話之後會轉成
+ * `resolved`，那時就會出現在「已處理」清單裡。
+ */
+export type MentionStateValue = MentionState | 'manual'
 
 export interface Mention {
   id: number
@@ -152,7 +162,7 @@ export interface Mention {
   thread_name: string | null
   sender_display: string
   create_time: string
-  state: MentionState
+  state: MentionStateValue
   resolved_at: string | null
   text?: string | null
   content_error?: string | null

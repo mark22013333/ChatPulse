@@ -10,6 +10,7 @@ import {
   XIcon,
 } from 'lucide-react'
 import { toast } from 'sonner'
+import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -135,14 +136,28 @@ export function DraftReplyWorkspace({ mention }: DraftReplyWorkspaceProps) {
           <span className="text-xs text-muted-foreground">
             {mention.sender_display} · {formatDateTime(mention.create_time)}
           </span>
+          {/* manual 必須單獨標。以前這裡只分 pending 與「其他」，於是從摘要
+              工作台挑來的草稿目標被顯示成「已處理」——但它不在「已處理」清單裡
+              （那個分頁查的是 resolved），使用者會以為系統漏掉了他的紀錄。 */}
           <span
-            className={
-              mention.state === 'pending'
-                ? 'rounded border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[10px] text-sky-500'
-                : 'rounded border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-500'
+            className={cn(
+              'rounded border px-1.5 py-0.5 text-[10px]',
+              mention.state === 'pending' && 'border-sky-500/30 bg-sky-500/10 text-sky-500',
+              mention.state === 'resolved' &&
+                'border-emerald-500/30 bg-emerald-500/10 text-emerald-500',
+              mention.state === 'manual' && 'border-border bg-muted text-muted-foreground',
+            )}
+            title={
+              mention.state === 'manual'
+                ? '你從摘要工作台挑的對話，不是別人 @ 你，所以不在收件匣的待辦清單裡。送出回話後會歸到「已處理」。'
+                : undefined
             }
           >
-            {mention.state === 'pending' ? '待處理' : '已處理'}
+            {mention.state === 'pending'
+              ? '待處理'
+              : mention.state === 'manual'
+                ? '手動指定'
+                : '已處理'}
           </span>
         </div>
         <p className="mt-2 rounded-lg border border-border bg-muted/40 p-3 text-xs leading-relaxed whitespace-pre-wrap">
