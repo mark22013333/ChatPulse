@@ -15,6 +15,7 @@ macOS/Linux，`scripts/onboard.py` 裡另寫一行 uvicorn 給 Windows。結果�
 當下的時間，用 mtime 會讓每個同事一 clone 就被要求重建。
 """
 
+import errno
 import hashlib
 import json
 import os
@@ -238,13 +239,34 @@ def provider_summary(python: str = "") -> tuple:
 # 啟動
 # ----------------------------------------------------------------------
 
-def port_in_use() -> bool:
-    """8000 是不是已經有人在聽。"""
+def port_in_use(port: int = PORT) -> bool:
+    """有沒有人在這個 port 上聽（用來判斷服務起來了沒）。"""
     try:
-        with socket.create_connection((HOST, PORT), timeout=0.5):
+        with socket.create_connection((HOST, port), timeout=0.5):
             return True
     except OSError:
         return False
+
+
+def port_available(port: int = PORT) -> tuple:
+    """能不能綁這個 port。回傳 (可用, 原因)，原因為 '' / 'in_use' / 'denied'。
+
+    用 bind 而不是 connect：connect 只問「有沒有人在聽」，但真正決定服務
+    起不起得來的是「綁不綁得上」，兩者不等價。Windows 上 Hyper-V 與 WSL2
+    會保留成段的動態連接埠，那些 port **沒有人在 listen**（connect 測不出來）
+    卻會讓 bind 被拒（WSAEACCES）——只用 connect 判斷就會放行，
+    然後使用者拿到一行英文的 winerror 10013。
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        # 刻意不設 SO_REUSEADDR：這裡要模擬的就是 uvicorn 待會的處境
+        sock.bind((HOST, port))
+        return True, ""
+    except OSError as exc:
+        in_use_codes = {errno.EADDRINUSE, getattr(errno, "WSAEADDRINUSE", -1)}
+        return False, ("in_use" if exc.errno in in_use_codes else "denied")
+    finally:
+        sock.close()
 
 
 def _open_browser_when_ready(proc, timeout: float = 25.0) -> None:
@@ -359,11 +381,27 @@ def start(ui, dev: bool = False) -> int:
     # 先問清楚再啟動。讓 uvicorn 自己去撞的話，使用者得到的是一行英文的
     # 「[Errno 48] address already in use」，而這其實是最常見的情況之一：
     # 上一次啟動的服務忘了關。
-    if port_in_use():
+    available, reason = port_available()
+    if not available and reason == "in_use":
         print()
         ui.bad(f"連接埠 {PORT} 已經被佔用，服務起不來")
         ui.arrow(f"多半是上一次啟動的還開著——先開 {URL} 看看是不是已經在跑了")
         ui.arrow("如果是，回到那個視窗按 Ctrl+C 再重試；不是的話請關掉佔用它的程式")
+        if IS_WINDOWS:
+            ui.arrow("Windows 補充：上次按 Ctrl+C 時如果跳出「終止批次工作 (Y/N)?」而你選了 Y，")
+            ui.plain("       服務會變成孤兒繼續佔著 8000（下次請選 N 讓它正常收尾）。")
+            ui.plain("       要清掉它：netstat -ano | findstr :8000 找出 PID，")
+            ui.plain("       再跑 taskkill /PID <那個PID> /F")
+        return 1
+    if not available:
+        print()
+        ui.bad(f"連接埠 {PORT} 綁不上（系統拒絕，不是被別的程式佔用）")
+        if IS_WINDOWS:
+            ui.arrow("Windows 上常見原因是 Hyper-V／WSL2 保留了這段連接埠")
+            ui.plain("       確認：netsh interface ipv4 show excludedportrange protocol=tcp")
+            ui.plain("       若 8000 落在保留範圍內，請維護者把服務改用其他連接埠")
+        else:
+            ui.arrow("請確認是否有防火牆或權限設定擋住這個連接埠")
         return 1
 
     # ── 4. 啟動 ─────────────────────────────────────────────
