@@ -263,6 +263,21 @@ export function DraftReplyWorkspace({ mention }: DraftReplyWorkspaceProps) {
                   <span className="font-mono">
                     討論串 {meta.thread_message_count ?? 0} 則
                   </span>
+                  {/* 圖片張數一定要顯示：附件有沒有被讀進去，從草稿內容看不出來，
+                      使用者只能猜。顯示 0 張也有意義——那代表「讀了但沒有圖」。 */}
+                  {meta.image_count !== undefined ? (
+                    <span
+                      className="font-mono"
+                      title={
+                        meta.images_skipped?.length
+                          ? `略過：${meta.images_skipped.join('、')}`
+                          : '實際送進模型的圖片張數'
+                      }
+                    >
+                      · 圖片 {meta.image_count} 張
+                      {meta.images_skipped?.length ? `（略過 ${meta.images_skipped.length}）` : ''}
+                    </span>
+                  ) : null}
                   {/* 一律以 meta 回報的供應商為準——伺服器可能因別名解析而用了別的 */}
                   {meta.provider ? (
                     <span

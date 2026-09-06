@@ -128,7 +128,11 @@ export const api = {
   /** 未登入也能打；登入後可改用 `/me` 的 `ai` 欄位，少一次往返。 */
   providers: () => request<AIConfig>('/providers', {}, { skipAuthRedirect: true }),
   /** `default_provider` 傳 null＝清掉偏好、沿用伺服器預設。 */
-  updatePreferences: (body: { default_provider?: string | null }) =>
+  updatePreferences: (body: {
+    default_provider?: string | null
+    default_limit?: number
+    default_style?: string
+  }) =>
     request<Preferences>('/preferences', { method: 'PATCH', body: JSON.stringify(body) }),
 
   /**
