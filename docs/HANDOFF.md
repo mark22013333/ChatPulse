@@ -121,6 +121,14 @@ npm --prefix dashboard/frontend run test              # 前端 32 項
   `attachmentDataRef.resourceName`，**不是** attachment 自己的 `name`
 - **透過 API 送出的訊息一定會帶「歸屬標示」**（發送者名字旁的灰底 app 名稱），
   官方明說是設計行為，**關不掉**，只能改文字。詳見 ADR-0001
+- **`messages.list` 回的是扁平訊息流，討論串回覆混在裡面**，沒有參數可以排除。
+  2026-09-06 實測（暫存群組，limit=50）：50 則分屬 38 個 thread，其中 10 個 thread
+  有多則，最長一串 4 則。所以摘要**讀得到** thread 回覆——但因為是按 createTime 取
+  最近 N 則，**同一串常常只被切到片段**，AI 看到的是斷掉的對話。這是摘要偶爾漏掉
+  討論結論的原因，不是 prompt 的問題，調大 limit 才有用。
+  對照組：草稿走 `list_thread_messages()`（`core/chat_client.py:331-356`），
+  用 `filter='thread.name = "…"'` ＋ 最多翻 50 頁，撈的是**整串**，脈絡一定完整。
+  兩者的差異值得記住——同樣叫「讀訊息」，一個是時間窗、一個是討論串。
 
 ### Windows 啟動儀表板（2026-09-06 實機回報後修正）
 
