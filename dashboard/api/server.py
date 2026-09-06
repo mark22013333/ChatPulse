@@ -293,7 +293,14 @@ def list_spaces_cached(viewer_id: int, refresh: bool = False) -> Dict[str, Any]:
                     ),
                 }
             )
-        entry = {"timestamp": now, "data": formatted, "was_cached": False}
+        # 一併建索引：收件匣每一列都要查一次 Space 名稱（_mention_public），
+        # 200 則 × 436 個 Space 線性掃是白付的成本
+        entry = {
+            "timestamp": now,
+            "data": formatted,
+            "index": {s["id"]: s for s in formatted},
+            "was_cached": False,
+        }
         _spaces_cache[viewer_id] = entry
         # 還沒認出來的私訊，丟到背景慢慢補。下次刷新（或快取過期）就看得到名字了。
         threading.Thread(
@@ -307,11 +314,17 @@ def list_spaces_cached(viewer_id: int, refresh: bool = False) -> Dict[str, Any]:
     return entry
 
 
+def _space_entry(viewer_id: int, space_id: str) -> Optional[Dict[str, Any]]:
+    entry = list_spaces_cached(viewer_id)
+    index = entry.get("index")
+    if index is not None:
+        return index.get(space_id)
+    return next((s for s in entry["data"] if s["id"] == space_id), None)
+
+
 def space_display_name(viewer_id: int, space_id: str) -> str:
-    for s in list_spaces_cached(viewer_id)["data"]:
-        if s["id"] == space_id:
-            return s["displayName"]
-    return space_id
+    found = _space_entry(viewer_id, space_id)
+    return found["displayName"] if found else space_id
 
 
 def space_shape(viewer_id: int, space_id: str) -> Tuple[Optional[str], Optional[str]]:
@@ -324,10 +337,8 @@ def space_shape(viewer_id: int, space_id: str) -> Tuple[Optional[str], Optional[
     也就是**退回改動前的行為**。判不出來時保守，不要猜成扁平：
     把別串內容當成同一段對話，比少給脈絡貴。
     """
-    for s in list_spaces_cached(viewer_id)["data"]:
-        if s["id"] == space_id:
-            return s.get("type"), s.get("threadingState")
-    return None, None
+    found = _space_entry(viewer_id, space_id)
+    return (found.get("type"), found.get("threadingState")) if found else (None, None)
 
 
 def name_resolver_for(viewer: Dict[str, Any]):
@@ -808,7 +819,11 @@ def create_draft_target(req: DraftTargetRequest, viewer: Dict[str, Any] = Viewer
     rows = _hydrate_mention_content(get_client(viewer_id), [row]) if row else []
     return {
         "mention_id": mention_id,
-        "mention": _mention_public(rows[0], name_resolver_for(viewer)) if rows else None,
+        "mention": (
+            _mention_public(rows[0], name_resolver_for(viewer), viewer_id=viewer_id)
+            if rows
+            else None
+        ),
     }
 
 
@@ -1228,14 +1243,30 @@ def _hydrate_mention_content(
     return out
 
 
-def _mention_public(row: Dict[str, Any], resolve=None) -> Dict[str, Any]:
+def _mention_public(
+    row: Dict[str, Any], resolve=None, *, viewer_id: Optional[int] = None
+) -> Dict[str, Any]:
     sender = row.get("sender_display")
     if not sender and resolve:
         sender = resolve(row.get("sender_name"))
+
+    # space_name 在資料表裡是**寫入當下的快照**，而私訊的名字是慢慢認出來的
+    # （見 list_spaces_cached）。結果是同一個私訊的兩則 Mention 會顯示成
+    # 「（私訊）」與「李小明」兩個名字，看起來像兩個不同的對話。
+    # 有 viewer_id 時一律以現在的名字為準；快取查不到才退回快照。
+    space_name = row.get("space_name")
+    if viewer_id is not None and row.get("space_id"):
+        try:
+            current = space_display_name(viewer_id, row["space_id"])
+            if current and current != row["space_id"]:
+                space_name = current
+        except Exception:
+            log.exception("取 Space 顯示名稱失敗，改用寫入當下的快照")
+
     return {
         "id": row.get("id"),
         "space_id": row.get("space_id"),
-        "space_name": row.get("space_name"),
+        "space_name": space_name,
         "message_name": row.get("message_name"),
         "thread_name": row.get("thread_name"),
         "sender_display": sender or "未知成員",
@@ -1267,7 +1298,7 @@ def get_mentions(
     return {
         "count": len(rows),
         "counts": repo.count_mentions(viewer["id"]),
-        "mentions": [_mention_public(r, resolve) for r in rows],
+        "mentions": [_mention_public(r, resolve, viewer_id=viewer["id"]) for r in rows],
     }
 
 
@@ -1290,7 +1321,7 @@ def patch_mention(
     if not repo.get_mention(viewer["id"], mention_id):
         raise MentionNotFound()
     row = repo.set_mention_state(viewer["id"], mention_id, req.state)
-    return _mention_public(row or {}, name_resolver_for(viewer))
+    return _mention_public(row or {}, name_resolver_for(viewer), viewer_id=viewer["id"])
 
 
 @app.post("/api/v1/mentions/refresh")
@@ -1300,11 +1331,20 @@ def refresh_mentions(viewer: Dict[str, Any] = ViewerDep):
     return {"ran": True, "stats": results.get(viewer["id"])}
 
 
+#: 一次最多合併幾則。上限不是技術限制，是品質限制——超過這個數量，
+#: 一則回話同時回完所有問題就開始變得不像人話，該分開回了。
+MERGE_MAX = 5
+
+
 class DraftRequest(BaseModel):
     # 7.3：不自動選擇 Reference Space，預設空陣列
     reference_space_ids: List[str] = Field(default_factory=list)
     provider: Optional[str] = None
     limit: int = Field(default=cfg.LIMIT_DEFAULT, ge=cfg.LIMIT_MIN, le=cfg.LIMIT_MAX)
+
+    #: 一起回的其他 Mention（收件匣多選合併）。空陣列＝只回 URL 上那一則。
+    #: 限制見 resolve_merge_targets()：同一個 Space，群組還要同一個討論串。
+    merge_mention_ids: List[int] = Field(default_factory=list)
 
     #: 要拿來當程式碼佐證的參考專案。空陣列＝不查程式碼（預設）
     code_project_ids: List[int] = Field(default_factory=list)
@@ -1315,6 +1355,56 @@ class DraftRequest(BaseModel):
     code_terms: List[str] = Field(default_factory=list)
     #: 直接指定要看的檔案，跳過搜尋
     code_paths: List[str] = Field(default_factory=list)
+
+
+def resolve_merge_targets(
+    viewer_id: int, primary: Dict[str, Any], merge_ids: List[int]
+) -> List[Dict[str, Any]]:
+    """驗證並取回「一起回」的其他 Mention，回傳照時間排序的完整清單（含主要那則）。
+
+    三條限制，每一條都會讓合併變成錯的：
+
+    1. **同一個 Space。** 回話只送得到一個 Space，跨群合併等於有人收不到回覆。
+    2. **群組還要同一個討論串。** 回話帶 thread_name 送出，兩則在不同串時
+       其中一則的提問者根本看不到你的回覆——而且送出會「成功」，沒有任何錯誤。
+       私訊／不分串聊天室沒有這個限制（那裡的 thread 不是對話單位）。
+    3. **不能是已處理的。** 合併會把它們全部標成已處理，把已經回過的再結一次
+       是無害的，但把「已處理」重新算進待辦數字會讓計數失真。
+
+    前端會事先把不符合的項目變成不可勾選，但這裡照樣要驗——前端的規則
+    是為了好用，不是為了正確。
+    """
+    if not merge_ids:
+        return [primary]
+
+    ids = [i for i in dict.fromkeys(merge_ids) if i != primary["id"]]
+    if len(ids) + 1 > MERGE_MAX:
+        raise InvalidParameter(
+            f"一次最多合併 {MERGE_MAX} 則，收到 {len(ids) + 1} 則。"
+            "要回的事情太多時，分兩次回會比一則塞滿更清楚。"
+        )
+
+    flat = draft_context.is_flat_space(*space_shape(viewer_id, primary["space_id"]))
+    rows: List[Dict[str, Any]] = [primary]
+    for mid in ids:
+        row = repo.get_mention(viewer_id, mid)
+        if not row:
+            raise MentionNotFound(f"找不到要合併的 Mention {mid}")
+        if row["space_id"] != primary["space_id"]:
+            raise InvalidParameter(
+                f"Mention {mid} 不在同一個聊天室，無法合併成一則回話"
+            )
+        if not flat and row.get("thread_name") != primary.get("thread_name"):
+            raise InvalidParameter(
+                f"Mention {mid} 在不同的討論串。回話只會送到其中一串，"
+                "另一串的提問者看不到——請分開回覆。"
+            )
+        if row.get("state") == "resolved":
+            raise InvalidParameter(f"Mention {mid} 已經處理過了，不用再回一次")
+        rows.append(row)
+
+    rows.sort(key=lambda r: r.get("create_time") or "")
+    return rows
 
 
 def _code_block(ctx: "code_search.CodeContext") -> Dict[str, Any]:
@@ -1414,6 +1504,9 @@ def draft_stream(
     limit = req.limit
     resolved_provider = providers.resolve_name(req.provider)
     req_provider = req.provider
+    # 在進 generator 之前驗證：SSE 一旦開始就是 HTTP 200，之後的錯誤只能變成
+    # error 事件，使用者比較難注意到。參數錯誤要用正常的 4xx 擋在門外。
+    targets = resolve_merge_targets(viewer_id, mention, req.merge_mention_ids)
 
     def generate() -> Generator[str, None, None]:
         # 放在 try 外面：客戶端中途斷線時 yield 會拋 GeneratorExit，
@@ -1424,10 +1517,14 @@ def draft_stream(
             client = get_client(viewer_id)
             ai = get_provider(viewer_id, req_provider)
 
-            # 被 @ 的那則訊息本身
-            mention_msg = client.get_message(mention["message_name"])
+            # 被 @ 的那則訊息本身；多選合併時還有其他幾則要一起回
+            anchor_msgs = [client.get_message(t["message_name"]) for t in targets]
+            mention_msg = next(
+                (m for m in anchor_msgs if m.get("name") == mention["message_name"]),
+                anchor_msgs[0],
+            )
             mention_text = (mention_msg.get("text") or "").strip() or "（訊息內容已被刪除或無法取回）"
-            learn_names([mention_msg])
+            learn_names(anchor_msgs)
 
             # 脈絡：形狀由 Space 的結構語意決定，不是由「撈回來剛好幾則」決定
             # （core/draft_context.py 有完整理由與實測分布）。
@@ -1449,6 +1546,7 @@ def draft_stream(
                 space_type=space_type,
                 threading_state=threading_state,
                 anchor_msg=mention_msg,
+                extra_anchor_msgs=[m for m in anchor_msgs if m is not mention_msg],
                 thread_name=mention.get("thread_name"),
                 resolve=resolve,
                 on_retrieved=_learn_then_resolve,
@@ -1513,6 +1611,17 @@ def draft_stream(
                     # 對話則數）沒有變，只是來源從「該討論串」變成「這次的脈絡」。
                     "thread_message_count": ctx.message_count,
                     "context": ctx.to_meta(),
+                    # 這次的回話會結掉哪幾則。前端要拿它去送出與標記已處理——
+                    # 讓伺服器回報自己實際採用了什麼，而不是讓前端沿用送出前的勾選，
+                    # 兩邊分歧時使用者會以為某則回過了、其實沒有。
+                    "answering": [
+                        {
+                            "mention_id": t["id"],
+                            "sender_display": t.get("sender_display"),
+                            "create_time": t.get("create_time"),
+                        }
+                        for t in targets
+                    ],
                     "reference_spaces": [
                         {
                             "space_id": b["space_id"],
@@ -1561,6 +1670,7 @@ def draft_stream(
                 space_type_label=ctx.space_type_label,
                 context_blocks=[b.to_prompt_dict() for b in ctx.blocks],
                 coverage=ctx.coverage,
+                anchor_count=ctx.anchor_count,
                 reference_blocks=ref_blocks,
                 code_blocks=code_blocks or None,
             )
@@ -1594,6 +1704,9 @@ def draft_stream(
 class ReplyRequest(BaseModel):
     text: str
     draft_id: Optional[int] = None
+    #: 這則回話同時回掉的其他 Mention（草稿的 meta.answering 帶回來的）。
+    #: 送出成功後一起標成已處理。
+    merge_mention_ids: List[int] = Field(default_factory=list)
 
     @field_validator("text")
     @classmethod
@@ -1611,31 +1724,56 @@ def reply_to_mention(
 
     以 Viewer 身分回到**原討論串**，成功後該 Mention 自動標記為已處理——
     這是 6.4 中「進入已處理」的第一種方式。
+
+    合併回覆時（`merge_mention_ids`）只送**一則**訊息，但把被合併的那幾則
+    一起標成已處理。驗證與草稿那一側共用 `resolve_merge_targets()`，
+    兩邊規則若各寫一份，遲早會出現「草稿合得起來、送出卻結不掉」的分歧。
     """
-    mention = repo.get_mention(viewer["id"], mention_id)
+    viewer_id = viewer["id"]
+    mention = repo.get_mention(viewer_id, mention_id)
     if not mention:
         raise MentionNotFound()
 
-    res = get_client(viewer["id"]).send_message(
+    targets = resolve_merge_targets(viewer_id, mention, req.merge_mention_ids)
+
+    res = get_client(viewer_id).send_message(
         mention["space_id"], req.text, thread_name=mention.get("thread_name")
     )
     if req.draft_id:
         # 帶 viewer_id 驗擁有權：draft_id 來自 request body，不驗的話
         # Viewer A 可以把 Viewer B 的草稿標成已送出
-        if not repo.mark_draft_sent(viewer["id"], req.draft_id):
+        if not repo.mark_draft_sent(viewer_id, req.draft_id):
             log.warning(
                 "Viewer %s 送出時帶的 draft_id=%s 不屬於他，已略過標記",
-                viewer["id"],
+                viewer_id,
                 req.draft_id,
             )
-    updated = repo.set_mention_state(viewer["id"], mention_id, "resolved")
 
+    # 訊息已經送出去了，收不回來。這裡任何一則標記失敗都不該讓整個請求變成
+    # 500——那會讓使用者以為沒送出而再送一次，對方就收到兩則。
+    resolver = name_resolver_for(viewer)
+    updated_rows = []
+    for t in targets:
+        try:
+            row = repo.set_mention_state(viewer_id, t["id"], "resolved")
+            if row:
+                updated_rows.append(_mention_public(row, resolver, viewer_id=viewer_id))
+        except Exception:
+            log.exception("回話已送出，但 Mention %s 標記已處理失敗", t["id"])
+
+    primary = next(
+        (m for m in updated_rows if m.get("id") == mention_id),
+        updated_rows[0] if updated_rows else {},
+    )
     return {
         "status": "success",
         "message_id": res.get("name"),
         "createTime": res.get("createTime"),
         "thread_name": (res.get("thread") or {}).get("name"),
-        "mention": _mention_public(updated or {}, name_resolver_for(viewer)),
+        # mention 保留舊欄位（單則送出的既有呼叫端還在讀它）；
+        # mentions 是這次實際結掉的全部
+        "mention": primary,
+        "mentions": updated_rows,
     }
 
 

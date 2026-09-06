@@ -252,6 +252,7 @@ def draft_reply_prompt(
     space_type_label: str,
     context_blocks: List[Dict[str, Any]],
     coverage: str = "full",
+    anchor_count: int = 1,
     reference_blocks: List[Dict[str, Any]],
     code_blocks: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
@@ -265,8 +266,12 @@ def draft_reply_prompt(
     答案沒有指明環境就等於沒有回答。
 
     `context_blocks` 取代了原本的 `thread_text: str`（見 `_context_section`）。
-    `anchor_text` 可能是**多則**——私訊常把一個問題拆三則發，只印最後一則會讓
-    模型照那句客套話回（見 `core/draft_context._collect_anchor_run`）。
+    `anchor_text` 可能是**多則**，有兩種來源：
+      1. 同一人的一串連發——私訊常把一個問題拆三則發，只印最後一則會讓模型
+         照那句客套話回（見 `core/draft_context._collect_anchor_run`）。
+      2. 使用者在收件匣多選了 N 則要「一起回」（`anchor_count > 1`）。
+    兩者對模型的要求不同：第 1 種本來就是一個問題；第 2 種是 N 個各自獨立的
+    問題，必須**明確要求用一則回話全部回完**，否則模型只會回最後看到的那個。
     """
     refs = ""
     if reference_blocks:
@@ -290,13 +295,30 @@ def draft_reply_prompt(
     code = _code_section(code_blocks)
     context = _context_section(context_blocks, coverage)
 
-    return f"""你的任務是幫一位工程師草擬「回覆別人 @ 他的那則訊息」的回話。
+    # 多錨點：這 N 則是**各自獨立**的問題，只是要用一則回話回完。
+    # 不講清楚的話模型會只回最後看到的那則——而且看起來完全正常，
+    # 使用者要逐則比對才會發現有一題沒被回到。
+    if anchor_count > 1:
+        task = f"回覆別人在同一個對話裡對他說的 {anchor_count} 則訊息"
+        header = f"【要回覆的訊息（共 {anchor_count} 則，要用一則回話全部回完）】"
+        multi = (
+            f"\n※ 上面是 {anchor_count} 則**各自獨立**的訊息，不是同一個問題被拆開。"
+            "請逐則確認自己有沒有回到，**一則都不能漏**；"
+            "沒有把握回答的那幾則要在回話中明確說出「哪一件事我要再確認」，"
+            "不可以為了看起來完整就略過或含糊帶過。"
+        )
+    else:
+        task = "回覆別人 @ 他的那則訊息"
+        header = "【被 @ 的訊息】"
+        multi = ""
 
-【被 @ 的訊息】
+    return f"""你的任務是幫一位工程師草擬「{task}」的回話。
+
+{header}
 聊天室：{space_name}（{space_type_label}）
 提問者：{mention_sender}
 內容：
-{anchor_text}
+{anchor_text}{multi}
 {context}
 {refs}
 {code}
@@ -305,6 +327,7 @@ def draft_reply_prompt(
 
 ### 🧭 脈絡分析
 - **發生什麼事**：（這段對話在講什麼，提問者想知道什麼）
+{"- **逐則確認**：（上面每一則要回覆的訊息各自問了什麼、你在回話中回在哪一句。一則一行，不可省略）" + chr(10) if anchor_count > 1 else ""}\
 - **關鍵決策**：（已經定案的事）
 - **未解問題**：（還沒有答案的部分，以及回話時要小心的地方）
 - **脈絡涵蓋**：（你實際看到的是哪個範圍、有沒有明顯缺口。這一欄不可省略——\

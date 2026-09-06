@@ -172,8 +172,10 @@ export const api = {
   updateMention: (id: number, state: MentionState) =>
     request<Mention>(`/mentions/${id}`, { method: 'PATCH', body: JSON.stringify({ state }) }),
   refreshMentions: () => post<MentionRefreshResponse>('/mentions/refresh'),
-  sendReply: (id: number, body: { text: string; draft_id?: number | null }) =>
-    post<ReplyResponse>(`/mentions/${id}/reply`, body as unknown as Json),
+  sendReply: (
+    id: number,
+    body: { text: string; draft_id?: number | null; merge_mention_ids?: number[] },
+  ) => post<ReplyResponse>(`/mentions/${id}/reply`, body as unknown as Json),
 
   // ── 維運 ────────────────────────────────────────────────
   usage: (days = 14) => request<UsageResponse>(`/usage${query({ days })}`),

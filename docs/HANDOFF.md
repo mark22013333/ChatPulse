@@ -51,9 +51,15 @@ export CHATPULSE_BOOTSTRAP_USER_ID=users/109827265019732088641
 .venv/bin/python tests/e2e/test_attachments.py        # 圖片附件與視覺
 .venv/bin/python tests/e2e/test_static.py             # 靜態托管、授權迴歸
 .venv/bin/python tests/e2e/test_add_annotation.py     # Mention 判定條件
-npm --prefix dashboard/frontend run test              # 前端 46 項
-.venv/bin/python -m unittest discover -s tests/unit   # 單元 47 項（零 API、零配額、0.01 秒）
+npm --prefix dashboard/frontend run test              # 前端 60 項
+.venv/bin/python -m unittest discover -s tests/unit   # 單元 78 項（零 API、零配額、0.01 秒）
+node tests/e2e/test_merge_reply.cjs                   # 收件匣多選合併 11 項
 ```
+
+**跑 e2e 之前先確認 8000 埠上是誰的服務**：那幾支 `.cjs` 會走 `/api/v1/auth/bootstrap`，
+而 bootstrap 需要啟動服務時就帶著 `CHATPULSE_BOOTSTRAP_USER_ID`（舊的三 scope token
+沒有身分權限）。沒帶的話測試會全部 timeout，看起來像程式壞了。
+用 `CHATPULSE_URL=http://127.0.0.1:8010` 另開一個埠跑，不必動你正在用的那個。
 
 **配額說明（原本這裡寫「不消耗任何 AI 配額」，不精確）**：這六套**不動 Gemini
 的每日 20 次**，但 `test_providers` 第 3 節與 `test_attachments` 第 6 節各會實跑一次
@@ -70,6 +76,7 @@ npm --prefix dashboard/frontend run test              # 前端 46 項
 
 | 項目 | 狀態 | 下一步 |
 | :--- | :--- | :--- |
+| **同一個人連問兩件事只能分兩次回** | **2026-09-07 已實作**：收件匣可多選（限同一個 Space；分串聊天室還要同一串），合併成一份草稿、送出一則、一次結掉全部。prompt 加了〈逐則確認〉欄位，漏回一題會被看見 | 觀察合併後的回話會不會太長。真的太長就把 `server.MERGE_MAX`（5）調小 |
 | **Draft Reply 的脈絡只有 1 則（私訊）** | **2026-09-06 已實作**（`core/draft_context.py` ＋ 47 項單元測試）。同一個私訊實測：脈絡 1 則→7 則、圖片 1 張→3 張；群組長串驗證與改動前逐則相同 | 觀察一段時間。若「隔很久重問同一件事」常被 48h 上界切掉，把 `DRAFT_WINDOW_HOURS` 調成 168（不要拿掉）；若群組薄串開始張冠李戴，設 `CHATPULSE_DRAFT_CROSS_THREAD=0` |
 | **程式碼佐證的前端 UI** | 後端已完成（CRUD 端點 + draft_stream 串接 + `code_meta` SSE 事件），**前端沒有設定頁**，目前只能用 curl 操作 | 做專案設定頁 + 草稿工作區的專案選擇器 + 顯示 `code_meta` |
 | **儀表板自動 bootstrap** | 首次進入要手動按「匯入既有憑證」 | 偵測本機有有效 token 就自動匯入 |
@@ -242,6 +249,8 @@ dashboard/       FastAPI 後端 ＋ React 19 前端
 scripts/         onboard.py（引導邏輯）、webapp.py（儀表板啟動）——兩平台共用這兩份；
                  doctor.sh 與 start-web.sh 是薄殼
 tests/unit/      純函式單元測試（不打 API），`.venv/bin/python -m unittest discover -s tests/unit`
+                 合併回覆的規則有兩份實作（後端 resolve_merge_targets、前端 lib/merge.ts），
+                 兩邊都有測試，**改一邊要改兩邊**
 tests/e2e/       八套端對端測試，對真實 API 取證、不用 mock
   reports/       測試報告落點（gitignore）
 docs/            api-contract.md（契約）、R1-findings.md、verification-log.md、adr/
