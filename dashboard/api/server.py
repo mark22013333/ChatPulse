@@ -205,19 +205,27 @@ def _fill_dm_peers_bg(viewer_id: int, spaces: List[Dict[str, Any]]) -> None:
 
         self_id = (repo.get_viewer(viewer_id) or {}).get("google_user_id")
         client = get_client(viewer_id)
-        resolve = directory.make_resolver()
-        found = 0
+        names = directory.load_all()
+        linked = named = 0
         for s in todo:
             try:
                 msgs = client.fetch_recent_messages(s["id"], limit=3)
-                peer = directory.peer_name_from_messages(msgs, self_id, resolve)
-                if peer:
-                    directory.remember_dm_peer(s["id"], peer)
-                    found += 1
+                peer_id = directory.peer_id_from_messages(msgs, self_id)
+                if not peer_id:
+                    continue
+                # 建立對照本身就有價值：即使現在叫不出名字，使用者之後手動
+                # 命名時就不必再讀一次訊息，而且名字會掛在這個人身上。
+                directory.link_dm_peer(s["id"], peer_id)
+                linked += 1
+                if names.get(peer_id):
+                    named += 1
             except Exception:
                 continue  # 單一 space 失敗不影響其他
-        if found:
-            log.info("背景辨識私訊對象：這輪認出 %d/%d 個", found, len(todo))
+        if linked:
+            log.info(
+                "背景辨識私訊對象：這輪 %d/%d 個找到對方，其中 %d 個叫得出名字",
+                linked, len(todo), named,
+            )
     except Exception:
         log.exception("背景辨識私訊對象失敗（不影響清單）")
     finally:
@@ -232,24 +240,29 @@ def list_spaces_cached(viewer_id: int, refresh: bool = False) -> Dict[str, Any]:
         raw = get_client(viewer_id).list_spaces()
         # 私訊沒有 displayName（Google Chat 對 DIRECT_MESSAGE 不回傳），
         # 但我們可能已經從讀過的訊息認出對方是誰，那份對照就在名錄裡。
-        dm_peers = directory.load_dm_peers()
-        alias_sources = directory.dm_alias_sources()
+        # 兩層查詢：space -> 對方是誰（user id）-> 那個人叫什麼。
+        # 名字掛在人身上，所以使用者取的名字在摘要、草稿裡也一體適用，
+        # 而且就算 Google 換掉 space 的資源名稱，重建對照即可、名字不會白費。
+        dm_links = directory.load_dm_links()
+        person_names = directory.load_all()
+        manual_named = directory.manual_named_users()
+        legacy_peers = directory.load_dm_peers()  # 舊格式（space -> 名字），相容用
         formatted = []
         for s in raw:
             member = s.get("membershipCount") or {}
             space_id = s.get("name")
             display = s.get("displayName")
             renamable = not display  # 只有沒有官方名稱的空間才給改名
+            peer_id = dm_links.get(space_id)
             if not display:
                 # 認得出對方就顯示名字；認不出來寧可寫「私訊」也不要寫
                 # 「成員…8641」那種代號——清單上放代號比不放還難懂
-                peer = dm_peers.get(space_id)
-                if peer:
-                    display = peer
-                elif s.get("spaceType") == "DIRECT_MESSAGE":
-                    display = "（私訊）"
-                else:
-                    display = "（未命名空間）"
+                name = person_names.get(peer_id) if peer_id else None
+                display = name or legacy_peers.get(space_id)
+                if not display:
+                    display = (
+                        "（私訊）" if s.get("spaceType") == "DIRECT_MESSAGE" else "（未命名空間）"
+                    )
             formatted.append(
                 {
                     "id": space_id,
@@ -259,7 +272,11 @@ def list_spaces_cached(viewer_id: int, refresh: bool = False) -> Dict[str, Any]:
                     "memberCount": member.get("joinedDirectHumanUserCount"),
                     # 讓前端知道這個名字能不能改、以及現在的名字是誰取的
                     "renamable": renamable,
-                    "nameSource": alias_sources.get(space_id),
+                    "nameSource": (
+                        "dm_manual"
+                        if peer_id in manual_named
+                        else ("dm_peer" if peer_id or legacy_peers.get(space_id) else None)
+                    ),
                 }
             )
         entry = {"timestamp": now, "data": formatted, "was_cached": False}
@@ -315,11 +332,9 @@ def learn_dm_peer(
             for s in list_spaces_cached(viewer["id"])["data"]
         ):
             return
-        peer = directory.peer_name_from_messages(
-            messages, viewer.get("google_user_id"), name_resolver_for(viewer)
-        )
-        if peer:
-            directory.remember_dm_peer(space_id, peer)
+        peer_id = directory.peer_id_from_messages(messages, viewer.get("google_user_id"))
+        if peer_id:
+            directory.link_dm_peer(space_id, peer_id)
     except Exception:
         log.exception("私訊對象辨識失敗（不影響主流程）")
 
@@ -675,10 +690,34 @@ def patch_space_alias(req: SpaceAliasRequest, viewer: Dict[str, Any] = ViewerDep
     """
     if not req.space_id.startswith("spaces/"):
         raise InvalidParameter(f"space_id 必須是完整資源名（spaces/…），收到 {req.space_id!r}")
-    directory.set_space_alias(req.space_id, req.alias)
-    # 清單是快取的，改完要讓它重組，否則畫面上還是舊名字
-    _spaces_cache.pop(viewer["id"], None)
-    return {"space_id": req.space_id, "alias": req.alias.strip(), "ok": True}
+
+    viewer_id = viewer["id"]
+    # 名字要掛在「人」身上而不是空間上：space 的資源名稱 Google 沒保證永久不變，
+    # 而且掛在人身上的話，摘要與草稿裡的發言者名稱也會一起變成這個名字。
+    peer_id = directory.load_dm_links().get(req.space_id)
+    if not peer_id:
+        # 還沒認出對方是誰就先認一次（讀 3 則訊息，很便宜）
+        try:
+            msgs = get_client(viewer_id).fetch_recent_messages(req.space_id, limit=3)
+            peer_id = directory.peer_id_from_messages(msgs, viewer.get("google_user_id"))
+            if peer_id:
+                directory.link_dm_peer(req.space_id, peer_id)
+        except Exception:
+            log.exception("取對方 user id 失敗，改用空間別名")
+
+    if peer_id:
+        directory.set_person_name(peer_id, req.alias)
+    else:
+        # 對話一則訊息都沒有時沒有對方可掛，退回綁在空間上
+        directory.set_space_alias(req.space_id, req.alias)
+
+    _spaces_cache.pop(viewer_id, None)  # 清單是快取的，不清會顯示舊名字
+    return {
+        "space_id": req.space_id,
+        "alias": req.alias.strip(),
+        "bound_to": "person" if peer_id else "space",
+        "ok": True,
+    }
 
 
 @app.patch("/api/v1/preferences")
