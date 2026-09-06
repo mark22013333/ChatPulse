@@ -1,10 +1,20 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { LayersIcon, Loader2Icon, RefreshCwIcon, SearchIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { SpaceList } from '@/components/SpaceList'
 import { relativeTime } from '@/lib/format'
 import { filterSpaces, useSpacesStore } from '@/store/spaces'
+import type { Space } from '@/lib/types'
 
 /** 左側 Space 導覽（搜尋 + 強制刷新 + 虛擬滾動清單）。 */
 export function SpacesRail() {
@@ -20,12 +30,30 @@ export function SpacesRail() {
   const setSearch = useSpacesStore((state) => state.setSearch)
   const select = useSpacesStore((state) => state.select)
   const load = useSpacesStore((state) => state.load)
+  const rename = useSpacesStore((state) => state.rename)
+
+  // 正在改名的空間；null＝對話框關著
+  const [renaming, setRenaming] = useState<Space | null>(null)
+  const [aliasDraft, setAliasDraft] = useState('')
 
   useEffect(() => {
     if (items.length === 0) void load()
   }, [items.length, load])
 
   const visible = useMemo(() => filterSpaces(items, search), [items, search])
+
+  const openRename = (space: Space) => {
+    // 自動猜的名字不預填——那是猜的，讓使用者從空白開始比較清楚；
+    // 自己取過的才預填，方便微調。
+    setAliasDraft(space.nameSource === 'dm_manual' ? space.displayName : '')
+    setRenaming(space)
+  }
+
+  const submitRename = async () => {
+    if (!renaming) return
+    await rename(renaming.id, aliasDraft)
+    setRenaming(null)
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -68,7 +96,46 @@ export function SpacesRail() {
         loading={loading && items.length === 0}
         selectedId={selectedId}
         onSelect={(space) => select(space.id)}
+        onRename={openRename}
       />
+
+      <Dialog open={renaming !== null} onOpenChange={(open) => !open && setRenaming(null)}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>為這個空間取個名字</DialogTitle>
+            <DialogDescription>
+              私訊在 Google Chat 沒有名稱，我們只能從訊息裡認出對方是誰——
+              對方沒在任何群組被 @ 過就認不出來。你知道他是誰，直接取一個好認的名字。
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-2">
+            <Label htmlFor="space-alias">名字</Label>
+            <Input
+              id="space-alias"
+              value={aliasDraft}
+              autoFocus
+              maxLength={60}
+              placeholder="例如：王小明（某某廠商）"
+              onChange={(e) => setAliasDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void submitRename()
+              }}
+            />
+            <p className="text-[11px] text-muted-foreground">
+              清空後儲存＝取消自訂，回到自動辨識的結果。這個名字只有你看得到，
+              不會改動 Google Chat。
+            </p>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRenaming(null)}>
+              取消
+            </Button>
+            <Button onClick={() => void submitRename()}>儲存</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <div className="flex shrink-0 items-center justify-between border-t border-border px-3 py-1.5 text-[10px] text-muted-foreground">
         <span>
