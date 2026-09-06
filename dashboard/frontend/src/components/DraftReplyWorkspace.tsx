@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   AlertCircleIcon,
   CompassIcon,
+  FileCodeIcon,
   Loader2Icon,
   MessageSquareQuoteIcon,
   SendIcon,
@@ -21,6 +22,7 @@ import { SpaceList } from '@/components/SpaceList'
 import { errorMessage } from '@/lib/api'
 import { formatDateTime } from '@/lib/format'
 import { splitDraft, useDraftStore } from '@/store/draft'
+import { ENV_LABELS, ENV_ORDER, useCodeProjectStore } from '@/store/codeProjects'
 import { useMentionsStore } from '@/store/mentions'
 import { providerLabel, useProviderStore } from '@/store/providers'
 import { filterSpaces, useSpacesStore } from '@/store/spaces'
@@ -52,6 +54,9 @@ export function DraftReplyWorkspace({ mention }: DraftReplyWorkspaceProps) {
     sending,
     toggleReference,
     clearReferences,
+    codeRefs,
+    toggleCodeRef,
+    clearCodeRefs,
     setReferenceSearch,
     setRefLimit,
     setReplyText,
@@ -61,6 +66,13 @@ export function DraftReplyWorkspace({ mention }: DraftReplyWorkspaceProps) {
   } = useDraftStore()
 
   const [confirmOpen, setConfirmOpen] = useState(false)
+
+  // 參考專案（ADR-0006）。與 Reference Space 一樣預設不勾。
+  const codeProjects = useCodeProjectStore((s) => s.projects)
+  const loadCodeProjects = useCodeProjectStore((s) => s.load)
+  useEffect(() => {
+    void loadCodeProjects()
+  }, [loadCodeProjects])
 
   // store 記著「目前這份草稿是誰的」，用它判斷要不要清空，元件自己不必追蹤
   const streamedMentionId = useDraftStore((state) => state.mentionId)
@@ -207,6 +219,64 @@ export function DraftReplyWorkspace({ mention }: DraftReplyWorkspaceProps) {
             className="max-h-64 xl:max-h-none"
           />
 
+          {/* 參考專案（ADR-0006）。勾一個專案的兩個環境＝比對正式與 UAT。 */}
+          {codeProjects.length > 0 ? (
+            <div className="shrink-0 space-y-2 border-t border-border px-3 py-2.5">
+              <div className="flex items-center gap-2">
+                <h3 className="flex items-center gap-1.5 text-xs font-semibold">
+                  <FileCodeIcon className="size-3.5" aria-hidden />
+                  參考專案
+                </h3>
+                <span className="text-[10px] text-muted-foreground">
+                  已勾選 {codeRefs.length}
+                </span>
+                {codeRefs.length > 0 ? (
+                  <Button size="xs" variant="ghost" className="ml-auto" onClick={clearCodeRefs}>
+                    <XIcon />
+                    清空
+                  </Button>
+                ) : null}
+              </div>
+              <p className="text-[10px] leading-relaxed text-muted-foreground">
+                同一個專案可同時勾正式與 UAT，草稿會分開講兩邊的差異。
+              </p>
+              <ul className="space-y-1.5">
+                {codeProjects.map((p) => (
+                  <li key={p.id} className="space-y-1">
+                    <p className="truncate text-[11px] font-medium">{p.name}</p>
+                    <div className="flex flex-wrap gap-1">
+                      {ENV_ORDER.filter((env) => p.branches[env]).map((env) => {
+                        const checked = codeRefs.some(
+                          (r) => r.project_id === p.id && r.environment === env,
+                        )
+                        return (
+                          <label
+                            key={env}
+                            className={`flex cursor-pointer items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] ${
+                              checked
+                                ? 'border-primary bg-primary/10 text-primary'
+                                : 'border-border text-muted-foreground'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              className="sr-only"
+                              checked={checked}
+                              disabled={streaming}
+                              onChange={() => toggleCodeRef(p.id, env)}
+                            />
+                            {ENV_LABELS[env]}
+                            <code className="font-mono opacity-70">{p.branches[env]}</code>
+                          </label>
+                        )
+                      })}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
           <div className="shrink-0 border-t border-border p-2.5">
             {streaming ? (
               <Button variant="outline" className="w-full" onClick={abort}>
@@ -271,6 +341,56 @@ export function DraftReplyWorkspace({ mention }: DraftReplyWorkspaceProps) {
                       <Loader2Icon className="size-3 animate-spin" />
                       串流中
                     </span>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {/*
+                檢索結果條：在模型開口**之前**就顯示。
+                這是整個功能最關鍵的 UI —— 搜錯環境、搜錯關鍵字，你一眼就看得到，
+                不必先讀完一整段生成文字才發現依據是錯的。
+              */}
+              {(meta?.code_refs ?? []).length > 0 ? (
+                <div className="space-y-1.5 rounded-lg border border-sky-500/25 bg-sky-500/5 p-2.5">
+                  {(meta?.code_refs ?? []).map((ref, i) => (
+                    <div key={`${ref.project_name}-${ref.environment}-${i}`} className="text-[11px]">
+                      <p className="flex flex-wrap items-center gap-1.5">
+                        <FileCodeIcon className="size-3.5 text-sky-600 dark:text-sky-400" aria-hidden />
+                        <span className="font-medium">{ref.project_name}</span>
+                        <span className="rounded bg-sky-500/15 px-1.5 py-0.5 font-medium text-sky-700 dark:text-sky-300">
+                          {ref.environment_label}
+                        </span>
+                        <code className="font-mono text-muted-foreground">
+                          {ref.branch}@{ref.commit_sha}
+                        </code>
+                        {ref.commit_date ? (
+                          <span className="text-muted-foreground">
+                            （{ref.commit_date.slice(0, 10)}）
+                          </span>
+                        ) : null}
+                      </p>
+                      {ref.terms.length > 0 ? (
+                        <p className="mt-0.5 text-muted-foreground">
+                          關鍵字：{ref.terms.join('、')}
+                        </p>
+                      ) : null}
+                      <p className="mt-0.5 text-muted-foreground">
+                        {ref.hit_count > 0
+                          ? `命中：${ref.files.join('、')}`
+                          : '這個分支沒有找到相符的程式碼'}
+                        {ref.truncated ? '（已截斷）' : null}
+                      </p>
+                      {ref.notes.map((note, n) => (
+                        <p key={n} className="mt-0.5 text-amber-600 dark:text-amber-400">
+                          ※ {note}
+                        </p>
+                      ))}
+                    </div>
+                  ))}
+                  {(meta?.code_skipped ?? []).length > 0 ? (
+                    <p className="text-[10px] text-muted-foreground">
+                      略過：{(meta?.code_skipped ?? []).join('；')}
+                    </p>
                   ) : null}
                 </div>
               ) : null}

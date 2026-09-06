@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { InboxIcon, Loader2Icon, LogOutIcon, SparklesIcon, ZapIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { CodeProjectSettings } from '@/components/CodeProjectSettings'
 import { CollectorPanel } from '@/components/CollectorPanel'
 import { DraftReplyWorkspace } from '@/components/DraftReplyWorkspace'
 import { LoginScreen } from '@/components/LoginScreen'
@@ -189,6 +190,11 @@ export default function App() {
             <>
               <CollectorPanel />
               <div className="min-h-0 flex-1 overflow-y-auto">
+                {/* 參考專案設定放這裡：與 Draft Reply 同一個情境，
+                    調整分支對應之後馬上就能在左邊勾選使用。 */}
+                <div className="border-b border-border p-3">
+                  <CodeProjectSettings />
+                </div>
                 <SummaryHistory />
               </div>
               <UsagePanel />
