@@ -15,6 +15,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import unicodedata
 
 # 直接執行本檔時 sys.path[0] 就是 scripts/，但被 import 或用 -m 執行時未必，
 # 所以明確補上——webapp 就在隔壁。
@@ -133,9 +134,42 @@ class _UI:
     arrow = staticmethod(arrow)
 
 
+_IME_HINT = "輸入法可能還停在中文模式，請切回英數再輸入一次（注音的 3 鍵送出的是「ˇ」）。"
+
+
+def _read_line(prompt: str):
+    """讀一行輸入。正常回傳字串；那一行解不了碼時回傳 None（不拋例外）。
+
+    **為什麼要吞 UnicodeDecodeError**：使用者是台灣的同事，注音是預設輸入法，
+    忘了切回英數是家常便飯而不是意外。注音鍵盤的 3 鍵送出的是上聲符號「ˇ」
+    （U+02C7，UTF-8 是 CB 87）。只要這個字元在送達前掉了半截——例如按 Backspace
+    想刪掉它，而 macOS 的終端機行編輯沒有 IUTF8、一次只刪**一個位元組**——
+    那一行就會留下孤兒的 0xCB，input() 用 strict 解碼直接拋 UnicodeDecodeError。
+
+    使用者畫面上只看得到自己打的「3」，卻收到一整串 traceback、整個安裝中止，
+    完全無從得知發生什麼事——而他其實只要切回英數重打一次就好。所以這裡一定要接住。
+    EOFError 與 KeyboardInterrupt 不在這裡處理，照原樣往上丟給呼叫端。
+    """
+    try:
+        return input(prompt)
+    except UnicodeDecodeError:
+        return None
+
+
+def _looks_like_ime(text: str) -> bool:
+    """這串輸入看起來是不是中文輸入法造成的（含非 ASCII 字元）。
+
+    用來決定要說「請輸入 1 到 3」還是「請切回英數」——使用者打了「ˇ」卻被叫去
+    「輸入 1 到 3 之間的數字」，只會以為自己按錯鍵，找不到真正的原因。
+    """
+    return any(ord(ch) > 127 for ch in text)
+
+
 def pause(prompt: str = "按 Enter 繼續") -> None:
     try:
-        input(f"\n  {c('90', prompt)}… ")
+        # 這裡不在意內容、只在意「使用者按了 Enter」，所以解不了碼也照樣繼續，
+        # 不需要叫他重按一次（那一行既然送達，Enter 就是按過了）。
+        _read_line(f"\n  {c('90', prompt)}… ")
     except (EOFError, KeyboardInterrupt):
         print("\n已取消。")
         sys.exit(1)
@@ -145,17 +179,24 @@ def ask_yes(prompt: str, default: bool = True) -> bool:
     hint = "Y/n" if default else "y/N"
     while True:
         try:
-            raw = input(f"\n  {prompt} [{hint}]： ").strip().lower()
+            raw = _read_line(f"\n  {prompt} [{hint}]： ")
         except (EOFError, KeyboardInterrupt):
             print("\n已取消。")
             sys.exit(1)
+        if raw is None:
+            print(f"  讀不到你的輸入——{_IME_HINT}")
+            continue
+        raw = raw.strip().lower()
         if not raw:
             return default
         if raw in ("y", "yes"):
             return True
         if raw in ("n", "no"):
             return False
-        print("  請輸入 y 或 n。")
+        if _looks_like_ime(raw):
+            print(f"  收到的不是 y 或 n——{_IME_HINT}")
+        else:
+            print("  請輸入 y 或 n。")
 
 
 def ask_choice(prompt: str, options: list) -> int:
@@ -167,13 +208,22 @@ def ask_choice(prompt: str, options: list) -> int:
             print(f"     {c('90', desc)}")
     while True:
         try:
-            raw = input(f"\n  {prompt} [1-{len(options)}]： ").strip()
+            raw = _read_line(f"\n  {prompt} [1-{len(options)}]： ")
         except (EOFError, KeyboardInterrupt):
             print("\n已取消。")
             sys.exit(1)
+        if raw is None:
+            print(f"  讀不到你的輸入——{_IME_HINT}")
+            continue
+        # 中文輸入法在全形模式下打出的是「３」，NFKC 會把它正規化回半形 3。
+        # 用標準正規化而不是自己列對照表，才不會漏掉其他形式的數字。
+        raw = unicodedata.normalize("NFKC", raw).strip()
         if raw.isdigit() and 1 <= int(raw) <= len(options):
             return int(raw) - 1
-        print(f"  請輸入 1 到 {len(options)} 之間的數字。")
+        if _looks_like_ime(raw):
+            print(f"  收到的不是半形數字——{_IME_HINT}")
+        else:
+            print(f"  請輸入 1 到 {len(options)} 之間的數字。")
 
 
 def run(args: list, **kwargs) -> int:
@@ -295,15 +345,64 @@ def step_credentials() -> bool:
     return False
 
 
-def step_authorise() -> bool:
+_AUTH_PROBE = (
+    "import json,sys\n"
+    "sys.path.insert(0, sys.argv[1])\n"
+    "from core import config as cfg\n"
+    "d = json.load(open(cfg.LEGACY_TOKEN_FILE))\n"
+    "have = set(d.get('scopes') or [])\n"
+    "print('%d|%s' % (len(set(cfg.DASHBOARD_SCOPES) - have), d.get('account') or ''))\n"
+)
+
+
+def auth_state() -> tuple:
+    """回傳 (狀態, 帳號)。狀態為 'ok' / 'partial'（權限不足）/ 'none' / 'unreadable'。"""
+    token = os.path.join(CONFIG_DIR, "google_chat_token.json")
+    if not os.path.exists(token) or not os.path.exists(VENV_PYTHON):
+        return "none", ""
+    probe = subprocess.run(
+        [VENV_PYTHON, "-c", _AUTH_PROBE, BASE_DIR], capture_output=True, text=True
+    )
+    out = (probe.stdout or "").strip().splitlines()
+    if not out or "|" not in out[-1]:
+        return "unreadable", ""
+    missing, _, account = out[-1].partition("|")
+    if not missing.isdigit():
+        return "unreadable", ""
+    return ("ok" if missing == "0" else "partial"), account
+
+
+def step_authorise(force: bool = False) -> bool:
+    """`force=True` 是使用者明講要重新授權（auth 子指令），那就別自作聰明跳過。"""
     step(3, "用你的 Google 帳號授權")
+
+    state, account = auth_state()
+    if state == "ok" and not force:
+        # 授權過了就不要再問。以前這裡不管三七二十一都問一次
+        # 「現在開始授權？」，於是每跑一次引導就像要重登一次——
+        # 實際上憑證會自己續期，使用者只是被問了而已。
+        ok(f"已完成授權{f'（{account}）' if account else ''}")
+        explain(
+            """
+            授權只要做一次。憑證存在你自己的電腦上，過期時程式會自動用
+            refresh token 換新的，不會再要你登入。
+            要換 Google 帳號或重新授權，才需要單獨跑 auth 子指令。
+            """
+        )
+        return True
+    if state == "partial":
+        warn("之前的授權少了儀表板需要的權限，要重做一次（這次會問到六項）")
+    elif state == "unreadable":
+        warn("既有的授權檔讀不出來，重做一次比較快")
+
     explain(
         """
         接下來會開啟瀏覽器，請選你的公司 Google 帳號並同意授權。
 
         同意畫面會要求六項權限：三項是讀寫 Google Chat，
         另三項是「知道你是誰」——那是判斷「誰 @ 了你」的必要條件。
-        授權結果只存在你自己的電腦上（config/google_chat_token.json）。
+        授權結果只存在你自己的電腦上（config/google_chat_token.json），
+        而且**只要做這一次**。
         """
     )
     if not ask_yes("現在開始授權？"):
@@ -509,30 +608,23 @@ def cmd_check() -> int:
         bad("缺少 client_secret.json", f"向維護者索取後放到 {CONFIG_DIR}")
         problems += 1
 
-    token = os.path.join(CONFIG_DIR, "google_chat_token.json")
-    if os.path.exists(token) and os.path.exists(VENV_PYTHON):
-        # 路徑走 argv，不要內嵌進原始碼——含單引號的路徑（O'Brien 這種姓氏）
-        # 會讓探針語法錯誤，而錯誤被 capture_output 吃掉，變成安靜的誤判。
-        probe = subprocess.run(
-            [VENV_PYTHON, "-c",
-             "import json,sys;sys.path.insert(0,sys.argv[1]);"
-             "from core import config as cfg;"
-             "have=set(json.load(open(cfg.LEGACY_TOKEN_FILE)).get('scopes') or []);"
-             "print(len(set(cfg.DASHBOARD_SCOPES)-have))", BASE_DIR],
-            capture_output=True, text=True,
-        )
-        missing = (probe.stdout or "").strip()
-        if missing == "0":
-            ok("已完成授權，權限完整")
-        elif missing.isdigit():
-            warn(f"授權缺少 {missing} 個權限，Web 儀表板會不能用（重新授權即可）")
-            warnings += 1
-        else:
-            bad("Token 讀不出來", "刪掉 config/google_chat_token.json 後重新授權")
-            problems += 1
-    else:
-        bad("還沒完成 Google 授權", "執行引導的步驟 3")
+    # 與步驟 3 共用同一個判斷（auth_state），不要各寫一份——
+    # 兩邊對「授權算不算完整」的標準一旦分歧，就會出現
+    # 「check 說沒問題但引導又叫你重登」這種自相矛盾。
+    launcher = "chatpulse.bat" if IS_WINDOWS else "./chatpulse.sh"
+    state, account = auth_state()
+    if state == "ok":
+        ok(f"已完成授權，權限完整{f'（{account}）' if account else ''}")
+    elif state == "partial":
+        warnings += 1
+        warn("授權缺少儀表板需要的權限（Web 儀表板會不能用）")
+        arrow(f"重新授權即可：{launcher} auth")
+    elif state == "unreadable":
         problems += 1
+        bad("授權檔讀不出來", f"刪掉 config/google_chat_token.json 後跑 {launcher} auth")
+    else:
+        problems += 1
+        bad("還沒完成 Google 授權", f"執行 {launcher} auth")
 
     if os.path.exists(VENV_PYTHON):
         probe = subprocess.run(
@@ -598,7 +690,9 @@ def main() -> int:
     if arg in ("check", "doctor"):
         return cmd_check()
     if arg == "auth":
-        return 0 if step_authorise() else 1
+        # 明講要重新授權就照做，不要因為「已經授權過」而跳過——
+        # 會下這個子指令的人多半正是要換帳號或修權限
+        return 0 if step_authorise(force=True) else 1
     if arg == "web":
         # 明確指定要 web 就不擋——即使沒有畫面，API 本身仍然可用，
         # 缺什麼由 webapp 在視窗裡講清楚。
