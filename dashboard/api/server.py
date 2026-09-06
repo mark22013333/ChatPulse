@@ -599,6 +599,64 @@ class PreferencesRequest(BaseModel):
     default_provider: Optional[str] = None
 
 
+class DraftTargetRequest(BaseModel):
+    """指定一個 Space，對「對方最後說的話」產生回覆草稿。"""
+
+    space_id: str
+
+
+@app.post("/api/v1/spaces/draft-target")
+def create_draft_target(req: DraftTargetRequest, viewer: Dict[str, Any] = ViewerDep):
+    """挑出該 Space 裡對方最後說的那則訊息，回傳可以拿去產草稿的 mention_id。
+
+    為什麼要這一步：草稿流程整條都掛在 mentions 上，而私訊不會產生 mention
+    （沒人會在私訊裡 @ 你）。這裡合成一筆 state='manual' 的記錄當作錨點，
+    前端拿到 id 之後走的還是原本那條 /mentions/{id}/draft/stream，
+    不必為了私訊再寫一份草稿邏輯。
+
+    只挑**不是自己發的**訊息——要回覆的是對方說的話，不是自己說的。
+    """
+    if not req.space_id.startswith("spaces/"):
+        raise InvalidParameter(f"space_id 必須是完整資源名（spaces/…），收到 {req.space_id!r}")
+
+    viewer_id = viewer["id"]
+    messages = get_client(viewer_id).fetch_recent_messages(req.space_id, limit=20)
+    learn_names(messages)
+    learn_dm_peer(viewer, req.space_id, messages)
+
+    self_id = viewer.get("google_user_id")
+    target = None
+    for msg in reversed(messages):  # 回傳是由舊到新，倒著找最近的一則
+        if (msg.get("sender") or {}).get("name") != self_id:
+            target = msg
+            break
+    if target is None:
+        raise InvalidParameter("這個對話裡找不到別人發的訊息，沒有東西可以回覆")
+
+    resolve = name_resolver_for(viewer)
+    sender_id = (target.get("sender") or {}).get("name")
+    mention_id = repo.upsert_draft_target(
+        viewer_id,
+        {
+            "space_id": req.space_id,
+            "space_name": space_display_name(viewer_id, req.space_id),
+            "message_name": target["name"],
+            "thread_name": (target.get("thread") or {}).get("name"),
+            "sender_name": sender_id,
+            "sender_display": resolve(sender_id),
+            "create_time": target.get("createTime"),
+        },
+    )
+    # 回完整的 mention 物件：收件匣端點會把 state='manual' 濾掉，前端拿不到，
+    # 而草稿工作區需要整個物件才畫得出來。
+    row = repo.get_mention(viewer_id, mention_id)
+    rows = _hydrate_mention_content(get_client(viewer_id), [row]) if row else []
+    return {
+        "mention_id": mention_id,
+        "mention": _mention_public(rows[0], name_resolver_for(viewer)) if rows else None,
+    }
+
+
 class SpaceAliasRequest(BaseModel):
     """給沒有官方名稱的空間（主要是私訊）取一個自己看得懂的名字。"""
 

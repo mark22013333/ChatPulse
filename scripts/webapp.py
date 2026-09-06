@@ -263,7 +263,12 @@ def port_available(port: int = PORT) -> tuple:
     """
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        # 刻意不設 SO_REUSEADDR：這裡要模擬的就是 uvicorn 待會的處境
+        # 設 SO_REUSEADDR 是為了與 uvicorn 的實際行為一致——asyncio 的
+        # create_server 在 POSIX 上預設就開這個選項。不設的話這裡會比 uvicorn
+        # 嚴格：剛按 Ctrl+C 停掉服務、socket 還在 TIME_WAIT 時馬上重啟，
+        # 就會被自己的檢查擋下來說「連接埠被佔用」，而 uvicorn 其實綁得上。
+        # （2026-09-06 實測踩到：pkill 之後立刻重啟被誤擋，但當下沒有任何程序在聽。）
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind((HOST, port))
         return True, ""
     except OSError as exc:
