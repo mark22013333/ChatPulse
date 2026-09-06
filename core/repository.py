@@ -122,6 +122,10 @@ def get_preferences(viewer_id: int) -> Dict[str, Any]:
         "default_style": row["default_style"],
         # 空字串視為「沒有偏好」，讓它退回伺服器預設而不是變成非法值
         "default_provider": row["default_provider"] or None,
+        # ADR-0006：草稿頁預選用。只是預選，不會自動送出——
+        # code_refs 在 API 契約上仍維持預設空，與 reference_space_ids 一致。
+        "default_code_project_id": row["default_code_project_id"],
+        "default_code_environment": row["default_code_environment"] or None,
         "updated_at": row["updated_at"],
     }
 
@@ -133,6 +137,8 @@ def update_preferences(
     default_limit: Optional[int] = None,
     default_style: Optional[str] = None,
     default_provider: Optional[str] = None,
+    default_code_project_id: Optional[int] = None,
+    default_code_environment: Optional[str] = None,
 ) -> Dict[str, Any]:
     current = get_preferences(viewer_id)
     pinned = current["pinned_space_ids"] if pinned_space_ids is None else pinned_space_ids
@@ -141,14 +147,34 @@ def update_preferences(
     provider = (
         current.get("default_provider") if default_provider is None else default_provider
     )
+    code_project = (
+        current.get("default_code_project_id")
+        if default_code_project_id is None
+        else default_code_project_id
+    )
+    code_env = (
+        current.get("default_code_environment")
+        if default_code_environment is None
+        else default_code_environment
+    )
     db.execute(
         """
         UPDATE preferences
            SET pinned_space_ids = ?, default_limit = ?, default_style = ?,
-               default_provider = ?, updated_at = ?
+               default_provider = ?, default_code_project_id = ?,
+               default_code_environment = ?, updated_at = ?
          WHERE viewer_id = ?
         """,
-        (json.dumps(pinned), limit, style, provider, _now(), viewer_id),
+        (
+            json.dumps(pinned),
+            limit,
+            style,
+            provider,
+            code_project,
+            code_env,
+            _now(),
+            viewer_id,
+        ),
     )
     return get_preferences(viewer_id)
 
@@ -483,3 +509,199 @@ def purge_expired() -> Dict[str, int]:
     s = db.execute("DELETE FROM summaries WHERE created_at < ?", (cutoff_summary,))
     m = db.execute("DELETE FROM mentions WHERE detected_at < ?", (cutoff_mention,))
     return {"summaries_deleted": s.rowcount, "mentions_deleted": m.rowcount}
+
+
+# --------------------------------------------------------------------------
+# 參考專案（ADR-0006）
+#
+# 與本模組其他函式一樣，viewer_id 是必填且擺第一：沒有「查全部專案」的入口。
+# 分支對照永遠跟著父專案一起讀，因此也不存在繞過 viewer_id 讀到別人分支對應的路徑。
+# --------------------------------------------------------------------------
+
+
+def _code_project_row(row: Dict[str, Any], branches: Dict[str, str]) -> Dict[str, Any]:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "repo_path": row["repo_path"],
+        "default_env": row["default_env"],
+        "include_globs": json.loads(row["include_globs"] or "[]"),
+        "exclude_globs": json.loads(row["exclude_globs"] or "[]"),
+        "enabled": bool(row["enabled"]),
+        "branches": branches,
+        "last_verified_at": row["last_verified_at"],
+        "last_verify_error": row["last_verify_error"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def _branches_for(project_ids: List[int]) -> Dict[int, Dict[str, str]]:
+    """一次撈完所有分支對照，避免 N+1。"""
+    if not project_ids:
+        return {}
+    marks = ",".join("?" * len(project_ids))
+    rows = db.query_all(
+        f"SELECT project_id, environment, branch FROM code_project_branches "
+        f"WHERE project_id IN ({marks})",
+        tuple(project_ids),
+    )
+    out: Dict[int, Dict[str, str]] = {pid: {} for pid in project_ids}
+    for r in rows:
+        out[r["project_id"]][r["environment"]] = r["branch"]
+    return out
+
+
+def list_code_projects(viewer_id: int, *, enabled_only: bool = False) -> List[Dict[str, Any]]:
+    sql = "SELECT * FROM code_projects WHERE viewer_id = ?"
+    if enabled_only:
+        sql += " AND enabled = 1"
+    sql += " ORDER BY name"
+    rows = db.query_all(sql, (viewer_id,))
+    branches = _branches_for([r["id"] for r in rows])
+    return [_code_project_row(r, branches.get(r["id"], {})) for r in rows]
+
+
+def get_code_project(viewer_id: int, project_id: int) -> Optional[Dict[str, Any]]:
+    row = db.query_one(
+        "SELECT * FROM code_projects WHERE viewer_id = ? AND id = ?",
+        (viewer_id, project_id),
+    )
+    if row is None:
+        return None
+    return _code_project_row(row, _branches_for([project_id]).get(project_id, {}))
+
+
+def create_code_project(
+    viewer_id: int,
+    *,
+    name: str,
+    repo_path: str,
+    branches: Dict[str, str],
+    default_env: str = cfg.CODE_ENV_DEFAULT,
+    include_globs: Optional[List[str]] = None,
+    exclude_globs: Optional[List[str]] = None,
+) -> int:
+    """建立專案與分支對照。
+
+    兩張表要在**同一個 transaction** 內寫完——否則中途失敗會留下
+    「專案存在但沒有分支對應」的殘骸，而那正是這個功能要避免的狀態
+    （沒有分支對應 = 不知道該查哪個環境）。這是 db.execute（每次自帶
+    `with conn`）不夠用、必須直接取連線的唯一地方。
+    """
+    now = _now()
+    conn = db.get_connection()
+    with conn:
+        cur = conn.execute(
+            """
+            INSERT INTO code_projects(viewer_id, name, repo_path, default_env,
+                                      include_globs, exclude_globs, created_at, updated_at)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                viewer_id,
+                name,
+                repo_path,
+                default_env,
+                json.dumps(include_globs or []),
+                json.dumps(exclude_globs or []),
+                now,
+                now,
+            ),
+        )
+        project_id = int(cur.lastrowid)
+        for env, branch in branches.items():
+            conn.execute(
+                """
+                INSERT INTO code_project_branches(project_id, environment, branch, created_at)
+                VALUES(?, ?, ?, ?)
+                """,
+                (project_id, env, branch, now),
+            )
+    return project_id
+
+
+def update_code_project(
+    viewer_id: int,
+    project_id: int,
+    *,
+    name: Optional[str] = None,
+    repo_path: Optional[str] = None,
+    branches: Optional[Dict[str, str]] = None,
+    default_env: Optional[str] = None,
+    include_globs: Optional[List[str]] = None,
+    exclude_globs: Optional[List[str]] = None,
+    enabled: Optional[bool] = None,
+) -> Optional[Dict[str, Any]]:
+    current = get_code_project(viewer_id, project_id)
+    if current is None:
+        return None
+    now = _now()
+    conn = db.get_connection()
+    with conn:
+        conn.execute(
+            """
+            UPDATE code_projects
+               SET name = ?, repo_path = ?, default_env = ?,
+                   include_globs = ?, exclude_globs = ?, enabled = ?, updated_at = ?
+             WHERE viewer_id = ? AND id = ?
+            """,
+            (
+                current["name"] if name is None else name,
+                current["repo_path"] if repo_path is None else repo_path,
+                current["default_env"] if default_env is None else default_env,
+                json.dumps(
+                    current["include_globs"] if include_globs is None else include_globs
+                ),
+                json.dumps(
+                    current["exclude_globs"] if exclude_globs is None else exclude_globs
+                ),
+                int(current["enabled"] if enabled is None else enabled),
+                now,
+                viewer_id,
+                project_id,
+            ),
+        )
+        if branches is not None:
+            # 整組取代而不是逐項 merge：分支對照是一份小而完整的對應表，
+            # 部分更新會讓「刪掉 uat 對應」這個動作沒有辦法表達。
+            conn.execute(
+                "DELETE FROM code_project_branches WHERE project_id = ?", (project_id,)
+            )
+            for env, branch in branches.items():
+                conn.execute(
+                    """
+                    INSERT INTO code_project_branches(project_id, environment, branch, created_at)
+                    VALUES(?, ?, ?, ?)
+                    """,
+                    (project_id, env, branch, now),
+                )
+    return get_code_project(viewer_id, project_id)
+
+
+def delete_code_project(viewer_id: int, project_id: int) -> bool:
+    cur = db.execute(
+        "DELETE FROM code_projects WHERE viewer_id = ? AND id = ?", (viewer_id, project_id)
+    )
+    return cur.rowcount > 0
+
+
+def resolve_branch(viewer_id: int, project_id: int, environment: str) -> Optional[str]:
+    """查某專案在某環境對應的分支。查不到回 None，由呼叫端決定怎麼報錯。"""
+    project = get_code_project(viewer_id, project_id)
+    if project is None:
+        return None
+    return project["branches"].get(environment)
+
+
+def record_project_verification(
+    viewer_id: int, project_id: int, error: Optional[str]
+) -> None:
+    """記錄驗證結果，供設定頁顯示「這個分支已經不在了」。"""
+    db.execute(
+        """
+        UPDATE code_projects SET last_verified_at = ?, last_verify_error = ?
+         WHERE viewer_id = ? AND id = ?
+        """,
+        (_now(), error, viewer_id, project_id),
+    )

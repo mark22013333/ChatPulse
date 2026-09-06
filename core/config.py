@@ -113,6 +113,73 @@ IMAGE_SCAN_RECENT_MESSAGES = 30
 IMAGE_MAX_SOURCE_BYTES = 12 * 1024 * 1024
 IMAGE_DOWNLOAD_WORKERS = 4  # 附件下載另有「每個 Space 每秒 15 次」的限制
 
+# --- 參考專案原始碼（ADR-0006）---
+# 總開關。關掉之後 Draft Reply 完全不碰 git，行為與加這個功能之前一致。
+# 注意：這功能會把**公司專有原始碼**送進 AI 供應商。規格第十節當初承擔的是
+# 「所有可讀 Space 的對話」，不是原始碼——風險輪廓不同，見該節。
+CODE_ENABLED = os.environ.get("CHATPULSE_CODE", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+)
+
+# 環境是封閉字彙，不接受自由文字。理由：一旦允許自由填，實務上必然出現
+# uat／UAT／staging 三種寫法指同一個分支，而模型引用時會照著講，
+# 於是「這是正式環境的行為」這句話就不可信了——那正是這個功能要解決的問題。
+CODE_ENVIRONMENTS = ("production", "uat", "dev")
+CODE_ENV_DEFAULT = "production"
+#: 顯示用中文名。prompt 與前端都用這份，避免兩邊各翻一次而不一致。
+CODE_ENV_LABELS = {
+    "production": "正式環境",
+    "uat": "UAT 環境",
+    "dev": "開發環境",
+}
+
+# 預算比圖片再小一些：草稿是聊天回話，不是 code review。
+# 12k tokens 大約是 8~12 段函式，足夠回答「這段邏輯為什麼這樣寫」。
+CODE_BUDGET_TOKENS_DRAFT = int(os.environ.get("CHATPULSE_CODE_BUDGET", "12000"))
+CODE_MAX_HITS_PER_PROJECT = 12
+# 同一份草稿最多查兩個專案。設 2 而不是 1，是為了讓「正式 vs UAT 比對」
+# 這個最有價值的用法成立（同一個專案送兩次、環境不同）。
+CODE_MAX_PROJECTS_PER_DRAFT = 2
+CODE_CONTEXT_LINES = 12  # 命中行前後各取幾行
+CODE_MAX_TERMS = 8
+CODE_MAX_FILE_BYTES = 512 * 1024  # 超過通常是產生檔或壓縮資料，讀了也沒用
+
+CODE_GIT_BIN = os.environ.get("CHATPULSE_GIT_BIN", "git")
+CODE_GIT_TIMEOUT = int(os.environ.get("CHATPULSE_GIT_TIMEOUT", "20"))
+# 分支太久沒有新 commit 時提醒可能忘了 fetch。無法區分「穩定的 release 分支」
+# 與「忘記 fetch」，所以只提醒不擋。
+CODE_STALE_BRANCH_DAYS = int(os.environ.get("CHATPULSE_CODE_STALE_DAYS", "30"))
+
+#: git pathspec 的排除語法。這些目錄搜到了也只會浪費預算。
+CODE_DEFAULT_EXCLUDE_GLOBS = (
+    ":(exclude)**/node_modules/**",
+    ":(exclude)**/dist/**",
+    ":(exclude)**/build/**",
+    ":(exclude)**/vendor/**",
+    ":(exclude)**/__pycache__/**",
+    ":(exclude)**/.venv/**",
+    ":(exclude)**/*.min.js",
+    ":(exclude)**/*.map",
+    ":(exclude)**/*.lock",
+    ":(exclude)**/*.snap",
+)
+
+#: 這些路徑整份跳過，不進 prompt。機敏遮蔽是 best-effort，
+#: 但「整個檔案就是憑證」的情況可以直接用路徑擋掉，成本低、效果確定。
+CODE_SECRET_PATH_PATTERNS = (
+    "**/.env",
+    "**/.env.*",
+    "**/*secret*",
+    "**/*credential*",
+    "**/id_rsa*",
+    "**/*.pem",
+    "**/*.key",
+    "**/*.p12",
+    "**/*.pfx",
+)
+
 # --- 儲存 ---
 DB_PATH = os.environ.get("CHATPULSE_DB", os.path.join(DATA_DIR, "chatpulse.db"))
 # 加密金鑰刻意不與資料庫同檔存放（SPECIFICATION.md 九節設計要點）
