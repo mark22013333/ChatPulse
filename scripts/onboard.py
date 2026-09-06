@@ -16,6 +16,16 @@ import shutil
 import subprocess
 import sys
 
+# 直接執行本檔時 sys.path[0] 就是 scripts/，但被 import 或用 -m 執行時未必，
+# 所以明確補上——webapp 就在隔壁。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import webapp  # noqa: E402  （要先補好 sys.path 才 import 得到）
+
+# 引導流程整段都在跟子行程（pip / npm / uvicorn / 授權精靈）交錯輸出，
+# 不解掉緩衝的話訊息順序會亂到看不懂。必須在任何輸出之前做。
+webapp.unbuffer_output()
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 IS_WINDOWS = platform.system() == "Windows"
 
@@ -66,8 +76,23 @@ def step(n: int, text: str) -> None:
     print(f"\n{c('36;1', f'[步驟 {n}/{TOTAL_STEPS}]')} {c('1', text)}")
 
 
+def _sym(fancy: str, plain: str) -> str:
+    """終端機編不了這個符號時退回 ASCII。
+
+    輸出串流設了 errors="replace"（不然 cp950 主控台印中文會直接中止），
+    但那會把 ✓ 與 ✗ **同時**變成 `?`——成功與失敗長得一模一樣，比沒有符號
+    還糟。所以先問這個編碼吃不吃得下，吃不下就換 [OK] / [X]。
+    """
+    enc = getattr(sys.stdout, "encoding", None) or "ascii"
+    try:
+        fancy.encode(enc)
+        return fancy
+    except (UnicodeEncodeError, LookupError):
+        return plain
+
+
 def ok(text: str) -> None:
-    print(f"  {c('32', '✓')} {text}")
+    print(f"  {c('32', _sym('✓', '[OK]'))} {text}")
 
 
 def warn(text: str) -> None:
@@ -75,15 +100,37 @@ def warn(text: str) -> None:
 
 
 def bad(text: str, nextstep: str = "") -> None:
-    print(f"  {c('31', '✗')} {text}")
+    print(f"  {c('31', _sym('✗', '[X]'))} {text}")
     if nextstep:
-        print(f"    {c('36', '→')} {nextstep}")
+        print(f"    {c('36', _sym('→', '->'))} {nextstep}")
 
 
 def explain(text: str) -> None:
     """教學文字。每一步的「這是什麼、為什麼」都走這裡。"""
     for line in text.strip().splitlines():
         print(f"    {c('90', line.strip())}")
+
+
+def plain(text: str) -> None:
+    """不帶符號的補充行，用在需要對齊上一行的續行。"""
+    print(text)
+
+
+def arrow(text: str) -> None:
+    """下一步指示。與 bad() 的 → 同一個視覺語彙。"""
+    print(f"    {c('36', _sym('→', '->'))} {text}")
+
+
+class _UI:
+    """把輸出工具打包給 webapp 用，讓兩邊的訊息風格一致。"""
+
+    title = staticmethod(title)
+    ok = staticmethod(ok)
+    warn = staticmethod(warn)
+    bad = staticmethod(bad)
+    explain = staticmethod(explain)
+    plain = staticmethod(plain)
+    arrow = staticmethod(arrow)
 
 
 def pause(prompt: str = "按 Enter 繼續") -> None:
@@ -270,7 +317,12 @@ def step_authorise() -> bool:
     return True
 
 
-def step_choose_entry() -> None:
+def step_choose_entry() -> bool:
+    """選入口。回傳「是否要啟動儀表板」，實際啟動由呼叫端延到最後。
+
+    延後的理由：uvicorn 會佔住這個視窗直到 Ctrl+C，排在它後面的說明
+    使用者永遠看不到——包括「以後要怎麼再啟動」這種最需要看到的東西。
+    """
     step(4, "選擇你要用哪個入口")
     explain(
         """
@@ -283,11 +335,11 @@ def step_choose_entry() -> None:
         [
             (
                 "在 Claude Code 裡用（推薦，最輕）",
-                "在對話中直接說「摘要某個群組」。不需要 Node.js。",
+                "在對話中直接說「摘要某個群組」。",
             ),
             (
                 "Web 儀表板（功能完整）",
-                "瀏覽器介面，有 Mention 收件匣與回話草稿。需要 Node.js，第一次啟動要幾分鐘。",
+                "瀏覽器介面，有 Mention 收件匣與回話草稿。畫面已經隨專案附上，開了就能用。",
             ),
             ("兩個都裝", "先裝 MCP，再啟動儀表板。"),
         ],
@@ -295,12 +347,38 @@ def step_choose_entry() -> None:
 
     if idx in (0, 2):
         _install_mcp()
-    if idx in (1, 2):
-        _start_dashboard()
+    return idx in (1, 2)
+
+
+def _windows_path_hazard() -> str:
+    """回傳專案路徑中會讓 Windows 的 .cmd 呼叫出錯的字元（沒有就回空字串）。
+
+    Claude Code 在 Windows 上是 `claude.cmd`，而 subprocess 執行 .cmd 目標時
+    會隱式經過 cmd.exe——引數等於被解析兩次。路徑裡一個 `&` 就會讓 cmd 在那裡
+    把命令切成兩段，後半段變成另一條指令去執行；`C:\\Users\\me\\R&D\\proj`
+    這種資料夾名在研發單位並不罕見。`%VAR%` 形態與 `^` 也會出事。
+
+    macOS 上 `claude` 是真正的執行檔，不會有二次解析，所以維護者踩不到——
+    又是一個「只有 Windows 使用者會遇到」的坑，所以寧可先講。
+    """
+    if not IS_WINDOWS:
+        return ""
+    return "".join(sorted({ch for ch in BASE_DIR if ch in '&|<>^%'}))
 
 
 def _install_mcp() -> None:
     print()
+    hazard = _windows_path_hazard()
+    if hazard:
+        warn(f"專案路徑含特殊字元 {hazard}，Windows 上註冊 MCP 可能會失敗")
+        explain(
+            f"""
+            這些字元對 Windows 的命令列有特殊意義，而 claude 指令在 Windows 上
+            是批次檔，路徑會被多解析一次。若下面的註冊失敗，把整個專案搬到
+            不含這些字元的路徑（例如 C:\\ChatPulse）再跑一次就好。
+            目前路徑：{BASE_DIR}
+            """
+        )
     claude = shutil.which("claude") or shutil.which("claude.cmd")
     if not claude:
         bad(
@@ -331,50 +409,62 @@ def _install_mcp() -> None:
               「摘要『0.暫存』最近 50 則對話」
             """
         )
+    elif hazard:
+        bad("自動註冊失敗",
+            f"很可能就是路徑裡的 {hazard} 造成的——把專案搬到不含這些字元的路徑再試一次")
     else:
         bad("自動註冊失敗", "改用手動設定，步驟見 SETUP_GUIDE.md")
 
 
-def _start_dashboard() -> None:
+def _start_dashboard(ask_first: bool = True, dev: bool = False) -> None:
+    """啟動儀表板。實際流程在 scripts/webapp.py，兩個平台共用同一份。
+
+    這裡只多做一件事：在**引導流程中**遇到「沒畫面又建不出來」時直接擋下來。
+    那時使用者還站在岔路口，告訴他改走 Claude Code 入口比啟動一個沒有畫面的
+    API 有用得多。單獨執行 `web` 子指令時不擋——那是他明確指定要 API。
+    """
     print()
-    if not (shutil.which("npm") or shutil.which("npm.cmd")):
-        bad(
-            "找不到 npm",
-            "Web 儀表板需要 Node.js。裝好之後重新執行這個引導；只想用 Claude Code 的話可以忽略",
+    if webapp.frontend_state() == "missing" and not webapp.find_npm():
+        bad("這台電腦沒辦法開儀表板畫面")
+        explain(
+            """
+            版控裡沒有前端建置產物，而這台電腦也沒有 Node.js 可以建置。
+            （正常情況下 clone 就會有產物，會走到這裡通常是產物被清掉了。）
+            """
         )
+        print()
+        arrow("最省事：改用 Claude Code 入口，功能一樣，不需要 Node.js")
+        arrow("或安裝 Node.js 後重跑這個引導：https://nodejs.org/")
         return
-    ok("找到 npm")
+
     explain(
         """
-        接下來會啟動儀表板。第一次要先建置前端畫面，需要幾分鐘。
-        啟動後瀏覽器會打開 http://localhost:8000。
+        啟動後瀏覽器會自動打開 http://localhost:8000。
         要停止服務，回到這個視窗按 Ctrl+C。
         """
     )
-    if not ask_yes("現在啟動儀表板？"):
-        warn("已跳過")
+    if ask_first and not ask_yes("現在啟動儀表板？"):
+        warn("已跳過。之後可以單獨啟動（見最後的說明）")
         return
 
-    if IS_WINDOWS:
-        run([VENV_PYTHON, "-m", "uvicorn", "dashboard.api.server:app",
-             "--host", "127.0.0.1", "--port", "8000"])
-    else:
-        run([os.path.join(BASE_DIR, "scripts", "start-web.sh")])
+    webapp.start(_UI, dev=dev)
 
 
 def step_done(authorised: bool) -> None:
     step(5, "完成")
     print("  以後要用的話：\n")
+    # 兩個平台講同一套子指令。以前這裡 macOS 教 scripts/*.sh、Windows 教
+    # chatpulse.bat，等於同一件事有兩種說法，文件與口頭支援都得講兩遍。
     launcher = "chatpulse.bat" if IS_WINDOWS else "./chatpulse.sh"
-    print(f"    {c('1', launcher)}              再跑一次這個引導（隨時可重複執行）")
-    if IS_WINDOWS:
-        print(f"    {c('1', 'chatpulse.bat check')}       檢查安裝狀態")
-        print(f"    {c('1', 'chatpulse.bat web')}         只啟動 Web 儀表板")
-        print(f"    {c('1', 'chatpulse.bat auth')}        只重新授權")
-    else:
-        print(f"    {c('1', './scripts/doctor.sh')}       檢查安裝狀態")
-        print(f"    {c('1', './scripts/start-web.sh')}    只啟動 Web 儀表板")
-        print(f"    {c('1', './scripts/setup.sh')}        只重新授權")
+    width = len(launcher) + 8
+    for suffix, desc in (
+        ("", "再跑一次這個引導（隨時可重複執行）"),
+        ("web", "只啟動 Web 儀表板"),
+        ("check", "檢查安裝狀態"),
+        ("auth", "只重新授權"),
+    ):
+        cmd = f"{launcher} {suffix}".strip()
+        print(f"    {c('1', cmd.ljust(width))}  {desc}")
 
     if not authorised:
         print()
@@ -421,12 +511,14 @@ def cmd_check() -> int:
 
     token = os.path.join(CONFIG_DIR, "google_chat_token.json")
     if os.path.exists(token) and os.path.exists(VENV_PYTHON):
+        # 路徑走 argv，不要內嵌進原始碼——含單引號的路徑（O'Brien 這種姓氏）
+        # 會讓探針語法錯誤，而錯誤被 capture_output 吃掉，變成安靜的誤判。
         probe = subprocess.run(
             [VENV_PYTHON, "-c",
-             "import json,sys;sys.path.insert(0,r'%s');"
+             "import json,sys;sys.path.insert(0,sys.argv[1]);"
              "from core import config as cfg;"
              "have=set(json.load(open(cfg.LEGACY_TOKEN_FILE)).get('scopes') or []);"
-             "print(len(set(cfg.DASHBOARD_SCOPES)-have))" % BASE_DIR],
+             "print(len(set(cfg.DASHBOARD_SCOPES)-have))", BASE_DIR],
             capture_output=True, text=True,
         )
         missing = (probe.stdout or "").strip()
@@ -445,10 +537,10 @@ def cmd_check() -> int:
     if os.path.exists(VENV_PYTHON):
         probe = subprocess.run(
             [VENV_PYTHON, "-c",
-             "import sys;sys.path.insert(0,r'%s');"
+             "import sys;sys.path.insert(0,sys.argv[1]);"
              "from core import providers;"
-             "print('|'.join(d['name'] for d in providers.describe_all() if d['available']))"
-             % BASE_DIR],
+             "print('|'.join(d['name'] for d in providers.describe_all() if d['available']))",
+             BASE_DIR],
             capture_output=True, text=True,
         )
         avail = (probe.stdout or "").strip()
@@ -460,6 +552,21 @@ def cmd_check() -> int:
                 "最省事：裝好並登入 Claude Code，它用你現有的訂閱，不需要 API key",
             )
             problems += 1
+
+    # 儀表板畫面。只影響 Web 入口，所以再糟也只是 warning——
+    # 只用 Claude Code 的人不該因為這一項看到紅字。
+    state = webapp.frontend_state()
+    if state == "ready":
+        ok("儀表板畫面已備妥")
+    elif state == "stale":
+        warnings += 1
+        warn("儀表板畫面比前端原始碼舊（下次啟動會自動重建，需要 npm）")
+    elif webapp.find_npm():
+        warnings += 1
+        warn("儀表板畫面尚未建置（下次啟動 web 時會自動建置）")
+    else:
+        warnings += 1
+        warn("儀表板畫面不存在，且這台沒有 Node.js——Web 入口不能用，Claude Code 入口不受影響")
 
     if IS_WINDOWS:
         warnings += 1
@@ -483,15 +590,19 @@ def cmd_check() -> int:
 
 
 def main() -> int:
-    arg = (sys.argv[1] if len(sys.argv) > 1 else "").strip().lower()
+    argv = [a.strip().lower() for a in sys.argv[1:]]
+    dev = "--dev" in argv
+    positional = [a for a in argv if not a.startswith("-")]
+    arg = positional[0] if positional else ""
 
     if arg in ("check", "doctor"):
         return cmd_check()
     if arg == "auth":
         return 0 if step_authorise() else 1
     if arg == "web":
-        _start_dashboard()
-        return 0
+        # 明確指定要 web 就不擋——即使沒有畫面，API 本身仍然可用，
+        # 缺什麼由 webapp 在視窗裡講清楚。
+        return webapp.start(_UI, dev=dev)
 
     step_welcome()
     if not step_python():
@@ -499,8 +610,10 @@ def main() -> int:
     if not step_credentials():
         return 1
     authorised = step_authorise()
-    step_choose_entry()
+    want_dashboard = step_choose_entry()
     step_done(authorised)
+    if want_dashboard:
+        _start_dashboard(ask_first=False, dev=dev)
     return 0
 
 

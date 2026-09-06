@@ -285,7 +285,7 @@
           在 Claude Code / Claude Desktop 的對話裡直接用自然語言操作。
         </p>
         <ul>
-          <li><strong>安裝最輕</strong>：不需要 Node.js、不必建置前端。</li>
+          <li><strong>安裝最輕</strong>：只要 Python，連前端都不必載入。</li>
           <li><strong>能做</strong>：列群組、抓對話、產摘要、發訊息、查供應商。</li>
           <li><strong>不能做</strong>：Mention 收件匣與 Draft Reply（那兩個在儀表板）。</li>
           <li>安裝：<code>./scripts/install-claude.sh</code></li>
@@ -298,9 +298,9 @@
           瀏覽器介面，功能完整。這是「被 @ 了不漏接」的那一半。
         </p>
         <ul>
-          <li><strong>額外需要</strong>：Node.js（第一次啟動會自動建置前端，要幾分鐘）。</li>
+          <li><strong>額外需要</strong>：沒有。畫面已隨專案附上，不需要 Node.js。</li>
           <li><strong>能做</strong>：MCP 的全部，加上 Mention 收件匣、Draft Reply、參考群組。</li>
-          <li>啟動：<code>./scripts/start-web.sh</code> → <code>http://localhost:8000</code></li>
+          <li>啟動：<code>./chatpulse.sh web</code> → <code>http://localhost:8000</code></li>
         </ul>
       </div>
     </div>
@@ -511,11 +511,11 @@ google-chat-bot/
     <div class="section-title">🖥️ Web 儀表板：Mention 收件匣與 Draft Reply</div>
     <div class="card" style="margin-bottom: 16px;">
       <p style="color: var(--text-secondary); margin-bottom: 12px;">
-        啟動一行就好，它會自己建 Python 環境、建置前端、開瀏覽器：
+        啟動一行就好，它會自己建 Python 環境、確認畫面備妥、開瀏覽器：
       </p>
-      <pre><code>./scripts/start-web.sh</code></pre>
+      <pre><code>./chatpulse.sh web          # Windows：chatpulse.bat web</code></pre>
       <p style="color: var(--text-secondary); font-size: 0.9rem;">
-        第一次會比較久（要 <code>npm install</code>）。跑起來在
+        畫面已隨專案附上，<strong>不需要 Node.js、不用等建置</strong>。跑起來在
         <code>http://localhost:8000</code>。<br>
         <strong>登入</strong>：已經跑過 <code>./scripts/setup.sh</code> 的話，
         畫面上會有「匯入既有憑證」，不必再登入一次。

@@ -14,7 +14,7 @@
 
 | 入口 | 給誰 | 怎麼跑 |
 | :--- | :--- | :--- |
-| **Web 儀表板** | 要完整功能（Mention 收件匣、Draft Reply）的人 | `./scripts/start-web.sh` → http://localhost:8000 |
+| **Web 儀表板** | 要完整功能（Mention 收件匣、Draft Reply）的人 | `./chatpulse.sh web` → http://localhost:8000 |
 | **MCP server** | 想在 Claude Code / Desktop 對話中直接用的人 | `./scripts/install-claude.sh`，或照 [`SETUP_GUIDE.md`](SETUP_GUIDE.md) |
 
 兩者是同一套後端能力的兩個入口，不是替代關係。
@@ -93,11 +93,12 @@ Viewer 也可以把選擇存成偏好（`default_provider`）。
 ## Web 儀表板
 
 ```bash
-./scripts/start-web.sh
+./chatpulse.sh web          # Windows：chatpulse.bat web
 ```
 
-首次執行會順便建置前端（React 19 + Vite）。啟動後在畫面上選「匯入既有憑證」或
-「使用 Google 登入」。功能：
+畫面（React 19 + Vite 的建置產物）已隨專案進版控，clone 下來就有，**不需要 Node.js**。
+只有改前端原始碼時才需要——啟動時會比對來源雜湊，發現產物過期且裝了 `npm` 就自動重建。
+啟動後在畫面上選「匯入既有憑證」或「使用 Google 登入」。功能：
 
 - **Space 清單**：436 個空間的名稱模糊搜尋、強制刷新（5 分鐘快取）
 - **單群摘要**：SSE 逐字串流，三種風格（通用／技術細節／只要待辦）輸出的章節結構不同

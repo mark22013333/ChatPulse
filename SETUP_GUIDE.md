@@ -5,7 +5,7 @@
 | 入口 | 給誰 | 怎麼跑 |
 | :--- | :--- | :--- |
 | **MCP Server** | 想在 Claude Code / Claude Desktop 對話中直接用的人 | `./scripts/install-claude.sh` |
-| **Web 儀表板** | 想要完整功能（Mention 收件匣、Draft Reply）的人 | `./scripts/start-web.sh` |
+| **Web 儀表板** | 想要完整功能（Mention 收件匣、Draft Reply）的人 | `./chatpulse.sh web` |
 
 能做的事：
 - 🔍 搜尋與列出您加入的所有 Google Chat 空間。
@@ -27,9 +27,9 @@
 > 錯誤訊息是「找不到 claude 指令」。另一條路是設 `GOOGLE_API_KEY` 走 Gemini，
 > 但免費層**每天只有 20 次請求**，多人共用會當天用完。
 
-**2. 裝好 Node.js（只有要用 Web 儀表板才需要）。** 前端建置產物不進版控，
-第一次跑 `start-web.sh` 會自動 `npm install` 並建置，需要幾分鐘。
-只用 MCP 的話不需要 Node。
+**2. Node.js 不用裝。** 儀表板的畫面（前端建置產物）已經隨專案一起進版控，
+clone 下來就有，開了就能用。只有**要改前端原始碼**的人才需要 Node.js——
+啟動時會自動偵測原始碼比產物新，有 `npm` 就順手重建。
 
 Python 與 `uv` **不用自己準備**——安裝腳本偵測不到 `uv` 會自動幫你裝。
 
@@ -198,10 +198,12 @@ Python 與 `uv` **不用自己準備**——安裝腳本偵測不到 `uv` 會自
 
 ### Q4：怎麼用 Web 儀表板？
 ```bash
-./scripts/start-web.sh
+./chatpulse.sh web          # Windows：chatpulse.bat web
 ```
-它會自己建好 Python 環境、建置前端、然後開瀏覽器到 http://localhost:8000。
-第一次會比較久（要 `npm install`）。
+它會自己建好 Python 環境、確認畫面備妥，然後開瀏覽器到 http://localhost:8000。
+畫面已經隨專案附上，所以**不需要 Node.js，也不用等建置**。
+
+（`./scripts/start-web.sh` 也還能用，跑的是同一段程式碼。）
 
 登入方式：如果你已經跑過 `./scripts/setup.sh`，儀表板會直接認得你既有的授權，
 **不必再登入一次**（畫面上會有「匯入既有憑證」的選項）。沒跑過精靈的話，
@@ -219,7 +221,8 @@ Python 與 `uv` **不用自己準備**——安裝腳本偵測不到 `uv` 會自
 功能完全一樣，但有三點差異要知道：
 
 1. **入口是 `chatpulse.bat`**（可雙擊）。`scripts/` 底下那些 `.sh` 檔在 Windows 上跑不了，
-   對應功能請用 `chatpulse.bat check` / `auth` / `web`。
+   對應功能請用 `chatpulse.bat check` / `auth` / `web`——這些子指令跑的程式碼與
+   macOS 完全相同（都是 `scripts/onboard.py` 與 `scripts/webapp.py`），不是另寫一份。
 2. **檔案權限保護不生效**。`config\` 與 `data\` 裡有你的 Google 授權憑證，
    在 macOS/Linux 上會被設成「只有你讀得到」，但 Windows 沒有對應的機制。
    **請不要在共用電腦上使用**。這是作業系統差異，不是設定錯誤，
