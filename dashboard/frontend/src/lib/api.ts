@@ -131,6 +131,13 @@ export const api = {
   updatePreferences: (body: { default_provider?: string | null }) =>
     request<Preferences>('/preferences', { method: 'PATCH', body: JSON.stringify(body) }),
 
+  /** 給沒有官方名稱的空間（私訊）取別名。`alias` 傳空字串＝清除，回到自動辨識。 */
+  setSpaceAlias: (body: { space_id: string; alias: string }) =>
+    request<{ space_id: string; alias: string; ok: boolean }>('/spaces/alias', {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+
   // ── Phase 1 ────────────────────────────────────────────
   spaces: (params: { search?: string; refresh?: boolean } = {}) =>
     request<SpacesResponse>(`/spaces${query({ search: params.search, refresh: params.refresh })}`),

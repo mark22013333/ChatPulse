@@ -107,31 +107,71 @@ def remember(user_id: str, display_name: str, source: str = "identity") -> None:
 # 用既有的表而不另開一張：那張表的主鍵是自由字串，而這件事的形狀
 # （id -> 顯示名稱，會被覆寫更新）跟人名名錄完全一樣。
 _DM_PREFIX = "dm:"
+#: 自動從訊息 sender 認出來的
+_DM_AUTO = "dm_peer"
+#: 使用者自己取的別名。優先於自動辨識，且不會被後續的自動辨識蓋掉。
+_DM_MANUAL = "dm_manual"
+_DM_SOURCES = (_DM_AUTO, _DM_MANUAL)
 
 
 def load_all() -> Dict[str, str]:
-    """人名名錄。**不含**私訊對照那類非真人的記錄。"""
+    """人名名錄。**不含**空間別名那類非真人的記錄。"""
     return {
         r["user_id"]: r["display_name"]
         for r in db.query_all(
-            "SELECT user_id, display_name FROM user_directory WHERE source != 'dm_peer'"
+            "SELECT user_id, display_name FROM user_directory "
+            "WHERE source NOT IN (?, ?)",
+            _DM_SOURCES,
         )
     }
 
 
 def remember_dm_peer(space_id: str, display_name: str) -> None:
-    """記住某個私訊空間的對方是誰，之後 Space 清單就能顯示名字而不是「未命名空間」。"""
+    """自動辨識：記住某個私訊空間的對方是誰。
+
+    **不會覆寫使用者手動取的別名**——他既然特地取了名字，就是比我們猜的準。
+    """
     if not space_id or not display_name:
         return
-    remember(f"{_DM_PREFIX}{space_id}", display_name, source="dm_peer")
+    key = f"{_DM_PREFIX}{space_id}"
+    row = db.query_one("SELECT source FROM user_directory WHERE user_id = ?", (key,))
+    if row and row["source"] == _DM_MANUAL:
+        return
+    remember(key, display_name, source=_DM_AUTO)
+
+
+def set_space_alias(space_id: str, alias: str) -> None:
+    """使用者手動給某個空間取的名字。傳空字串等於清除，回到自動辨識的結果。"""
+    if not space_id:
+        return
+    key = f"{_DM_PREFIX}{space_id}"
+    alias = (alias or "").strip()
+    if not alias:
+        db.execute("DELETE FROM user_directory WHERE user_id = ?", (key,))
+        return
+    remember(key, alias, source=_DM_MANUAL)
 
 
 def load_dm_peers() -> Dict[str, str]:
-    """回傳 {space_id: 對方名字}，給 Space 清單組裝顯示名稱用。"""
+    """回傳 {space_id: 顯示名稱}，給 Space 清單組裝用。含自動辨識與手動別名。"""
     return {
         r["user_id"][len(_DM_PREFIX):]: r["display_name"]
         for r in db.query_all(
-            "SELECT user_id, display_name FROM user_directory WHERE source = 'dm_peer'"
+            "SELECT user_id, display_name FROM user_directory "
+            "WHERE source IN (?, ?)",
+            _DM_SOURCES,
+        )
+        if r["user_id"].startswith(_DM_PREFIX)
+    }
+
+
+def dm_alias_sources() -> Dict[str, str]:
+    """回傳 {space_id: 'dm_peer' | 'dm_manual'}，讓前端知道哪些是自己取的名字。"""
+    return {
+        r["user_id"][len(_DM_PREFIX):]: r["source"]
+        for r in db.query_all(
+            "SELECT user_id, source FROM user_directory WHERE source IN (?, ?)",
+            _DM_SOURCES,
         )
         if r["user_id"].startswith(_DM_PREFIX)
     }

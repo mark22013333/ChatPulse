@@ -233,11 +233,13 @@ def list_spaces_cached(viewer_id: int, refresh: bool = False) -> Dict[str, Any]:
         # 私訊沒有 displayName（Google Chat 對 DIRECT_MESSAGE 不回傳），
         # 但我們可能已經從讀過的訊息認出對方是誰，那份對照就在名錄裡。
         dm_peers = directory.load_dm_peers()
+        alias_sources = directory.dm_alias_sources()
         formatted = []
         for s in raw:
             member = s.get("membershipCount") or {}
             space_id = s.get("name")
             display = s.get("displayName")
+            renamable = not display  # 只有沒有官方名稱的空間才給改名
             if not display:
                 # 認得出對方就顯示名字；認不出來寧可寫「私訊」也不要寫
                 # 「成員…8641」那種代號——清單上放代號比不放還難懂
@@ -255,6 +257,9 @@ def list_spaces_cached(viewer_id: int, refresh: bool = False) -> Dict[str, Any]:
                     "type": s.get("spaceType", "UNKNOWN"),
                     "lastActiveTime": s.get("lastActiveTime"),
                     "memberCount": member.get("joinedDirectHumanUserCount"),
+                    # 讓前端知道這個名字能不能改、以及現在的名字是誰取的
+                    "renamable": renamable,
+                    "nameSource": alias_sources.get(space_id),
                 }
             )
         entry = {"timestamp": now, "data": formatted, "was_cached": False}
@@ -592,6 +597,30 @@ class PreferencesRequest(BaseModel):
     default_limit: Optional[int] = None
     default_style: Optional[str] = None
     default_provider: Optional[str] = None
+
+
+class SpaceAliasRequest(BaseModel):
+    """給沒有官方名稱的空間（主要是私訊）取一個自己看得懂的名字。"""
+
+    space_id: str
+    #: 空字串等於清除別名，回到自動辨識的結果
+    alias: str = Field(default="", max_length=60)
+
+
+@app.patch("/api/v1/spaces/alias")
+def patch_space_alias(req: SpaceAliasRequest, viewer: Dict[str, Any] = ViewerDep):
+    """手動命名一個空間。
+
+    私訊的對方是誰只能靠「讀訊息取 sender ＋ 查人名名錄」推，而名錄只認得
+    曾在群組被 @ 過的人——實測 131 個私訊只認得出 20 個。剩下的與其一直顯示
+    「（私訊）」，不如讓使用者自己取名字，他本來就知道對方是誰。
+    """
+    if not req.space_id.startswith("spaces/"):
+        raise InvalidParameter(f"space_id 必須是完整資源名（spaces/…），收到 {req.space_id!r}")
+    directory.set_space_alias(req.space_id, req.alias)
+    # 清單是快取的，改完要讓它重組，否則畫面上還是舊名字
+    _spaces_cache.pop(viewer["id"], None)
+    return {"space_id": req.space_id, "alias": req.alias.strip(), "ok": True}
 
 
 @app.patch("/api/v1/preferences")
