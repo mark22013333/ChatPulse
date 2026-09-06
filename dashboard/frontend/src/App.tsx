@@ -43,9 +43,12 @@ export default function App() {
   const selectMention = useMentionsStore((state) => state.select)
   const pendingCount = useMentionsStore((state) => state.counts.pending)
   const seedCounts = useMentionsStore((state) => state.seedCounts)
+  // 從摘要工作台建立的草稿目標不在收件匣清單裡（後端刻意過濾），優先用它
+  const externalMention = useMentionsStore((state) => state.external)
   const selectedMention = useMemo(
-    () => mentions.find((item) => item.id === selectedMentionId) ?? null,
-    [mentions, selectedMentionId],
+    () =>
+      externalMention ?? mentions.find((item) => item.id === selectedMentionId) ?? null,
+    [externalMention, mentions, selectedMentionId],
   )
 
   const loadStyles = useSummaryStore((state) => state.loadStyles)
@@ -167,7 +170,10 @@ export default function App() {
 
         <main className="flex min-w-0 flex-1 flex-col">
           {view === 'summary' ? (
-            <SummaryWorkspace space={selectedSpace} />
+            <SummaryWorkspace
+              space={selectedSpace}
+              onDraftCreated={() => setView('mentions')}
+            />
           ) : (
             <DraftReplyWorkspace mention={selectedMention} />
           )}

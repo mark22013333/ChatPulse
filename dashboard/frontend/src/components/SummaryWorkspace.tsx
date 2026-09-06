@@ -27,13 +27,17 @@ import { api, errorMessage } from '@/lib/api'
 import { copyText } from '@/lib/clipboard'
 import { providerLabel, useProviderStore } from '@/store/providers'
 import { useSummaryStore } from '@/store/summary'
+import { useDraftStore } from '@/store/draft'
+import { useMentionsStore } from '@/store/mentions'
 import type { Space, SummaryStyleValue } from '@/lib/types'
 
 interface SummaryWorkspaceProps {
   space: Space | null
+  /** 草稿目標建立好、已開始生成時呼叫，由外層切到草稿工作區 */
+  onDraftCreated?: () => void
 }
 
-export function SummaryWorkspace({ space }: SummaryWorkspaceProps) {
+export function SummaryWorkspace({ space, onDraftCreated }: SummaryWorkspaceProps) {
   const {
     styles,
     style,
@@ -54,6 +58,36 @@ export function SummaryWorkspace({ space }: SummaryWorkspaceProps) {
 
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [publishing, setPublishing] = useState(false)
+  const [draftingReply, setDraftingReply] = useState(false)
+
+  const selectExternal = useMentionsStore((state) => state.selectExternal)
+  const generateDraft = useDraftStore((state) => state.generate)
+
+  /**
+   * 對這個對話產生回覆草稿。
+   *
+   * 私訊不會出現在 Mention 收件匣（沒人會在私訊裡 @ 你），所以草稿流程本來
+   * 用不到。這裡請後端挑出「對方最後說的那則」並合成一個草稿目標，
+   * 拿到之後就走原本那條草稿串流——不必為私訊另寫一份邏輯。
+   */
+  const handleDraftReply = async () => {
+    if (!space) return
+    setDraftingReply(true)
+    try {
+      const res = await api.createDraftTarget({ space_id: space.id })
+      if (!res.mention) {
+        toast.error('這個對話裡找不到別人發的訊息，沒有東西可以回覆')
+        return
+      }
+      selectExternal(res.mention)
+      void generateDraft(res.mention.id) // 不等它跑完，切過去就看得到串流
+      onDraftCreated?.()
+    } catch (err) {
+      toast.error(errorMessage(err))
+    } finally {
+      setDraftingReply(false)
+    }
+  }
 
   // store 記著「目前這份摘要是哪個 Space 的」，用它判斷要不要清空
   const streamedSpaceId = useSummaryStore((state) => state.streamedSpaceId)
@@ -151,6 +185,18 @@ export function SummaryWorkspace({ space }: SummaryWorkspaceProps) {
             aria-invalid={Boolean(limitError)}
           />
         </div>
+
+        {/* 產生回覆草稿放在這裡而不是摘要結果區——私訊的重點常常就是「怎麼回」，
+            不該逼使用者先跑一次摘要才拿得到草稿。選了 Space 就能按。 */}
+        <Button
+          variant="outline"
+          onClick={() => void handleDraftReply()}
+          disabled={!space || streaming || draftingReply}
+          title="針對這個對話裡對方最後說的話，產生一則回覆草稿"
+        >
+          {draftingReply ? <Loader2Icon className="animate-spin" /> : <WandSparklesIcon />}
+          產生回覆草稿
+        </Button>
 
         {streaming ? (
           <Button variant="outline" onClick={abort}>
