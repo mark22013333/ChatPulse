@@ -1,0 +1,23 @@
+# 儀表板的建置產物（dashboard/frontend/dist/）進版控，讓同事 clone 下來就有畫面、
+# 不必安裝 Node.js。這裡把整個目錄標成非文字檔，原因有兩個：
+#
+#   1. **防止損壞**：Windows 的 `core.autocrlf` 預設會對「git 判定為文字」的檔案
+#      做行尾轉換。字型（.woff2）與壓縮後的 JS 若被誤判，checkout 出來就是壞檔，
+#      而症狀是瀏覽器端的怪錯誤，很難回推到 git 設定。
+#   2. **避免無意義的 diff**：這些檔案不是給人編輯的，行尾轉換對瀏覽器毫無差別，
+#      卻會讓每個平台 commit 出不同的位元組。
+dashboard/frontend/dist/** -text
+
+# 前端原始碼維持 LF。啟動時的來源雜湊（scripts/webapp.py）雖然已經把 CRLF
+# 正規化掉了，但讓兩個平台建置出位元組相同的產物，可以省下無謂的重建與 diff。
+dashboard/frontend/src/** text eol=lf
+dashboard/frontend/*.ts text eol=lf
+dashboard/frontend/*.json text eol=lf
+dashboard/frontend/index.html text eol=lf
+
+# Shell 腳本一定要 LF，否則在 macOS/Linux 上會出現
+# 「bad interpreter: /usr/bin/env bash^M」這種難查的錯誤。
+*.sh text eol=lf
+# 反過來，.bat 在 Windows 上要 CRLF 才保險——舊版 cmd.exe 對 LF-only 的批次檔
+# 有已知的解析問題（尤其是跨行的 goto 標籤）。
+*.bat text eol=crlf

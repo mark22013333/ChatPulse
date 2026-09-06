@@ -31,7 +31,7 @@
 - **狀態**：規格 v2.0 的 Phase 0／1／2 全部完成，21 條驗收條件逐條有證據。
   之後又加了三件規格書沒寫的事：**圖片支援**、**Windows 支援**、**同事安裝體驗**
 - **分支**：`main`，與 `origin/main` 同步
-- **服務**：`./scripts/start-web.sh` → http://localhost:8000
+- **服務**：`./chatpulse.sh web` → http://localhost:8000（開發時加 `--dev` 開自動重載）
 - **AI 供應商**：`claude_cli`（吃本機 Claude Code 訂閱，預設）與 `gemini`（每天 20 次）。
   另有 `claude`／`auto` 兩個別名。**`claude_api` 已於 2026-09-05 移除**（從未對真實 API 跑過）
 - **同事入口**：`./chatpulse.sh`（macOS/Linux）／`chatpulse.bat`（Windows），
@@ -43,7 +43,7 @@
 
 ```bash
 cd /Users/cheng/google-chat-bot
-./scripts/start-web.sh          # 另開一個終端
+./chatpulse.sh web              # 另開一個終端
 
 export CHATPULSE_BOOTSTRAP_USER_ID=users/109827265019732088641
 .venv/bin/python tests/e2e/check_stored_evidence.py   # 從資料庫重查宣稱
@@ -69,7 +69,7 @@ npm --prefix dashboard/frontend run test              # 前端 32 項
 
 | 項目 | 狀態 | 下一步 |
 | :--- | :--- | :--- |
-| **`chatpulse.bat` 從未在 Windows 上跑過** | 語法與流程照 cmd 行為寫的，但這台是 macOS，**未經實機驗證** | 找第一位 Windows 同事安裝時在旁邊看著。這是目前最大的未驗證項 |
+| **`chatpulse.bat` 的 Windows 實測** | 2026-09-06 首次實機跑過，**抓到一個真 bug**：`onboard.py` 的 Windows 分支直接跑 uvicorn、跳過前端建置，使用者一開瀏覽器就撞見「找不到前端建置產物」。已修（見下方「Windows 啟動儀表板」）。**修法本身仍未經 Windows 實機驗證** | 請原回報者再跑一次 `chatpulse.bat web`，確認看到畫面而不是那段文字 |
 | **Chat app 名稱要改成工具名** | 原為 `T-Bot`，2026-09-06 一度改成 `MarkCheng`，但那是錯的——App name 是**專案層級共用設定**，取人名會讓同事的訊息顯示成 `王小明 [MarkCheng]` | 改成 `ChatPulse` 之類的工具名。位置見 ADR-0001 |
 | **Gemini 的圖片路徑未驗** | `inlineData` 依官方文件實作，但沒對真實 API 跑過（不想燒每天 20 次配額） | 有配額餘裕時送一張圖驗一次；欄位名與大小上限都未實測 |
 | **「兩位真人 Viewer 各自 OAuth」未驗** | 只有一個 Google 帳號。授權隔離邏輯已用「資料庫建第二位 viewer + session」走 HTTP 層驗過 | 與上面的 Windows 實測合併做：找同事跑一次完整安裝就同時驗掉這兩條 |
@@ -122,6 +122,45 @@ npm --prefix dashboard/frontend run test              # 前端 32 項
 - **透過 API 送出的訊息一定會帶「歸屬標示」**（發送者名字旁的灰底 app 名稱），
   官方明說是設計行為，**關不掉**，只能改文字。詳見 ADR-0001
 
+### Windows 啟動儀表板（2026-09-06 實機回報後修正）
+
+- **症狀**：Windows 同事跑 `chatpulse.bat`，瀏覽器開起來卻是一段純文字
+  「找不到前端建置產物」。macOS 上怎麼試都正常。
+- **根因**：`onboard.py` 的 `_start_dashboard()` 有 `if IS_WINDOWS` 分支——
+  macOS 交給 `start-web.sh`（裡面會 `npm install` + `npm run build`），
+  Windows 那側只有一行 uvicorn，**整段建置被跳過**。而 `dist/` 當時在 gitignore 裡，
+  同事 clone 下來必然沒有產物，所以是 100% 重現、不是偶發。
+- **教訓**：這個檔案開頭就寫了「兩份腳本必然漂移，所以邏輯統一放 Python」，
+  結果漂移發生在**同一個函式的 if/else 兩側**。把邏輯搬進同一個檔案不等於統一，
+  **只要還有 `if IS_WINDOWS` 分開做同一件事，就還是兩份實作**。
+- **現在的架構**：`scripts/webapp.py` 是儀表板啟動的唯一實作，
+  `chatpulse.sh` / `chatpulse.bat` / `start-web.sh` 全是薄殼。要改啟動流程只改那一個檔案。
+- **`dist/` 現在進版控**（`.gitignore` 有 `!dashboard/frontend/dist/` 的例外）。
+  改完前端**記得把重建結果一起 commit**，否則同事 clone 到的是舊畫面。
+  啟動時會用 `dist/.buildinfo.json` 的來源雜湊比對，過期且有 npm 就自動重建並提醒你。
+- **為什麼用內容雜湊不用 mtime**：git clone 會把所有檔案的 mtime 設成 checkout 當下，
+  用 mtime 判斷新舊會讓每個同事一 clone 就被要求重建。
+- **Windows 上呼叫 npm 必須用 `shutil.which("npm")` 拿完整路徑**：
+  npm 實際是 `npm.cmd`，`subprocess` 不套用 PATHEXT，直接傳 `"npm"` 會 FileNotFoundError。
+- **輸出緩衝**：stdout 不是終端機時 Python 會整批緩衝，而子行程（pip/npm/uvicorn）
+  直接寫 fd，於是引導訊息全部堆到子行程輸出**後面**，順序亂到看不懂。
+  `webapp.unbuffer_output()` 在任何輸出前處理掉這件事（順帶把編碼錯誤設成
+  `errors="replace"`，免得沒經過 .bat 時 cp950 主控台印中文直接拋例外中止）。
+- **`.bat` 必須是 CRLF**。cmd.exe 執行 `goto` 時用位元組偏移量重新定位並逐行重讀，
+  對 LF-only 批次檔的處理不穩，而 `chatpulse.bat` 剛好有 `goto` 跳轉、標籤、
+  多行 `( )` 區塊三個高風險特徵。原本這件事取決於每位同事的 `core.autocrlf`
+  設定（Git for Windows 精靈預設 true 會沒事，改過的人就中獎），
+  現在由 `.gitattributes` 的 `*.bat text eol=crlf` 保證。
+  實測：clone 出來的 chatpulse.bat 是 81 行全 CRLF。
+- **專案路徑不要含 `& | < > ^ %`**。`claude` 在 Windows 上是 `claude.cmd`，
+  subprocess 執行 .cmd 會隱式經過 cmd.exe，引數被解析兩次——路徑裡一個 `&`
+  就會讓 cmd 在那裡把命令切成兩段（`C:\Users\me\R&D\proj` 這種資料夾名
+  在研發單位不罕見）。`onboard.py` 的 `_windows_path_hazard()` 會事先偵測並警告。
+- **不要把路徑內嵌進 `python -c` 的原始碼字串**，用 `sys.argv` 傳。
+  含單引號的路徑（`C:\Users\O'Brien\…`）會讓探針語法錯誤，而錯誤被
+  `capture_output` 吃掉，表現是「AI 供應商」那一項安靜地什麼都不顯示——
+  是靜默誤判，不是報錯。
+
 ### 這台機器與工具
 
 - **zsh 有 `noclobber`**：`cmd > file` 會失敗，要用 `>|`
@@ -160,7 +199,8 @@ core/            共用封裝（Google Chat／AI 供應商／SQLite／加密／�
   attachments.py 圖片挑選、縮圖、token 預算控管
 mcp_app/         MCP 入口（5 個工具）、CLI 摘要、OAuth 授權精靈
 dashboard/       FastAPI 後端 ＋ React 19 前端
-scripts/         onboard.py（引導邏輯，兩平台共用）、doctor.sh、start-web.sh 等
+scripts/         onboard.py（引導邏輯）、webapp.py（儀表板啟動）——兩平台共用這兩份；
+                 doctor.sh 與 start-web.sh 是薄殼
 tests/e2e/       八套端對端測試，對真實 API 取證、不用 mock
   reports/       測試報告落點（gitignore）
 docs/            api-contract.md（契約）、R1-findings.md、verification-log.md、adr/
