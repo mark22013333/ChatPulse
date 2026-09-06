@@ -171,12 +171,87 @@ def _code_section(code_blocks: Optional[List[Dict[str, Any]]]) -> str:
     )
 
 
+def _short_time(value: str) -> str:
+    """RFC3339 -> 給人看的短時間。
+
+    切法與 `format_conversation()` 完全一致（同樣是 UTC、同樣切到分鐘），
+    這樣〔涵蓋範圍〕寫的起迄時間與底下每一行的時間戳對得起來。
+    兩邊各自格式化就會出現「範圍寫台北時間、內文寫 UTC」這種對不上的情況。
+    """
+    return (value or "")[:16].replace("T", " ")
+
+
+def _context_section(
+    context_blocks: List[Dict[str, Any]], coverage: str
+) -> str:
+    """組裝【對話脈絡】。
+
+    **這一段是整個改動的重點，不是加分項。** 在此之前區塊標題寫死成
+    「【該討論串的完整對話】」，而私訊底下只有一行——那是個假承諾：
+    模型收到的訊號是「這段對話就只有這麼多，沒有更多脈絡了」，它不會說
+    「我脈絡不足」，它會直接編。更糟的是若把多個 thread 的內容塞進同一個標題底下，
+    錯誤會從「明顯的資訊不足」升級成「看起來很有脈絡的錯誤歸因」。
+
+    所以每個區塊都要能表達三件事：**來源**（同一串／同一聊天室的扁平序列／
+    別的討論串）、**邊界**（幾則、涵蓋哪段時間）、**錨點**（要回的是哪一則）。
+    """
+    if not context_blocks:
+        return (
+            "\n\n【對話脈絡】系統沒有取到任何脈絡訊息，你只看得到上面那則。"
+            "**不要**假裝知道背景，回話時直接問回去缺什麼。"
+        )
+
+    total = sum(int(b.get("count") or 0) for b in context_blocks)
+    stamps = [
+        s
+        for b in context_blocks
+        for s in (b.get("time_range") or ("", ""))
+        if s
+    ]
+    span = (
+        f"{_short_time(min(stamps))} ~ {_short_time(max(stamps))}"
+        if stamps
+        else "時間不明"
+    )
+
+    head = [
+        "\n\n【對話脈絡】",
+        f"〔涵蓋範圍〕共 {total} 則，{span}。要回覆的那一則在下方以 ▶ 標記。",
+        "這是系統能取到的全部；超出這個範圍的內容你看不到。"
+        "資訊不足以回答時，請在回話中明確問回去缺什麼，**不要推測、不要填補**。",
+    ]
+    if coverage == "partial":
+        head.append(
+            "〔注意〕系統沒能取回這則訊息周圍的完整對話（它可能太舊了），"
+            "以下脈絡**不保證連續**，判斷時要更保守。"
+        )
+
+    parts: List[str] = ["\n".join(head)]
+    for b in context_blocks:
+        rng = b.get("time_range") or ("", "")
+        when = (
+            f"，{_short_time(rng[0])} ~ {_short_time(rng[1])}"
+            if rng[0] or rng[1]
+            else ""
+        )
+        parts.append(f"\n--- {b.get('label') or '對話'}{when} ---")
+        # 警語放在區塊「之前」而不是統一塞進 _BASE_RULES 最後：
+        # 模型對就近的指令服從度較高，而這條警語擋的正是「把別串結論當本串事實」。
+        if b.get("note"):
+            parts.append(str(b["note"]))
+        parts.append(str(b.get("text") or "（這個區塊沒有可讀的內容）"))
+
+    return "\n".join(parts)
+
+
 def draft_reply_prompt(
     *,
-    mention_text: str,
+    anchor_text: str,
     mention_sender: str,
     space_name: str,
-    thread_text: str,
+    space_type_label: str,
+    context_blocks: List[Dict[str, Any]],
+    coverage: str = "full",
     reference_blocks: List[Dict[str, Any]],
     code_blocks: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
@@ -188,6 +263,10 @@ def draft_reply_prompt(
     code_blocks 是同一個洞見再往前一步：有時答案不在任何 Space，而在程式碼裡
     （ADR-0006）。它一定帶著環境與 commit——PM 問的往往正是「正式環境到底跑哪一版」，
     答案沒有指明環境就等於沒有回答。
+
+    `context_blocks` 取代了原本的 `thread_text: str`（見 `_context_section`）。
+    `anchor_text` 可能是**多則**——私訊常把一個問題拆三則發，只印最後一則會讓
+    模型照那句客套話回（見 `core/draft_context._collect_anchor_run`）。
     """
     refs = ""
     if reference_blocks:
@@ -204,28 +283,32 @@ def draft_reply_prompt(
             "不能寫成「如同 X 群組說的」。\n" + "\n".join(parts)
         )
     else:
-        refs = "\n\n【參考聊天室的脈絡】Viewer 未指定任何參考聊天室，僅依討論串本身作答。"
+        # 不要寫「僅依討論串本身作答」——私訊根本沒有討論串，那句話會讓模型
+        # 以為自己漏看了什麼，或反過來把扁平序列腦補成一個討論串
+        refs = "\n\n【參考聊天室的脈絡】Viewer 未指定任何參考聊天室，僅依上面的對話脈絡作答。"
 
     code = _code_section(code_blocks)
+    context = _context_section(context_blocks, coverage)
 
     return f"""你的任務是幫一位工程師草擬「回覆別人 @ 他的那則訊息」的回話。
 
 【被 @ 的訊息】
-聊天室：{space_name}
+聊天室：{space_name}（{space_type_label}）
 提問者：{mention_sender}
-內容：{mention_text}
-
-【該討論串的完整對話】
-{thread_text}
+內容：
+{anchor_text}
+{context}
 {refs}
 {code}
 
 【輸出格式】嚴格依下列兩個章節輸出，不要增加其他章節：
 
 ### 🧭 脈絡分析
-- **發生什麼事**：（這個討論串在講什麼，提問者想知道什麼）
+- **發生什麼事**：（這段對話在講什麼，提問者想知道什麼）
 - **關鍵決策**：（已經定案的事）
 - **未解問題**：（還沒有答案的部分，以及回話時要小心的地方）
+- **脈絡涵蓋**：（你實際看到的是哪個範圍、有沒有明顯缺口。這一欄不可省略——\
+「脈絡不足」必須是你正面回答的事，不是可以沉默略過的事）
 - **程式碼佐證**：（若有查程式碼，寫明查的是哪個環境／分支／commit，以及關鍵的檔案:行號；沒查就寫「未查程式碼」，查了但沒相符結果就寫「查了 X 分支，無相符」）
 
 ### ✍️ 建議回話
@@ -234,6 +317,8 @@ def draft_reply_prompt(
 直接回答提問者的問題，不要客套開場；\
 只寫你在上面資料中真的看得到的事實，沒有依據的數字、日期、人名一律不要寫；\
 若資料不足以回答，就在回話中明確問回去缺什麼；\
+若脈絡顯示這個問題已經被別人回答了，**仍然要寫出你自己的回話**，\
+並在〈脈絡分析〉的「未解問題」註明已被誰回答——不要把回話寫成「看起來 XXX 已經回覆了」；\
 不要出現「根據參考群組」這類提問者看不懂的內部說法。）
 
 {_BASE_RULES}

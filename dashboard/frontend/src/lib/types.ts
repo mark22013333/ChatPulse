@@ -205,6 +205,21 @@ export interface DraftReferenceSpace {
   message_count: number
 }
 
+/** Draft Reply 的脈絡形狀（後端 `core/draft_context.py` 的 `DraftContext.to_meta()`）。 */
+export interface DraftContextMeta {
+  /**
+   * `flat_window`：私訊／不分串聊天室，取錨點前後窗
+   * `thread`：群組長討論串，維持原本的「整串」
+   * `thread_thin`：群組薄串（有人 @ 你但還沒人回），原串 + 帶警語的跨串小窗
+   */
+  mode: 'flat_window' | 'thread' | 'thread_thin'
+  message_count: number
+  /** `partial` 代表系統沒能取回錨點周圍的完整對話（那則太舊了） */
+  coverage: 'full' | 'partial'
+  time_range: { start: string; end: string }
+  blocks: { kind: string; label: string; count: number }[]
+}
+
 /** SSE `meta` 事件：摘要與 Draft Reply 共用一個型別，欄位各自可選。 */
 export interface SseMeta {
   type: 'meta'
@@ -214,6 +229,12 @@ export interface SseMeta {
   style?: SummaryStyleValue
   mention_id?: number
   thread_message_count?: number
+  /**
+   * 這次實際送進模型的脈絡是什麼形狀。**這是使用者判斷草稿可不可信的唯一依據**：
+   * 私訊與不分串聊天室走「錨點前後窗」，群組走「同一討論串」，兩者的涵蓋範圍
+   * 差很多，而從草稿內容完全看不出來是哪一種。
+   */
+  context?: DraftContextMeta
   reference_spaces?: DraftReferenceSpace[]
   /**
    * 實際送進模型的圖片張數。後端一直有送這個欄位，但前端沒顯示，

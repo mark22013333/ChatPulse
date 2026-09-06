@@ -51,7 +51,8 @@ export CHATPULSE_BOOTSTRAP_USER_ID=users/109827265019732088641
 .venv/bin/python tests/e2e/test_attachments.py        # 圖片附件與視覺
 .venv/bin/python tests/e2e/test_static.py             # 靜態托管、授權迴歸
 .venv/bin/python tests/e2e/test_add_annotation.py     # Mention 判定條件
-npm --prefix dashboard/frontend run test              # 前端 32 項
+npm --prefix dashboard/frontend run test              # 前端 46 項
+.venv/bin/python -m unittest discover -s tests/unit   # 單元 47 項（零 API、零配額、0.01 秒）
 ```
 
 **配額說明（原本這裡寫「不消耗任何 AI 配額」，不精確）**：這六套**不動 Gemini
@@ -69,7 +70,7 @@ npm --prefix dashboard/frontend run test              # 前端 32 項
 
 | 項目 | 狀態 | 下一步 |
 | :--- | :--- | :--- |
-| **Draft Reply 的脈絡只有 1 則（私訊）** | 設計已完成並經第二意見批判，**尚未實作**。完整方案見 `docs/draft-context-design.md`（463 行，含逐行改動表）。使用者已同意方向 | 照設計實作 `core/draft_context.py`；動 prompt 簽章前先補單元測試當安全網 |
+| **Draft Reply 的脈絡只有 1 則（私訊）** | **2026-09-06 已實作**（`core/draft_context.py` ＋ 47 項單元測試）。同一個私訊實測：脈絡 1 則→7 則、圖片 1 張→3 張；群組長串驗證與改動前逐則相同 | 觀察一段時間。若「隔很久重問同一件事」常被 48h 上界切掉，把 `DRAFT_WINDOW_HOURS` 調成 168（不要拿掉）；若群組薄串開始張冠李戴，設 `CHATPULSE_DRAFT_CROSS_THREAD=0` |
 | **程式碼佐證的前端 UI** | 後端已完成（CRUD 端點 + draft_stream 串接 + `code_meta` SSE 事件），**前端沒有設定頁**，目前只能用 curl 操作 | 做專案設定頁 + 草稿工作區的專案選擇器 + 顯示 `code_meta` |
 | **儀表板自動 bootstrap** | 首次進入要手動按「匯入既有憑證」 | 偵測本機有有效 token 就自動匯入 |
 | **推播摘要／送出回話的狀態在元件 useState** | 切走頁籤會遺失，有重複送出的風險。短操作，影響小 | 搬進 store（與串流狀態同樣的處理） |
@@ -133,6 +134,23 @@ npm --prefix dashboard/frontend run test              # 前端 32 項
   對照組：草稿走 `list_thread_messages()`（`core/chat_client.py:331-356`），
   用 `filter='thread.name = "…"'` ＋ 最多翻 50 頁，撈的是**整串**，脈絡一定完整。
   兩者的差異值得記住——同樣叫「讀訊息」，一個是時間窗、一個是討論串。
+- **`spaceThreadingState` 不能單獨當「有沒有討論串」的判準**（2026-09-06 實測 436 個
+  Space）。官方文件說 `UNTHREADED_MESSAGES` 涵蓋私訊，**實際回傳不是**：
+
+  | spaceType | spaceThreadingState | 數量 |
+  | :--- | :--- | ---: |
+  | GROUP_CHAT | THREADED_MESSAGES | 180 |
+  | **DIRECT_MESSAGE** | **THREADED_MESSAGES** | **131** |
+  | SPACE | THREADED_MESSAGES | 98 |
+  | SPACE | UNTHREADED_MESSAGES | 27 |
+
+  照文件寫 `spaceThreadingState in (...)` 的話**私訊一則都修不到**——正是要修的那個 bug，
+  而且改完看起來像修好了。判準必須與 `spaceType == "DIRECT_MESSAGE"` **取聯集**
+  （`core/draft_context.is_flat_space()`）。抽樣佐證：DM 30 則/25 thread、
+  SPACE/UNTHREADED 30 則/30 thread（皆扁平）；GROUP_CHAT 兩樣本一個 30/30、
+  一個 30/22 最長 8 則（**真的有串**），所以 GROUP_CHAT 走討論串路徑。
+  `docs/draft-context-design.md` 的 T-2 建議照文件用 `("UNTHREADED_MESSAGES",
+  "GROUPED_MESSAGES")`，那份是**未實測的推測，不要照抄**。
 
 ### Windows 啟動儀表板（2026-09-06 實機回報後修正）
 
@@ -223,6 +241,7 @@ mcp_app/         MCP 入口（5 個工具）、CLI 摘要、OAuth 授權精靈
 dashboard/       FastAPI 後端 ＋ React 19 前端
 scripts/         onboard.py（引導邏輯）、webapp.py（儀表板啟動）——兩平台共用這兩份；
                  doctor.sh 與 start-web.sh 是薄殼
+tests/unit/      純函式單元測試（不打 API），`.venv/bin/python -m unittest discover -s tests/unit`
 tests/e2e/       八套端對端測試，對真實 API 取證、不用 mock
   reports/       測試報告落點（gitignore）
 docs/            api-contract.md（契約）、R1-findings.md、verification-log.md、adr/

@@ -25,10 +25,38 @@ import { splitDraft, useDraftStore } from '@/store/draft'
 import { useMentionsStore } from '@/store/mentions'
 import { providerLabel, useProviderStore } from '@/store/providers'
 import { filterSpaces, useSpacesStore } from '@/store/spaces'
-import type { Mention } from '@/lib/types'
+import type { DraftContextMeta, Mention } from '@/lib/types'
 
 interface DraftReplyWorkspaceProps {
   mention: Mention | null
+}
+
+const CONTEXT_MODE_LABEL: Record<DraftContextMeta['mode'], string> = {
+  flat_window: '前後脈絡',
+  thread: '討論串',
+  thread_thin: '討論串＋鄰近',
+}
+
+/** 把 meta.context 濃縮成一行。舊版後端沒有這個欄位，退回原本的「討論串 N 則」。 */
+function contextLabel(context: DraftContextMeta | undefined, fallback: number | undefined) {
+  if (!context) return `討論串 ${fallback ?? 0} 則`
+  const label = CONTEXT_MODE_LABEL[context.mode] ?? '脈絡'
+  const partial = context.coverage === 'partial' ? '（不連續）' : ''
+  return `${label} ${context.message_count} 則${partial}`
+}
+
+/** hover 才需要看的細節：涵蓋的時間區間與各區塊的組成。 */
+function contextTitle(context: DraftContextMeta | undefined) {
+  if (!context) return '本次送進模型的討論串則數'
+  const lines = context.blocks.map((b) => `${b.label}：${b.count} 則`)
+  const { start, end } = context.time_range
+  if (start && end) {
+    lines.push(`涵蓋 ${formatDateTime(start)} ~ ${formatDateTime(end)}`)
+  }
+  if (context.coverage === 'partial') {
+    lines.push('系統沒能取回這則訊息周圍的完整對話（它可能太舊了），脈絡不保證連續')
+  }
+  return lines.join('\n')
 }
 
 /**
@@ -260,8 +288,17 @@ export function DraftReplyWorkspace({ mention }: DraftReplyWorkspaceProps) {
             <div className="space-y-4">
               {meta ? (
                 <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
-                  <span className="font-mono">
-                    討論串 {meta.thread_message_count ?? 0} 則
+                  {/* 脈絡的「形狀」一定要顯示：私訊走前後窗、群組走討論串，
+                      涵蓋範圍差很多，而從草稿內容完全看不出來是哪一種。
+                      在此之前這裡只寫「討論串 N 則」，私訊永遠顯示 1 則也沒人看得懂為什麼。 */}
+                  <span
+                    className={cn(
+                      'font-mono',
+                      meta.context?.coverage === 'partial' && 'text-amber-600 dark:text-amber-400',
+                    )}
+                    title={contextTitle(meta.context)}
+                  >
+                    {contextLabel(meta.context, meta.thread_message_count)}
                   </span>
                   {/* 圖片張數一定要顯示：附件有沒有被讀進去，從草稿內容看不出來，
                       使用者只能猜。顯示 0 張也有意義——那代表「讀了但沒有圖」。 */}

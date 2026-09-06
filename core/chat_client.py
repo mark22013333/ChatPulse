@@ -301,19 +301,34 @@ class GoogleChatClient:
         return collected
 
     def list_messages_since(
-        self, space_id: str, since: datetime, page_size: int = 100
+        self,
+        space_id: str,
+        since: datetime,
+        page_size: int = 100,
+        *,
+        max_messages: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """取回某時間點之後的新訊息（採集器實作 B 用）。
 
         實測 messages.list 的 filter 只接受 `createTime >`（`>=` 回 400），
         且不支援任何 mention 相關欄位——所以判定必須在本地做（6.2）。
+
+        `max_messages` 是給草稿脈絡窗用的上限：它只需要錨點附近的幾十則，
+        沒有這個參數的話一個熱門 Space 會照 MAX_PAGES 翻到 50 頁。
+        採集器不傳這個參數，行為與加它之前完全一致。
         """
         collected: List[Dict[str, Any]] = []
         page_token: Optional[str] = None
         flt = f'createTime > "{rfc3339(since)}"'
 
         for _ in range(cfg.MAX_PAGES):
-            params: Dict[str, Any] = {"pageSize": page_size, "filter": flt}
+            size = page_size
+            if max_messages is not None:
+                remaining = max_messages - len(collected)
+                if remaining <= 0:
+                    break
+                size = min(page_size, remaining)
+            params: Dict[str, Any] = {"pageSize": size, "filter": flt}
             if page_token:
                 params["pageToken"] = page_token
             data = self._request("GET", f"{space_id}/messages", params=params)
@@ -322,7 +337,7 @@ class GoogleChatClient:
             if not page_token:
                 break
 
-        return collected
+        return collected[:max_messages] if max_messages is not None else collected
 
     def get_message(self, message_name: str) -> Dict[str, Any]:
         """取回單一則訊息。mentions 只存識別資訊，顯示時即時取回內容（九節）。"""
