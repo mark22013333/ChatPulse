@@ -76,8 +76,23 @@ def step(n: int, text: str) -> None:
     print(f"\n{c('36;1', f'[步驟 {n}/{TOTAL_STEPS}]')} {c('1', text)}")
 
 
+def _sym(fancy: str, plain: str) -> str:
+    """終端機編不了這個符號時退回 ASCII。
+
+    輸出串流設了 errors="replace"（不然 cp950 主控台印中文會直接中止），
+    但那會把 ✓ 與 ✗ **同時**變成 `?`——成功與失敗長得一模一樣，比沒有符號
+    還糟。所以先問這個編碼吃不吃得下，吃不下就換 [OK] / [X]。
+    """
+    enc = getattr(sys.stdout, "encoding", None) or "ascii"
+    try:
+        fancy.encode(enc)
+        return fancy
+    except (UnicodeEncodeError, LookupError):
+        return plain
+
+
 def ok(text: str) -> None:
-    print(f"  {c('32', '✓')} {text}")
+    print(f"  {c('32', _sym('✓', '[OK]'))} {text}")
 
 
 def warn(text: str) -> None:
@@ -85,9 +100,9 @@ def warn(text: str) -> None:
 
 
 def bad(text: str, nextstep: str = "") -> None:
-    print(f"  {c('31', '✗')} {text}")
+    print(f"  {c('31', _sym('✗', '[X]'))} {text}")
     if nextstep:
-        print(f"    {c('36', '→')} {nextstep}")
+        print(f"    {c('36', _sym('→', '->'))} {nextstep}")
 
 
 def explain(text: str) -> None:
@@ -103,7 +118,7 @@ def plain(text: str) -> None:
 
 def arrow(text: str) -> None:
     """下一步指示。與 bad() 的 → 同一個視覺語彙。"""
-    print(f"    {c('36', '→')} {text}")
+    print(f"    {c('36', _sym('→', '->'))} {text}")
 
 
 class _UI:

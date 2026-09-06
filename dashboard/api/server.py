@@ -1168,8 +1168,14 @@ def spa_fallback(path: str):
     if path.startswith("api/"):
         raise RouteNotFound(f"找不到這個 API 端點：/{path}")
     candidate = os.path.normpath(os.path.join(FRONTEND_DIST, path))
+    # 用 commonpath 而不是字串前綴比對：`dist-backup/secret` 這種路徑
+    # 的字串開頭也是 `…/dist`，前綴比對會放行；commonpath 比的是路徑元素。
+    try:
+        inside_dist = os.path.commonpath([FRONTEND_DIST, candidate]) == FRONTEND_DIST
+    except ValueError:
+        inside_dist = False  # 不同磁碟機（Windows）就不可能在 dist 底下
     # 防目錄穿越：normpath 之後必須仍在 dist 底下
-    if candidate.startswith(FRONTEND_DIST) and os.path.isfile(candidate):
+    if inside_dist and os.path.isfile(candidate):
         return FileResponse(candidate)
     dist_index = os.path.join(FRONTEND_DIST, "index.html")
     if os.path.exists(dist_index):

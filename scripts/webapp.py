@@ -432,7 +432,13 @@ def start(ui, dev: bool = False) -> int:
     if have_ui:
         _open_browser_when_ready(proc)
     try:
-        return proc.wait()
+        rc = proc.wait()
+        # 130／-2 是 Ctrl+C，那是使用者自己停的，不是故障
+        if rc not in (0, 130, -2):
+            print()
+            ui.bad(f"服務異常結束（結束代碼 {rc}）",
+                   "上面幾行是原始錯誤訊息，多半看得出缺什麼；看不懂就整段貼給維護者")
+        return rc
     except KeyboardInterrupt:
         # Ctrl+C 已經由終端機送給整個行程群組，子行程會自己收尾，
         # 這裡只要等它走完，不要留下孤兒行程。
