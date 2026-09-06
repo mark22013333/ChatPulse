@@ -20,9 +20,11 @@ import json
 import os
 import platform
 import shutil
+import socket
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -50,10 +52,15 @@ def unbuffer_output() -> None:
     （pip、npm、uvicorn）是直接寫檔案描述子的。結果是引導訊息全部堆到最後，
     排在子行程輸出之後——「正在建置…」出現在建置完成的訊息下面，順序一亂
     就完全看不懂。同事把畫面存成檔案回報問題時，看到的就是這種東西。
+
+    順便把編碼錯誤改成不中止：這些訊息裡有中文與 ✓✗ 符號，而 Windows 上
+    如果沒經過 chatpulse.bat（它會設 chcp 65001 與 PYTHONUTF8），主控台預設是
+    cp950，印這些字元會直接拋 UnicodeEncodeError 讓引導中止。顯示成 ? 很難看，
+    但比整個流程停在一個看不懂的例外好。
     """
     for stream in (sys.stdout, sys.stderr):
         try:
-            stream.reconfigure(line_buffering=True)
+            stream.reconfigure(line_buffering=True, errors="replace")
         except (AttributeError, OSError, ValueError):
             pass
 
@@ -227,21 +234,45 @@ def provider_summary(python: str = "") -> tuple:
 # 啟動
 # ----------------------------------------------------------------------
 
-def _open_browser_later(delay: float = 2.0) -> None:
-    """背景延遲開瀏覽器，等 uvicorn 綁好 port。
+def port_in_use() -> bool:
+    """8000 是不是已經有人在聽。"""
+    try:
+        with socket.create_connection((HOST, PORT), timeout=0.5):
+            return True
+    except OSError:
+        return False
 
-    webbrowser 模組跨平台（Windows 走 os.startfile、macOS 走 open），
-    所以不需要為各平台各寫一份。
+
+def _open_browser_when_ready(proc, timeout: float = 25.0) -> None:
+    """等服務真的起來之後才開瀏覽器。
+
+    不用固定延遲：啟動時間受機器速度與資料庫大小影響，猜短了會開出
+    「無法連線」（使用者只好自己重整，還以為壞了），猜長了是白等。
+
+    **就緒的判準是「port 連得上 **且** 我們的行程還活著」**，兩個條件缺一不可。
+    只看 port 會被騙：這個判準的第一版就只檢查連線，測試時故意讓別的程式
+    佔住 8000，結果那個程式也在 listen，於是輪詢判定「就緒」並開了瀏覽器——
+    使用者會被帶到一個完全不相干的服務。行程還活著才是真正該問的問題。
+
+    webbrowser 模組跨平台（Windows 走 os.startfile，macOS 走 open），
+    所以這裡不需要為各平台各寫一份。
     """
     def _go():
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                return  # 服務已經退出（綁不上 port、匯入失敗…），不要開
+            if port_in_use():
+                break
+            time.sleep(0.3)
+        else:
+            return
         try:
             webbrowser.open(URL)
         except Exception:
             pass  # 開不起來不影響服務，使用者自己貼網址就好
 
-    timer = threading.Timer(delay, _go)
-    timer.daemon = True
-    timer.start()
+    threading.Thread(target=_go, daemon=True).start()
 
 
 def start(ui, dev: bool = False) -> int:
@@ -315,12 +346,22 @@ def start(ui, dev: bool = False) -> int:
         ui.explain(detail.replace("；", "\n"))
         ui.explain("最省事的解法：裝好並登入 Claude Code，它用你現有的訂閱，不需要 API key。")
 
-    # ── 3. 啟動 ─────────────────────────────────────────────
+    # ── 3. 連接埠 ────────────────────────────────────────────
+    # 先問清楚再啟動。讓 uvicorn 自己去撞的話，使用者得到的是一行英文的
+    # 「[Errno 48] address already in use」，而這其實是最常見的情況之一：
+    # 上一次啟動的服務忘了關。
+    if port_in_use():
+        print()
+        ui.bad(f"連接埠 {PORT} 已經被佔用，服務起不來")
+        ui.arrow(f"多半是上一次啟動的還開著——先開 {URL} 看看是不是已經在跑了")
+        ui.arrow("如果是，回到那個視窗按 Ctrl+C 再重試；不是的話請關掉佔用它的程式")
+        return 1
+
+    # ── 4. 啟動 ─────────────────────────────────────────────
     print()
     if have_ui:
         ui.ok(f"儀表板：{URL}")
         ui.plain("       瀏覽器會自動開啟；要停止服務請在這個視窗按 Ctrl+C")
-        _open_browser_later()
     else:
         # 沒畫面就不開瀏覽器——把人丟到一個看不懂的錯誤頁，
         # 只會讓他離「該怎麼辦」更遠。指引留在這個視窗裡。
@@ -333,10 +374,23 @@ def start(ui, dev: bool = False) -> int:
         args += ["--reload", "--reload-dir", os.path.join(BASE_DIR, "dashboard"),
                  "--reload-dir", os.path.join(BASE_DIR, "core")]
     try:
-        return subprocess.call(args, cwd=BASE_DIR)
-    except KeyboardInterrupt:
-        return 0
+        # 用 Popen 而不是 call，是為了讓開瀏覽器的執行緒拿得到行程物件——
+        # 它要靠 proc.poll() 判斷服務是不是已經死了（見 _open_browser_when_ready）。
+        proc = subprocess.Popen(args, cwd=BASE_DIR)
     except FileNotFoundError:
         ui.bad("啟動失敗：找不到 uvicorn",
                f'執行："{python}" -m pip install -r requirements.txt')
         return 1
+
+    if have_ui:
+        _open_browser_when_ready(proc)
+    try:
+        return proc.wait()
+    except KeyboardInterrupt:
+        # Ctrl+C 已經由終端機送給整個行程群組，子行程會自己收尾，
+        # 這裡只要等它走完，不要留下孤兒行程。
+        try:
+            return proc.wait(timeout=10)
+        except (subprocess.TimeoutExpired, KeyboardInterrupt):
+            proc.terminate()
+            return 0
