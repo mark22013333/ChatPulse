@@ -131,26 +131,38 @@ export const useMentionsStore = create<MentionsState>((set, get) => ({
 /**
  * 依「從哪個狀態變到哪個狀態」重算計數。
  *
- * 一定要知道 `from`：以前這裡只看新狀態，變成 resolved 就把 pending 減一。
- * 但從摘要工作台挑的草稿目標（state='manual'）本來就不算在待處理裡，
- * 送出回話後被減這一下，「待處理」的數字會平白少一個。
- * manual 不加也不減——它不屬於收件匣的任何分頁。
+ * 一定要知道 `from`：只看新狀態的話，任何東西變成 resolved 都會把 pending
+ * 減一，包括本來就不在 pending 的項目——數字會慢慢失真而沒人發現。
+ *
+ * manual 併進 pending 計算（與 repository.count_mentions 一致）：
+ * 從摘要工作台挑的草稿目標也是「待我回覆」的事。
  */
+function bucket(state: MentionStateValue): keyof MentionCounts {
+  return state === 'resolved' ? 'resolved' : 'pending'
+}
+
 function recount(
   counts: MentionCounts,
   from: MentionStateValue,
   to: MentionStateValue,
 ): MentionCounts {
   const next = { ...counts }
-  if (from === 'pending') next.pending = Math.max(0, next.pending - 1)
-  if (from === 'resolved') next.resolved = Math.max(0, next.resolved - 1)
-  if (to === 'pending') next.pending += 1
-  if (to === 'resolved') next.resolved += 1
+  const a = bucket(from)
+  const b = bucket(to)
+  if (a === b) return next // 同一格內移動（例如 pending -> manual），數字不變
+  next[a] = Math.max(0, next[a] - 1)
+  next[b] += 1
   return next
 }
 
 export function selectMentionsByState(items: Mention[], state: MentionState): Mention[] {
   return items
-    .filter((item) => item.state === state)
+    .filter((item) =>
+      // manual（自己從摘要工作台挑的草稿目標）歸在待處理，
+      // 與後端的 list_mentions 保持一致——兩邊分歧會讓計數對不上清單
+      state === 'pending'
+        ? item.state === 'pending' || item.state === 'manual'
+        : item.state === state,
+    )
     .sort((a, b) => new Date(b.create_time).getTime() - new Date(a.create_time).getTime())
 }

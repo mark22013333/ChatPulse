@@ -119,19 +119,23 @@ function installFakeDraftStream() {
     const mainText = await page.locator('main').innerText()
     check('草稿內容顯示在畫面上', mainText.includes('草稿第3段。'))
 
-    console.log('\n【5】收件匣不該被污染')
-    const badgeAfter = (
-      await page.locator('nav button', { hasText: 'Mention 收件匣' }).innerText()
-    ).replace(/\D/g, '')
-    check('未讀數沒變', badgeBefore === badgeAfter, `${badgeBefore || 0} -> ${badgeAfter || 0}`)
-
-    // 直接問後端：收件匣清單裡不該出現 state=manual 的項目
+    console.log('\n【5】草稿目標要在「待處理」看得到')
+    // 這一段原本斷言相反的事（manual 不該進收件匣）。使用者實測後回報
+    // 「產完草稿在兩個分頁都找不到」——他按下按鈕的意思就是「我要回這則」，
+    // 那就是一件待辦。設計已改為 manual 併進待處理，測試跟著反過來。
     const inbox = await page.evaluate(async () => {
-      const r = await fetch('/api/v1/mentions?with_content=false', { credentials: 'same-origin' })
+      const r = await fetch('/api/v1/mentions?state=pending&with_content=false', {
+        credentials: 'same-origin',
+      })
       return r.json()
     })
     const manualInInbox = (inbox.mentions || []).filter((m) => m.state === 'manual').length
-    check('收件匣清單沒有 manual 項目', manualInInbox === 0, `找到 ${manualInInbox} 筆`)
+    check('待處理清單看得到手動草稿目標', manualInInbox > 0, `找到 ${manualInInbox} 筆`)
+    check(
+      '計數與清單長度一致（前後端對 manual 的歸類沒分歧）',
+      inbox.counts.pending === (inbox.mentions || []).length,
+      `counts.pending=${inbox.counts.pending} vs 清單 ${(inbox.mentions || []).length} 筆`,
+    )
 
     await page.evaluate(() => window.__push({ type: 'done', draft_id: null }))
     await page.waitForTimeout(400)
