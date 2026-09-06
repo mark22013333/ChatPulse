@@ -133,10 +133,15 @@ scope 含 chat 三項 ＋ `openid`/`userinfo.email`/`userinfo.profile`。
   "cached_at": "2026-09-05T01:20:00+00:00",
   "spaces": [
     { "id": "spaces/AAAAxLxqJxY", "displayName": "0.暫存", "type": "SPACE",
+      "threadingState": "THREADED_MESSAGES",
       "lastActiveTime": "2026-09-04T17:35:29.773695Z", "memberCount": 3, "pinned": false }
   ]
 }
 ```
+`threadingState` 來自 Google 的 `spaceThreadingState`，Draft Reply 用它決定脈絡的形狀。
+**不可單獨拿它判斷「有沒有討論串」**：2026-09-06 實測 436 個 Space，私訊回報的是
+`THREADED_MESSAGES` 而不是官方文件寫的 `UNTHREADED_MESSAGES`。判準要與 `type` 取聯集，
+見 `core/draft_context.is_flat_space()`。
 
 ### `GET /api/v1/messages`
 需登入。query：`space_id`（**必填**）、`limit`（1~1000，預設 50）。
@@ -256,17 +261,35 @@ mentions 表**只存識別資訊**，不存內容）。
 ```
 `reference_space_ids` **預設空陣列**（7.3：不自動選擇 Reference Space）。
 
-圖片：**只取被 @ 的那則與其討論串，Reference Space 的圖不取**。理由是成本——
+脈絡的**形狀由 Space 的結構語意決定**（`core/draft_context.py`），三種：
+
+| `mode` | 何時 | 取什麼 |
+| :--- | :--- | :--- |
+| `flat_window` | 私訊、或 `threadingState=UNTHREADED_MESSAGES` 的聊天室 | 錨點前 15 後 10 則，48h 上界＋錨點前保底 6 則 |
+| `thread` | 分串聊天室且該串 ≥ 2 則 | 整串（上限 `DRAFT_THREAD_LIMIT`=60）。**行為與 2026-09-06 之前一致** |
+| `thread_thin` | 分串聊天室但該串只有 1 則（有人 @ 你還沒人回） | 原串 ＋ 一個**獨立且帶警語**的跨串小窗（8 則） |
+
+圖片：**只取被 @ 的那則與其脈絡，Reference Space 的圖不取**。理由是成本——
 參考群組可能有好幾個、每個 50 則，圖片全抓會吃光預算；而真正需要看到的是
-「@ 我的那則自己帶的截圖」。被 @ 的那則的圖享有最高優先序，不會被同串雜圖擠掉。
+「@ 我的那則自己帶的截圖」。被 @ 的那則（含同一人的連發）享有最高優先序。
+圖片的取樣母體與文字脈絡是**兩份清單**：`flat_window` 的圖只取錨點連發 ＋ 之前 6 則
+（不含錨點之後、不含跨串小窗）。
 事件序：`meta` → 多個 `chunk` → `done`。
 `meta`：
 ```json
 { "type": "meta", "mention_id": 7, "space": "0.暫存", "thread_message_count": 12,
+  "context": {
+    "mode": "flat_window", "message_count": 12, "coverage": "full",
+    "time_range": { "start": "2026-09-04T05:37:22Z", "end": "2026-09-06T12:32:57Z" },
+    "blocks": [ { "kind": "flat_window", "label": "這個一對一私訊在該則前後的連續對話（前 6 則、後 5 則）", "count": 12 } ]
+  },
   "reference_spaces": [ { "space_id": "spaces/BBB", "space_name": "1.BU2-PG", "message_count": 50 } ],
   "provider": "claude_cli", "model": "claude-cli:opus",
   "image_count": 1, "images_skipped": [] }
 ```
+`thread_message_count` 保留舊名，值是 `context.message_count`（這次送進模型的對話則數）。
+`coverage: "partial"` 代表系統沒能取回錨點周圍的完整對話（那則太舊了），prompt 會據此
+要模型更保守，前端會把則數標成橘色。
 `done`：`{"type":"done","draft_id":3}`
 輸出內容為兩段 Markdown：`### 🧭 脈絡分析` 與 `### ✍️ 建議回話`。
 

@@ -14,6 +14,7 @@ E2E_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, E2E_DIR)
 sys.path.insert(0, os.path.dirname(os.path.dirname(E2E_DIR)))
 
+from core import config as cfg  # noqa: E402
 from e2e_lib import (  # noqa: E402
     TEMP_SPACE,
     blocked,
@@ -77,18 +78,29 @@ def main() -> int:
 
     # 確認被 @ 的那一側**沒有**這個事實，否則測不出 Reference Space 的作用。
     #
-    # 檢查範圍必須對齊草稿產生器真正讀得到的東西：它讀「該 Mention 的討論串」
-    # ＋「Viewer 勾選的 Reference Space」，**不讀**被 @ 那個 Space 的其他歷史訊息。
-    # 因此前提是「討論串裡沒有答案」，而不是「整個暫存群組沒有答案」。
-    # 討論串的內容就是下面第 2 節那句問題（第 5 節的 meta 會確認該串只有 1 則）。
+    # 檢查範圍必須對齊草稿產生器真正讀得到的東西。2026-09-06 起這件事變了：
+    # 薄討論串（有人 @ 你但還沒人回，正是本測試製造的形態）除了原串之外，
+    # 還會拿到一個帶警語的「跨串小窗」——同一個 Space 錨點之前最近幾則。
+    # 所以前提不再是「討論串裡沒有答案」，而是「討論串 ＋ 那個小窗裡沒有答案」。
+    # 這個前提會被前幾次測試留下的訊息污染，所以要當場驗一次，不能只靠註解宣稱。
     r = c.get("/api/v1/messages", params={"space_id": TEMP_SPACE, "limit": 200})
-    temp_text = " ".join(m["text"] for m in r.json().get("messages", []))
+    all_msgs = r.json().get("messages", [])
+    temp_text = " ".join(m["text"] for m in all_msgs)
     incidental = [p for p in SECRET_FACT_PARTS if p in temp_text]
     if incidental:
         info(
-            f"註：{incidental} 出現在暫存群組的其他歷史訊息中（含本測試前幾次執行留下的）。"
-            "草稿產生器讀不到那些訊息，故不影響前提——真正的證據是第 5 節的負對照。"
+            f"註：{incidental} 出現在暫存群組的歷史訊息中（含本測試前幾次執行留下的）。"
         )
+    # 跨串小窗最多回看 DRAFT_CROSS_FETCH 則，這裡用同樣的範圍做前提檢查
+    window_text = " ".join(m["text"] for m in all_msgs[-cfg.DRAFT_CROSS_FETCH :])
+    window_hits = [p for p in SECRET_FACT_PARTS if p in window_text]
+    check(
+        "暫存群組最近的訊息裡沒有答案（負對照的前提：跨串小窗不會外洩答案）",
+        not window_hits,
+        f"最近 {cfg.DRAFT_CROSS_FETCH} 則命中 {window_hits}"
+        if window_hits
+        else f"最近 {cfg.DRAFT_CROSS_FETCH} 則皆未命中",
+    )
 
     # ------------------------------------------------------------------
     section("2. 製造一則真的 Mention 並由採集器抓到（6.1、6.3）")
@@ -216,10 +228,21 @@ def main() -> int:
         str(meta.get("reference_spaces")),
     )
     check("meta 帶 thread_message_count", "thread_message_count" in meta, str(meta.get("thread_message_count")))
+    # 脈絡的形狀現在是明示的。這一段是使用者判斷草稿可不可信的唯一依據，
+    # 而它也是「私訊只拿到 1 則」那個 bug 的唯一可觀測證據。
+    mctx = meta.get("context") or {}
+    check("meta 帶 context（脈絡形狀）", bool(mctx), str(mctx)[:200])
     check(
-        "討論串只有那一則提問（證實非參考群組的輸入裡沒有答案）",
-        meta.get("thread_message_count") == 1,
-        f"thread_message_count={meta.get('thread_message_count')}",
+        "暫存群組是分串聊天室，所以走討論串路徑而不是扁平前後窗",
+        mctx.get("mode") in ("thread", "thread_thin"),
+        f"mode={mctx.get('mode')}",
+    )
+    thread_block = next((b for b in mctx.get("blocks") or [] if b.get("kind") == "thread"), {})
+    check(
+        "該討論串本身只有那一則提問（證實答案不在原串裡）",
+        thread_block.get("count") == 1,
+        f"thread 區塊 {thread_block.get('count')} 則，"
+        f"全部區塊 {[(b.get('kind'), b.get('count')) for b in mctx.get('blocks') or []]}",
     )
     no_ref_text = res_no_ref["text"]
     if quota:

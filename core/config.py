@@ -79,6 +79,36 @@ MAX_PAGES = 50  # 安全閥：避免 nextPageToken 異常時無限迴圈
 SUMMARY_STYLES = ("general", "technical", "action_only")
 SUMMARY_STYLE_DEFAULT = "general"
 
+# --- Draft Reply 的脈絡窗（docs/draft-context-design.md）---
+# **刻意不與 LIMIT_* 共用。** 摘要的 N 是「要摘多少東西」（產出涵蓋範圍），
+# 草稿的 K 是「要理解到多深」（輸入理解深度）。共用的話，使用者把摘要從 50
+# 調到 20（因為摘要讀起來太長）會靜默劣化草稿品質，而且 UI 上沒有任何跡象。
+DRAFT_WINDOW_FETCH = 60  # 為了找到錨點一次撈多少則
+DRAFT_CTX_BEFORE = 15  # 錨點之前保留幾則
+DRAFT_CTX_AFTER = 10  # 錨點之後保留幾則（用途是偵測「已經有人回答了」）
+# 時間上界過濾後，錨點前至少保留幾則。這個保底是關鍵：
+#   只用則數窗 → 冷清的私訊會撈到三個月前的閒聊當「脈絡」
+#   只用時間窗 → 冷清的私訊會一則都不剩，等於沒修
+#   交集 ＋ 保底 → 熱絡對話被 48h 截斷（正確）、冷清對話至少拿到最近 6 則（正確）
+DRAFT_CTX_MIN_BEFORE = 6
+DRAFT_WINDOW_HOURS = 48
+# 取代 draft 路徑原本寫死的 LIMIT_MAX（1000）。一個很長的討論串會把 1000 則
+# 灌進 prompt，而 Reference Space 那邊有 limit 卡著——系統在兩端都失控，只是方向相反。
+DRAFT_THREAD_LIMIT = 60
+# 群組薄串（有人 @ 你但還沒人回）才會用到的跨串小窗
+DRAFT_CROSS_FETCH = 25
+DRAFT_CROSS_BEFORE = 8
+# 跨串小窗的總開關。它的警語有沒有用是 prompt 工程的假設，沒有實測支撐；
+# 若實測發現群組草稿開始張冠李戴，關掉這個比繼續加強語氣正確。
+DRAFT_CROSS_THREAD_ENABLED = os.environ.get(
+    "CHATPULSE_DRAFT_CROSS_THREAD", "1"
+).strip().lower() not in ("0", "false", "no")
+# 貼圖脈絡的有效距離比文字短得多，所以圖片只往回看這麼多則
+DRAFT_IMAGE_BEFORE = 6
+# 同一人連續發話視為「一串連發」的間隔上限。私訊常見形態是把一個問題拆三則發
+# （「你好」「想問一下 X」「方便的話今天回我」），錨點會落在最後那句客套話上。
+DRAFT_ANCHOR_RUN_GAP_MINUTES = 5
+
 # --- 訊息圖片 ---
 # 總開關。關掉之後圖片只會以佔位符出現在對話文本裡（AI 知道有圖但看不到內容），
 # 不會有任何圖片位元組離開 Google。

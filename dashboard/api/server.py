@@ -38,7 +38,17 @@ if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
 from core import config as cfg
-from core import attachments, code_search, crypto, db, directory, identity, prompts, providers
+from core import (
+    attachments,
+    code_search,
+    crypto,
+    db,
+    directory,
+    draft_context,
+    identity,
+    prompts,
+    providers,
+)
 from core import repository as repo
 from core.chat_client import (
     GoogleChatClient,
@@ -269,6 +279,9 @@ def list_spaces_cached(viewer_id: int, refresh: bool = False) -> Dict[str, Any]:
                     "id": space_id,
                     "displayName": display,
                     "type": s.get("spaceType", "UNKNOWN"),
+                    # 草稿的脈絡形狀靠這個欄位決定（core/draft_context.py）。
+                    # 從快取拿是零成本——這份清單本來就會被 space_display_name 走一次。
+                    "threadingState": s.get("spaceThreadingState"),
                     "lastActiveTime": s.get("lastActiveTime"),
                     "memberCount": member.get("joinedDirectHumanUserCount"),
                     # 讓前端知道這個名字能不能改、以及現在的名字是誰取的
@@ -299,6 +312,22 @@ def space_display_name(viewer_id: int, space_id: str) -> str:
         if s["id"] == space_id:
             return s["displayName"]
     return space_id
+
+
+def space_shape(viewer_id: int, space_id: str) -> Tuple[Optional[str], Optional[str]]:
+    """回傳 (spaceType, spaceThreadingState)，決定草稿的脈絡形狀。
+
+    走的是已經在記憶體裡的 spaces 快取，不多打一次 Google API。
+
+    查不到（Space 不在清單裡、快取剛好沒有）就回 (None, None)——
+    `draft_context.is_flat_space()` 對它的判定是「當作有討論串」，
+    也就是**退回改動前的行為**。判不出來時保守，不要猜成扁平：
+    把別串內容當成同一段對話，比少給脈絡貴。
+    """
+    for s in list_spaces_cached(viewer_id)["data"]:
+        if s["id"] == space_id:
+            return s.get("type"), s.get("threadingState")
+    return None, None
 
 
 def name_resolver_for(viewer: Dict[str, Any]):
@@ -1400,24 +1429,38 @@ def draft_stream(
             mention_text = (mention_msg.get("text") or "").strip() or "（訊息內容已被刪除或無法取回）"
             learn_names([mention_msg])
 
-            # 該討論串完整對話（7.2 步驟 2）
-            thread_name = mention.get("thread_name")
-            if thread_name:
-                thread_msgs = client.list_thread_messages(
-                    mention["space_id"], thread_name, limit=cfg.LIMIT_MAX
-                )
-            else:
-                thread_msgs = [mention_msg]
-            learn_names(thread_msgs)
+            # 脈絡：形狀由 Space 的結構語意決定，不是由「撈回來剛好幾則」決定
+            # （core/draft_context.py 有完整理由與實測分布）。
+            space_type, threading_state = space_shape(viewer_id, mention["space_id"])
+
+            def _learn_then_resolve(msgs: List[Dict[str, Any]]):
+                """脈絡訊息取回來之後、組成文字之前：先從它們學名字。
+
+                順序不能顛倒——Google 不回 displayName，名字要從這批訊息的
+                mention annotation 現學，晚一步的話發言者全部會是「未知成員」。
+                """
+                learn_names(msgs)
+                return name_resolver_for(viewer)
 
             resolve = name_resolver_for(viewer)
+            ctx = draft_context.build(
+                client,
+                space_id=mention["space_id"],
+                space_type=space_type,
+                threading_state=threading_state,
+                anchor_msg=mention_msg,
+                thread_name=mention.get("thread_name"),
+                resolve=resolve,
+                on_retrieved=_learn_then_resolve,
+            )
+            resolve = name_resolver_for(viewer)
+
             mention_sender = (
                 (mention_msg.get("sender") or {}).get("displayName")
                 or resolve((mention_msg.get("sender") or {}).get("name"))
                 or mention.get("sender_display")
                 or "未知成員"
             )
-            thread_text = format_conversation(thread_msgs, resolve) or mention_text
 
             # Reference Space（7.1）
             ref_blocks = []
@@ -1436,20 +1479,29 @@ def draft_stream(
                     }
                 )
 
-            # 圖片：**只取被 @ 的那則與其討論串**，Reference Space 不取。
+            # 圖片：**只取被 @ 的那則與其脈絡**，Reference Space 不取。
             # 理由是成本——參考群組可能有好幾個、每個 50 則，圖片全抓會爆掉預算；
             # 而使用者真正需要看到的，是「@ 我的那則自己帶的截圖」
             # （實測工作群組最常見的形態就是「@某人 ＋ 一張截圖」）。
-            # priority_message_names 保證那則的圖排在最前面，不會被同串雜圖擠掉。
+            #
+            # 吃的是 `ctx.image_messages` 而不是文字脈絡那份清單：兩者**必須解耦**。
+            # 在此之前這裡吃的就是 thread_msgs，所以把文字脈絡放大就會靜默放大
+            # 圖片的取樣母體——而那一行 diff 上完全看不出改動。
+            # scan_recent 也要明示：預設的 30 是為「摘要 500 則」設計的數字。
             images: List = []
             skipped_images: List[str] = []
             if ai.supports_vision:
                 images, skipped_images = attachments.collect(
                     client.download_attachment,
-                    thread_msgs,
+                    ctx.image_messages,
                     space_id=mention["space_id"],
                     budget_tokens=cfg.IMAGE_BUDGET_TOKENS_DRAFT,
-                    priority_message_names=[mention["message_name"]],
+                    # 整串連發都優先，不是只有錨點那一則
+                    priority_message_names=[
+                        m["name"] for m in ctx.anchor_run if m.get("name")
+                    ]
+                    or [mention["message_name"]],
+                    scan_recent=len(ctx.image_messages),
                 )
 
             yield sse(
@@ -1457,7 +1509,10 @@ def draft_stream(
                     "type": "meta",
                     "mention_id": mention_id,
                     "space": mention.get("space_name") or mention["space_id"],
-                    "thread_message_count": len(thread_msgs),
+                    # 保留舊欄位：前端與 e2e 都在讀它，而它的語意（這次送進模型的
+                    # 對話則數）沒有變，只是來源從「該討論串」變成「這次的脈絡」。
+                    "thread_message_count": ctx.message_count,
+                    "context": ctx.to_meta(),
                     "reference_spaces": [
                         {
                             "space_id": b["space_id"],
@@ -1476,7 +1531,7 @@ def draft_stream(
             # 程式碼佐證。放在 prompt 組裝之前，因為查失敗要能變成 error 事件——
             # 使用者指定了專案卻拿到一份沒查程式碼的草稿，比直接報錯更糟。
             code_blocks, code_skipped = collect_code_context(
-                viewer_id, req, mention_text, thread_text
+                viewer_id, req, ctx.anchor_plain_text or mention_text, ctx.search_text
             )
             if code_blocks or code_skipped:
                 yield sse(
@@ -1500,10 +1555,12 @@ def draft_stream(
                 )
 
             prompt = prompts.draft_reply_prompt(
-                mention_text=mention_text,
+                anchor_text=ctx.anchor_text or mention_text,
                 mention_sender=mention_sender,
                 space_name=mention.get("space_name") or mention["space_id"],
-                thread_text=thread_text,
+                space_type_label=ctx.space_type_label,
+                context_blocks=[b.to_prompt_dict() for b in ctx.blocks],
+                coverage=ctx.coverage,
                 reference_blocks=ref_blocks,
                 code_blocks=code_blocks or None,
             )
