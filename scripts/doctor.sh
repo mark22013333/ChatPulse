@@ -121,16 +121,21 @@ else
 fi
 
 # ── 5. Web 儀表板 ──────────────────────────────────
+# 判斷順序是「先看有沒有畫面」而不是「先看有沒有 npm」——建置產物已進版控，
+# npm 只有在要重建時才需要。反過來問會得到「沒 npm 就不能用儀表板」的錯誤結論。
 echo -e "\n【5】Web 儀表板入口"
-if command -v npm >/dev/null 2>&1; then
-    ok "找得到 npm（$(npm --version 2>/dev/null)）"
-    if [ -f "$PROJECT_DIR/dashboard/frontend/dist/index.html" ]; then
-        ok "前端已建置"
-    else
-        warn "前端尚未建置" "執行 ./scripts/start-web.sh，它會自動建（第一次要幾分鐘）"
-    fi
+if [ -f "$PROJECT_DIR/dashboard/frontend/dist/index.html" ]; then
+    ok "儀表板畫面已備妥"
+elif command -v npm >/dev/null 2>&1; then
+    warn "找不到儀表板畫面（版控裡應該要有）" "執行 ./chatpulse.sh web，它會用 npm 自動建置"
 else
-    warn "找不到 npm" "只用 MCP 入口的話可以忽略；要用儀表板就得先裝 Node.js"
+    warn "找不到儀表板畫面，且沒有 npm 可以建置" \
+         "用 git restore dashboard/frontend/dist 還原；只用 MCP 入口的話可以忽略"
+fi
+if command -v npm >/dev/null 2>&1; then
+    ok "找得到 npm（$(npm --version 2>/dev/null)）——可以改前端並自動重建"
+else
+    ok "沒有 npm，但不影響使用（只有要改前端原始碼時才需要）"
 fi
 
 # ── 總結 ───────────────────────────────────────────

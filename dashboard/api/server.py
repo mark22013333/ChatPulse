@@ -1129,11 +1129,21 @@ if os.path.isdir(FRONTEND_DIR):
     app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 
 
+# 這段提示現在是最後一道網。正常情況看不到它——建置產物（dashboard/frontend/dist）
+# 已進版控，clone 就有；而啟動器會在啟動前檢查，缺了會在**終端視窗**講清楚並且
+# 不開瀏覽器。會讀到這段的人，多半是繞過啟動器自己跑 uvicorn，或把 dist 清掉了。
 _BUILD_HINT = (
-    "ChatPulse API 正在執行，但找不到前端建置產物（dashboard/frontend/dist/index.html）。\n"
-    "請先建置：\n"
+    "ChatPulse API 正在執行，但找不到前端畫面（dashboard/frontend/dist/index.html）。\n"
+    "\n"
+    "最省事的解法是改用啟動器，它會處理好這件事：\n"
+    "  ./chatpulse.sh web          （Windows：chatpulse.bat web）\n"
+    "\n"
+    "畫面的建置產物本來就在版控裡，clone 下來就該有。會缺通常是被清掉了，\n"
+    "用 git restore dashboard/frontend/dist 可以還原。\n"
+    "\n"
+    "要自己重建的話（需要 Node.js）：\n"
     "  cd dashboard/frontend && npm install && npm run build\n"
-    "或在開發時另起 Vite dev server：\n"
+    "改前端時也可以另起 Vite dev server：\n"
     "  cd dashboard/frontend && npm run dev   # 然後開 http://localhost:5173"
 )
 
