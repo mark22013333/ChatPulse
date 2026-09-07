@@ -161,6 +161,61 @@ class ConfigurationError(ChatPulseError):
     default_message = "伺服器設定不完整"
 
 
+class PersonaNotFound(ChatPulseError):
+    code = "PERSONA_NOT_FOUND"
+    http_status = 404
+    default_message = "找不到指定的 Persona"
+
+
+class PersonaSourceError(ChatPulseError):
+    """從外部來源取得 Persona 時失敗（網路、404、超過大小、格式不對）。
+
+    刻意與 PERSONA_INVALID 分開：這個是「東西拿不到」（換網址、稍後再試、
+    確認 repo 是公開的），那個是「拿到了但讀不出東西」（換來源或改用手動填寫）。
+    502 而不是 400，因為問題出在外部服務或外部內容，不是呼叫端的參數。
+    """
+
+    code = "PERSONA_SOURCE_ERROR"
+    http_status = 502
+    default_message = "無法從來源取得 Persona"
+
+
+class PersonaInvalid(ChatPulseError):
+    """檔案抓到了，但淨化之後沒有任何可用的風格資訊。
+
+    這是**正常的可預期結果**，不是 bug：來源檔案可能整份都是角色扮演指令
+    與工作流程（那些一律不採用，見 `core/personas.py`），淨化完就空了。
+    409 與 CODE_PROJECT_UNAVAILABLE 同族——東西存在，但不能用。
+    """
+
+    code = "PERSONA_INVALID"
+    http_status = 409
+    default_message = "這份 Persona 沒有可用的風格資訊"
+
+
+class ReplyPromptNotFound(ChatPulseError):
+    code = "REPLY_PROMPT_NOT_FOUND"
+    http_status = 404
+    default_message = "找不到指定的回覆提示詞"
+
+
+class SepiaUnavailable(ChatPulseError):
+    """要求了 Sepia 潤稿，但潤稿規則或供應商不可用。
+
+    **刻意是硬失敗，不是靜默降級。** 使用者勾了「使用 Sepia 潤稿」卻拿到
+    一份沒潤過的草稿，他不會知道——他只會覺得這個功能沒效果，然後把
+    「AI 味還在」歸因到規則沒用，而不是規則沒跑。
+
+    這與「潤稿跑了但完整性檢查沒過」是兩種不同情況：後者會退回未潤稿的
+    版本並在 meta 標示 `fallback_reason`，不拋錯（見
+    `core/polishers/base.PolishResult`）。
+    """
+
+    code = "SEPIA_UNAVAILABLE"
+    http_status = 409
+    default_message = "Sepia 潤稿目前無法使用"
+
+
 def classify_google_api_error(status_code: int, body: str) -> ChatPulseError:
     """把 Google Chat 的 HTTP 錯誤轉成對應的 ChatPulseError。
 

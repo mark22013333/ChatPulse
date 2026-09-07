@@ -18,7 +18,7 @@ from . import config as cfg
 
 _local = threading.local()
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -52,6 +52,21 @@ CREATE TABLE IF NOT EXISTS preferences (
     default_style    TEXT NOT NULL DEFAULT 'general',
     -- 空字串／NULL 代表沿用伺服器的 CHATPULSE_AI_PROVIDER
     default_provider TEXT,
+    -- Draft Reply 的回覆設定預設值。
+    -- default_style 是**摘要**的章節結構（general/technical/action_only），
+    -- default_reply_tone 是**回話**的語氣（見 core/reply_profiles.py）——
+    -- 兩者不同層次也不同值域，刻意分成兩個欄位，不共用。
+    -- NULL／空字串一律代表「沒有偏好，沿用系統預設」，與 default_provider 同慣例。
+    default_reply_tone       TEXT,
+    -- 指向 personas.id / reply_prompts.id，但**刻意不設外鍵**：
+    -- SQLite 的 ALTER TABLE ADD COLUMN 加不了 FK constraint，
+    -- 若新裝的資料庫有 FK、遷移過的沒有，兩邊行為會不一致，那比沒有 FK 更難查。
+    -- 改由 repository 讀取時驗證擁有權與存在性（指向已刪除的項目視為沒有偏好），
+    -- 與既有的 default_code_project_id 同一個做法。
+    default_persona_id       INTEGER,
+    default_reply_prompt_id  INTEGER,
+    -- 0/1；NULL 代表沒有偏好（目前的系統預設是關閉）
+    default_sepia_enabled    INTEGER,
     updated_at       TEXT NOT NULL
 );
 
@@ -92,7 +107,12 @@ CREATE TABLE IF NOT EXISTS draft_replies (
     mention_id  INTEGER NOT NULL REFERENCES mentions(id) ON DELETE CASCADE,
     content_md  TEXT NOT NULL,
     created_at  TEXT NOT NULL,
-    sent_at     TEXT
+    sent_at     TEXT,
+    -- 這份草稿是用什麼設定產生的（provider/model/tone/persona/sepia 與潤稿結果）。
+    -- 只存**一份** content_md（潤稿後的最終版），不存未潤稿版——
+    -- 兩份聊天內容落地的隱私成本不划算，而「當時用什麼設定」才是
+    -- 事後真正需要回答的問題（例：這則回話的語氣是誰選的、Sepia 有沒有生效）。
+    generation_config_json TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_drafts_mention ON draft_replies(mention_id, created_at DESC);
 
@@ -170,6 +190,63 @@ CREATE TABLE IF NOT EXISTS code_project_branches (
     UNIQUE(project_id, environment)
 );
 CREATE INDEX IF NOT EXISTS idx_code_branches_project ON code_project_branches(project_id);
+
+-- Persona：Viewer 匯入的表達／思考風格參考（ADR-0007）
+--
+-- 與 code_projects、Reference Space 同一個哲學：由人指定，系統不自動發現。
+--
+-- 兩個欄位需要特別說明：
+--
+--   profile_json  已經過淨化的結構化 profile（core/personas.PersonaProfile）。
+--                 **這是唯一可以進 prompt 的東西。**
+--   raw_source    遠端原文，只為兩件事保存：debug（使用者問「為什麼這個
+--                 persona 沒效果」時要看得出淨化掉了什麼）與更新時比較差異。
+--                 **永遠不得作為 generation system instruction**——那正是
+--                 core/personas.py 整個模組存在的原因。
+--
+-- provenance（source_* 六個欄位）不是稽核裝飾，是功能的一部分：沒有
+-- commit SHA 就無法保證「今天產生的草稿明天還是同樣行為」，因為遠端
+-- 隨時可以改 SKILL.md 而 Viewer 不會知道。匯入時固定版本，只有按
+-- 「更新 Persona」才重新取得。
+CREATE TABLE IF NOT EXISTS personas (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    viewer_id         INTEGER NOT NULL REFERENCES viewers(id) ON DELETE CASCADE,
+    name              TEXT NOT NULL,
+    description       TEXT,
+    source_type       TEXT NOT NULL,          -- github | url | manual
+    source_repository TEXT,
+    source_url        TEXT,
+    source_ref        TEXT,
+    source_commit_sha TEXT,
+    source_hash       TEXT,                   -- sha256:… 實際讀到的內容雜湊
+    profile_json      TEXT NOT NULL,
+    raw_source        TEXT,
+    enabled           INTEGER NOT NULL DEFAULT 1,
+    imported_at       TEXT NOT NULL,          -- 第一次匯入的時間
+    refreshed_at      TEXT,                   -- 最後一次按「更新」的時間
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    UNIQUE(viewer_id, name)
+);
+CREATE INDEX IF NOT EXISTS idx_personas_viewer ON personas(viewer_id, enabled);
+
+-- Reply Prompt Preset：Viewer 存起來重複使用的自訂提示詞（ADR-0007）
+--
+-- 刻意與「System Prompt」分開命名。這裡存的是**這一次回話要怎麼寫**的
+-- 使用者要求（「不要太正式，需要對方補資料就明確列出來」），
+-- 不是系統層的 prompt 模板——後者在 core/prompts.py，由程式碼管理、
+-- 不給使用者改。混在一起會讓「使用者的偏好」有機會覆寫防幻覺規則。
+CREATE TABLE IF NOT EXISTS reply_prompts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    viewer_id   INTEGER NOT NULL REFERENCES viewers(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL,
+    description TEXT,
+    prompt      TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    UNIQUE(viewer_id, name)
+);
+CREATE INDEX IF NOT EXISTS idx_reply_prompts_viewer ON reply_prompts(viewer_id);
 """
 
 
@@ -208,6 +285,15 @@ _ADD_COLUMNS = [
     # 所以放 preferences 而不是開新表；專案本體在 code_projects。
     ("preferences", "default_code_project_id", "INTEGER"),
     ("preferences", "default_code_environment", "TEXT"),
+    # ADR-0007：Draft Reply 的回覆設定預設值。照上面那條同樣的判準——
+    # 都是 per-viewer 的單值純量，實體（persona、prompt preset）各自有表。
+    ("preferences", "default_reply_tone", "TEXT"),
+    ("preferences", "default_persona_id", "INTEGER"),
+    ("preferences", "default_reply_prompt_id", "INTEGER"),
+    ("preferences", "default_sepia_enabled", "INTEGER"),
+    # 這份草稿是用什麼設定產生的。舊資料庫的既有草稿會是 NULL，
+    # 讀取端一律要能處理「沒有這份資訊」（那些草稿產生時還沒有這個功能）。
+    ("draft_replies", "generation_config_json", "TEXT"),
 ]
 
 

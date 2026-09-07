@@ -31,8 +31,14 @@ REM  Usage (double-click, or run from a command prompt):
 REM    chatpulse.bat          full guided install (safe to re-run)
 REM    chatpulse.bat check    check install status only
 REM    chatpulse.bat auth     redo the Google authorisation only
+REM    chatpulse.bat mcp      re-register the Claude Code MCP entry only
 REM    chatpulse.bat web      start the web dashboard only
 REM    chatpulse.bat web --dev  ... with auto-reload for development
+REM
+REM  Note on the Sepia polish rules: nothing to install. They are plain text
+REM  vendored into core\polishers\sepia_rules\, NOT a Claude Code skill that
+REM  each machine has to set up (see ADR-0007). The check subcommand only
+REM  confirms the files came down with the project.
 
 REM Switch the console to UTF-8, otherwise the Chinese that Python prints
 REM below turns into garbage. Everything after this line must be ASCII.

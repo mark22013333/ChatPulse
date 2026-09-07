@@ -30,11 +30,15 @@
 `mcp`（重新註冊 MCP 入口）。裝好之後直接下子命令即可，不必再跑完整引導——
 引導本身也會跳過已完成的步驟。
 
+`check` 逐項報告：Python 環境與套件、`client_secret.json`、Google 授權範圍、
+可用的 AI 供應商、**Sepia 潤稿規則**、儀表板畫面。每一項不通過都會印出下一步該做什麼，
+只印失敗不印修法等於沒檢查。
+
 引導流程的邏輯在 `scripts/onboard.py`，**兩個平台共用同一份**——
 `.sh` 與 `.bat` 只負責找到 Python。各寫一份腳本必然漂移，
 而 Windows 那份的坑，用 macOS 的維護者永遠踩不到。
 
-維護者自己在 macOS 上也可以用既有的：
+維護者自己在 macOS 上也可以用既有的（比 `check` 多查 MCP 註冊狀態與 npm）：
 
 ```bash
 ./scripts/doctor.sh
@@ -112,6 +116,49 @@ Viewer 也可以把選擇存成偏好（`default_provider`）。
 - **參考專案**：登錄本機 git repo 並指定哪個分支是正式、哪個是 UAT，草稿就能
   引用**實際程式碼**回答「這段邏輯為什麼這樣寫」，並明確標示是哪個環境的哪個
   commit（[ADR-0006](docs/adr/0006-manual-reference-projects-over-code-rag.md)）
+- **回覆設定**：產草稿前選語氣、套個人風格、開潤稿，只影響「建議回話」那一段
+  （見下）
+
+### 回覆設定（Draft Reply）
+
+同一份事實用錯語氣送出去一樣是失敗的。產草稿時可以逐次選這四項，**全部選填，
+一個都不選就跟這個功能不存在時完全一樣**。四項都只影響〈建議回話〉，
+〈脈絡分析〉不受影響（[ADR-0007](docs/adr/0007-sanitized-text-over-skill-runtime.md)）。
+
+| 設定 | 怎麼用 |
+| :--- | :--- |
+| **Reply Tone** | 8 種語氣的下拉選單：自然直接／專業正式／簡潔明確／親切友善／工程師協作／委婉柔和／堅定明確／自訂。**與摘要的三種風格是不同的東西**——那個決定章節結構，這個決定回話語氣 |
+| **Persona** | 一組個人寫作風格（思考方式、表達習慣、要避的寫法）。**不是角色扮演**——回話永遠以你本人的身分送出，不會自稱是別人 |
+| **Reply Prompt Preset** | 把常用的自訂要求存起來重複套用。當次直接打在輸入框的字優先於已存的 Preset |
+| **潤稿**（Sepia） | 草稿產完後對〈建議回話〉再修一次，讓它不讀起來像機器寫的。**預設關閉** |
+
+四項都可以在設定頁存成預設值，之後每次產草稿自動帶入；單次選擇一律覆寫預設值。
+
+**Persona 怎麼匯入**：在設定頁貼一個公開的 GitHub repo（`owner/repo`）先列出裡面
+有哪些可匯入，選一個匯入；或直接貼一份風格描述自己建一個。匯入時會**釘住當下的
+commit SHA**——今天產生的回話不該因為遠端明天改了檔案就變一個樣子；要更新按
+「更新 Persona」，系統會告訴你內容有沒有真的變。
+
+匯入的原文**不會直接送給模型**。這類檔案常內含「直接以某人的身分回應」「遇到沒寫到的
+事可以用框架推斷」這種指令，前者會讓回話冒名、後者會撞掉 ChatPulse「不臆測沒出現過
+的資訊」的規則。所以原文一律先經淨化，只有結構化的風格資訊會進 prompt；淨化後沒剩
+東西的來源會被拒絕（那是正常結果，不是壞掉）。
+
+**Sepia 是什麼**：一套「去 AI 味」的寫作規則（[MIT](https://github.com/Nanako0129/sepia)）。
+ChatPulse 把它的最小規則子集 **vendored 進本 repo**（`core/polishers/sepia_rules/`，
+版本與來源 commit 記在 `VERSION.json`），**不透過 Claude Code 的 skill 載入機制**——
+那要拆掉本專案刻意加的成本控制旗標（上面那條 19,085 token 的注意事項），還會讓草稿
+偷偷受你本機 CLAUDE.md 影響。潤稿用的是你這次選的同一個供應商，token 用量與草稿本身
+分開記帳。它只做最小幅度修訂，改壞事實會被擋下並退回未潤稿的版本。
+
+**所以你不必安裝任何東西**：不用去裝 Sepia 的 Agent Skill、不用設定、不用 API key。
+規則跟著專案版控，clone 下來就有。它唯一會失效的形態是「檔案沒跟著專案下來」
+（zip 解壓不完整、產物被清掉），`./chatpulse.sh check` 與 `./scripts/doctor.sh` 都會
+單獨檢查這一項，並印出還原指令 `git restore core/polishers/sepia_rules`。缺檔只影響
+「潤稿」這個勾選框，其餘功能照常，所以檢查結果是提醒不是紅字。
+
+規格權威在 [`SPECIFICATION.md`](SPECIFICATION.md) 7.4，端點契約在
+[`docs/api-contract.md`](docs/api-contract.md)。
 
 ## CLI 單群摘要
 
@@ -138,13 +185,20 @@ E2E 測試會對**真實的 Google Chat 與 Gemini API** 發請求，不使用 m
 # 先啟動服務，再跑
 .venv/bin/python tests/e2e/run_all.py
 
+# 後端單元測試（不打任何 API、不需要服務在跑，秒級跑完）
+.venv/bin/python -m unittest discover -s tests/unit
+
 # 前端單元測試
 npm --prefix dashboard/frontend run test
 ```
 
-七套測試分別涵蓋：**落地證據重查**（不呼叫 AI）、**AI 供應商切換**、Phase 1 功能、
+E2E 的七套測試分別涵蓋：**落地證據重查**（不呼叫 AI）、**AI 供應商切換**、Phase 1 功能、
 Phase 2 Mention 與 Draft Reply、缺陷 D-3 的截斷正負對照、6.1 判定條件（含真實
 ADD annotation 樣本）、靜態托管與路徑穿越防護。
+
+後端單元測試則涵蓋 Draft Reply 的 prompt 組裝、回覆設定的解析順序、參考專案的程式碼
+擷取，以及潤稿的**錨點完整性比對**——潤稿最典型的壞法是「把數字順順地改掉」
+（`timeout 是 30 秒` → `大約半分鐘`），那種錯讀起來比原文更可信，只能靠機械比對擋。
 
 ```bash
 # 只想確認「已產生的東西是對的」而不想消耗 Gemini 配額，跑這支就好
@@ -159,6 +213,8 @@ ADD annotation 樣本）、靜態托管與路徑穿越防護。
 
 ```
 core/        共用封裝，不含任何入口（Google Chat／Gemini／SQLite／加密／名錄／採集器）
+  polishers/   潤稿層；sepia_rules/ 是 vendored 的第三方規則（MIT，LICENSE 與
+               VERSION.json 同目錄，不要就地改內容——要更新請重新 vendored 並記錄 commit）
 mcp_app/     MCP 入口——發給團隊安裝（四個 MCP 工具、CLI 摘要、OAuth 授權精靈）
 dashboard/   儀表板——內部使用（FastAPI 後端 ＋ React 前端）
 config/      憑證（不進版控）

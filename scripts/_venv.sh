@@ -39,7 +39,10 @@ ensure_venv() {
         return 0
     fi
 
-    echo "⚠️ 找不到虛擬環境 $VENV_DIR，正在建立（Python 3.12）..."
+    # ${} 不可省略：macOS 內建的 bash 3.2 會把緊接其後的全形「，」位元組
+    # 當成變數名的一部分，於是整個路徑消失、只留半截亂碼（實測 2026-09-07）。
+    # 這行原本印不出 .venv 的位置——正是使用者最需要看到的那個資訊。
+    echo "⚠️ 找不到虛擬環境 ${VENV_DIR}，正在建立（Python 3.12）..."
     local uv_bin
     uv_bin="$(find_uv)"
 

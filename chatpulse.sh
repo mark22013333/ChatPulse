@@ -8,9 +8,13 @@
 #
 # 用法：
 #   ./chatpulse.sh          完整安裝引導（可重複執行）
-#   ./chatpulse.sh check    只檢查安裝狀態
+#   ./chatpulse.sh check    只檢查安裝狀態（含 Sepia 潤稿規則是否隨專案下來）
 #   ./chatpulse.sh auth     只重新做 Google 授權
+#   ./chatpulse.sh mcp      只重新註冊 Claude Code 的 MCP 入口
 #   ./chatpulse.sh web      只啟動 Web 儀表板
+#
+# 注意：Sepia 潤稿規則不需要安裝——它以純文字 vendored 在 core/polishers/sepia_rules/，
+# 不是要另外裝的 Claude Code skill（ADR-0007）。check 只確認檔案在不在。
 
 set -uo pipefail
 

@@ -1,0 +1,21 @@
+{
+  "name": "sepia",
+  "version": "0.8.0",
+  "source_repository": "Nanako0129/sepia",
+  "source_url": "https://github.com/Nanako0129/sepia",
+  "source_ref": "v0.8.0",
+  "source_commit_sha": "d8a0f948cc46a0ba0d610df7458c4e8943bfe51a",
+  "source_committed_at": "2026-09-05T21:39:27+08:00",
+  "license": "MIT",
+  "license_file": "LICENSE",
+  "vendored_at": "2026-09-07",
+  "vendored_files": [
+    "skills/sepia/SKILL.md",
+    "skills/sepia/references/professional-pass.md",
+    "skills/sepia/references/domains/dev-replies.md",
+    "skills/sepia/references/style-pass.md",
+    "skills/sepia/references/languages/zh.md"
+  ],
+  "adaptation": "partial-rewrite-zh-TW",
+  "note": "RULES.md 是為 ChatPulse 的 dev-reply refactor 路徑挑出的最小規則子集，並改寫為繁體中文（原文為英文）。不是逐字複製，也不是完整的 Sepia skill。原文以 source_commit_sha 為準。"
+}

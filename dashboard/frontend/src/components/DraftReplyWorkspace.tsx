@@ -19,6 +19,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { Markdown } from '@/components/Markdown'
 import { ProviderSelect } from '@/components/ProviderSelect'
+import { ReplySettings } from '@/components/ReplySettings'
 import { SpaceList } from '@/components/SpaceList'
 import { errorMessage } from '@/lib/api'
 import { formatDateTime } from '@/lib/format'
@@ -81,6 +82,7 @@ export function DraftReplyWorkspace({ mention }: DraftReplyWorkspaceProps) {
     raw,
     meta,
     error,
+    polish,
     replyText,
     sending,
     toggleReference,
@@ -266,6 +268,10 @@ export function DraftReplyWorkspace({ mention }: DraftReplyWorkspaceProps) {
             <ProviderSelect id="draft-provider" disabled={streaming} triggerClassName="w-full" />
           </div>
 
+          {/* 回覆設定（ADR-0007）。放在供應商之後、資料來源之前，
+              維持「模型與生成設定在上、資料來源在下」的既有分組。 */}
+          <ReplySettings disabled={streaming} />
+
           <SpaceList
             spaces={referenceCandidates}
             checkedIds={referenceSpaceIds}
@@ -428,6 +434,61 @@ export function DraftReplyWorkspace({ mention }: DraftReplyWorkspaceProps) {
                       {meta.model ? <span className="ml-1 font-mono">· {meta.model}</span> : null}
                     </span>
                   ) : null}
+                  {/* 回覆設定（ADR-0007）：以伺服器回報的為準，理由同供應商——
+                      使用者選的可能被偏好或降級規則改掉，畫面要顯示實際生效的。 */}
+                  {meta.reply?.tone_label ? (
+                    <span
+                      className="rounded border border-border bg-muted/50 px-1.5 py-0.5"
+                      title="本次實際套用的回覆口氣"
+                    >
+                      {meta.reply.tone_label}
+                    </span>
+                  ) : null}
+                  {meta.reply?.persona_name ? (
+                    <span
+                      className="rounded border border-border bg-muted/50 px-1.5 py-0.5"
+                      title="本次套用的 Persona（風格參考，不代表本人）"
+                    >
+                      Persona: {meta.reply.persona_name}
+                    </span>
+                  ) : null}
+                  {meta.reply?.custom_prompt ? (
+                    <span
+                      className="rounded border border-border bg-muted/50 px-1.5 py-0.5"
+                      title="本次套用了自訂提示"
+                    >
+                      自訂提示
+                    </span>
+                  ) : null}
+                  {/*
+                    Sepia 的狀態分三種，而且必須分得出來：
+                      · 綠色「Sepia」    ＝ 潤稿完成並採用
+                      · 琥珀「Sepia 未套用」＝ 跑了但完整性檢查沒過（退回原文）
+                      · 灰色「Sepia 潤稿中」＝ 串流結束後還在潤
+                    第二種絕對不能顯示成第一種——那會讓使用者以為潤過了。
+                  */}
+                  {polish ? (
+                    <span
+                      className={cn(
+                        'rounded border px-1.5 py-0.5 font-medium',
+                        polish.polished
+                          ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                          : 'border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-500',
+                      )}
+                      title={
+                        polish.polished
+                          ? '已用 Sepia 潤稿，事實錨點通過完整性檢查'
+                          : (polish.fallback_reason ?? '潤稿未採用，顯示的是未潤稿的版本')
+                      }
+                    >
+                      {polish.polished ? 'Sepia' : 'Sepia 未套用'}
+                    </span>
+                  ) : meta.reply?.sepia && !streaming && raw ? (
+                    <span className="flex items-center gap-1 text-muted-foreground">
+                      <Loader2Icon className="size-3 animate-spin" />
+                      Sepia 潤稿中
+                    </span>
+                  ) : null}
                   {(meta.reference_spaces ?? []).map((ref) => (
                     <span
                       key={ref.space_id}
@@ -442,6 +503,21 @@ export function DraftReplyWorkspace({ mention }: DraftReplyWorkspaceProps) {
                       串流中
                     </span>
                   ) : null}
+                </div>
+              ) : null}
+
+              {/*
+                潤稿被退回時要明說原因。只放一個琥珀 badge 不夠——
+                使用者需要知道「是哪個事實被改動了」，那是判斷「模型在亂改」
+                還是「檢查太嚴」的唯一依據。
+              */}
+              {polish && !polish.polished && polish.fallback_reason ? (
+                <div className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-700 dark:text-amber-400">
+                  <span className="font-medium">Sepia 潤稿未採用</span>
+                  <span className="ml-1">{polish.fallback_reason}</span>
+                  <span className="ml-1 text-muted-foreground">
+                    下面顯示的是未潤稿的版本，內容仍然可以直接送出。
+                  </span>
                 </div>
               ) : null}
 
