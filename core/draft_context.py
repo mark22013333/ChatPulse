@@ -240,29 +240,88 @@ def format_with_anchor(
 
 
 def _collect_anchor_run(
-    window: Sequence[Dict[str, Any]], idx: int
+    window: Sequence[Dict[str, Any]], idx: int, self_user_id: Optional[str] = None
 ) -> List[Dict[str, Any]]:
-    """把錨點往前收攏成「同一人的一串連發」。
+    """從錨點往前後收攏成「這個人講了但我還沒回的那一段」。
 
-    私訊常見形態是一個問題拆三則發（「你好」「想問一下 X」「方便的話今天回我」），
-    而錨點是「最後一則不是自己發的訊息」，會落在最後那句客套話上——
-    模型就照那句回。
+    **判準是「我回了沒」，不是「隔多久」。** 一開始這裡用「同一人 ＋ 間隔 < 5 分鐘」
+    收攏，理由是私訊常把一個問題拆三則發（「你好」「想問一下 X」「方便的話今天回我」）。
+    但 2026-09-07 實測踩到反例：對方 11:33 問白名單、12:32 問 LINE 推播，
+    相隔 **59 分鐘**，於是只有後面那則被標成要回的，前面那則掉進背景脈絡——
+    草稿就只回了一半，另一半被寫成「我另外看，確認完再回你」。
+    間隔多久跟「這則我回了沒」根本沒有關係。
 
-    純結構規則（同一發話者 ＋ 間隔夠短），不做任何相關性評分：
-    一旦開始評分「哪幾則比較相關」，就是 ADR-0003 明確拒絕的 RAG 的第一步。
+    收攏規則（純結構，不做任何相關性評分——那會踩到 ADR-0003 的界線）：
+      * 只收**與錨點同一個發話者**的訊息。碰到別人講話（包含我自己）就停：
+        我講過話代表前面那些已經回過了；別人講話在群組裡是另一個人的事。
+      * 前後都收。錨點是「最後一則不是自己發的」時往前收；錨點是真的 Mention 時，
+        對方可能在 @ 完之後又補了幾句，那些也要收。
+      * 受 48h 上界限制（同 `DRAFT_WINDOW_HOURS`）——三天前那則沒回的，
+        現在硬要一起回反而奇怪。
+
+    `self_user_id` 為 None 時退回舊行為（只往前、用間隔判斷），
+    因為「碰到我自己就停」這條規則沒有 self_user_id 就無從判斷。
     """
     anchor = window[idx]
-    gap = timedelta(minutes=cfg.DRAFT_ANCHOR_RUN_GAP_MINUTES)
+    sender = _sender(anchor)
+    if not sender:
+        return [anchor]
+
+    if not self_user_id:
+        gap = timedelta(minutes=cfg.DRAFT_ANCHOR_RUN_GAP_MINUTES)
+        start = idx
+        while start > 0:
+            prev, cur = window[start - 1], window[start]
+            if _sender(prev) != sender:
+                break
+            t_prev, t_cur = _created_dt(prev), _created_dt(cur)
+            if t_prev is None or t_cur is None or (t_cur - t_prev) > gap:
+                break
+            start -= 1
+        return list(window[start : idx + 1])
+
+    anchor_time = _created_dt(anchor)
+    limit = timedelta(hours=cfg.DRAFT_WINDOW_HOURS)
+
+    def in_window(m: Dict[str, Any]) -> bool:
+        if anchor_time is None:
+            return True
+        t = _created_dt(m)
+        return t is None or abs(t - anchor_time) <= limit
+
     start = idx
-    while start > 0:
-        prev, cur = window[start - 1], window[start]
-        if _sender(prev) != _sender(anchor) or not _sender(anchor):
-            break
-        t_prev, t_cur = _created_dt(prev), _created_dt(cur)
-        if t_prev is None or t_cur is None or (t_cur - t_prev) > gap:
-            break
+    while start > 0 and _sender(window[start - 1]) == sender and in_window(window[start - 1]):
         start -= 1
-    return list(window[start : idx + 1])
+    end = idx
+    while (
+        end + 1 < len(window)
+        and _sender(window[end + 1]) == sender
+        and in_window(window[end + 1])
+    ):
+        end += 1
+    return list(window[start : end + 1])
+
+
+def cluster_messages(messages: Sequence[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+    """把一段連發切成「幾個問題」：同一人、間隔夠短的算同一群。
+
+    這是 `DRAFT_ANCHOR_RUN_GAP_MINUTES` 現在唯一的用途。它決定 prompt 要不要
+    切換成「這是 N 個各自獨立的問題，要一則回話全部回完」的模式——
+    「你好／想問 X／今天回我」是一個問題，「白名單」與「LINE 推播」是兩個。
+    """
+    gap = timedelta(minutes=cfg.DRAFT_ANCHOR_RUN_GAP_MINUTES)
+    groups: List[List[Dict[str, Any]]] = []
+    for m in messages:
+        if groups:
+            prev = groups[-1][-1]
+            t_prev, t_cur = _created_dt(prev), _created_dt(m)
+            same = _sender(prev) == _sender(m)
+            close = t_prev is not None and t_cur is not None and (t_cur - t_prev) <= gap
+            if same and close:
+                groups[-1].append(m)
+                continue
+        groups.append([m])
+    return groups
 
 
 def _apply_time_bound(
@@ -362,6 +421,7 @@ def build(
     thread_name: Optional[str] = None,
     resolve: Optional[Callable[[Optional[str]], str]] = None,
     on_retrieved: Optional[Callable[[List[Dict[str, Any]]], Any]] = None,
+    self_user_id: Optional[str] = None,
 ) -> DraftContext:
     """依 Space 的結構語意決定脈絡的形狀。
 
@@ -374,6 +434,10 @@ def build(
     `client` 只需要三個方法：`fetch_recent_messages`、`list_messages_since`、
     `list_thread_messages`。傳 client 而不是 GoogleChatClient 型別是為了讓
     單元測試能餵假的訊息列表，不打 API。
+
+    `self_user_id` 是 Viewer 自己的 `users/{id}`。有給的話，「要回哪幾則」的判準
+    會從「間隔夠短的連發」升級成「**從我上次發言到現在，對方講了什麼我還沒回**」
+    （見 `_collect_anchor_run`）。沒給就退回舊行為。
 
     `on_retrieved` 是「訊息都取回來了、但還沒組成文字」這個時間點的鉤子。
     存在的理由很具體：Google 在使用者驗證下不回傳 `sender.displayName`，
@@ -394,15 +458,35 @@ def build(
     anchors = _dedup_sorted([anchor_msg, *extra_anchor_msgs])
 
     if is_flat_space(space_type, threading_state):
-        return _build_flat(client, space_id, anchors, resolve, label, on_retrieved)
+        return _build_flat(
+            client, space_id, anchors, resolve, label, on_retrieved, self_user_id
+        )
     return _build_threaded(
-        client, space_id, anchors, thread_name, resolve, label, on_retrieved
+        client, space_id, anchors, thread_name, resolve, label, on_retrieved, self_user_id
     )
 
 
-def _run_start(window: Sequence[Dict[str, Any]], idx: int) -> int:
-    """錨點所屬「一串連發」的起始索引。"""
-    return idx - len(_collect_anchor_run(window, idx)) + 1
+def _run_span(
+    window: Sequence[Dict[str, Any]], idx: int, self_user_id: Optional[str]
+) -> Tuple[int, int]:
+    """錨點所屬「未回覆連發」在 window 裡的 [起, 迄] 索引（含兩端）。"""
+    run = _collect_anchor_run(window, idx, self_user_id)
+    names = {m.get("name") for m in run}
+    idxs = [i for i, m in enumerate(window) if m.get("name") in names]
+    return (min(idxs), max(idxs)) if idxs else (idx, idx)
+
+
+def _cap_clusters(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """只保留最近的 N 個「問題」（同一群連發算一個）。
+
+    對方連續丟了七八個不相干的問題時，一則回話全部回完就不像人話了。
+    超出的較舊問題**仍然看得到**（它們還在脈絡裡），只是不標成「要回的」。
+    """
+    groups = cluster_messages(messages)
+    if len(groups) <= cfg.DRAFT_ANCHOR_MAX_CLUSTERS:
+        return messages
+    kept = groups[-cfg.DRAFT_ANCHOR_MAX_CLUSTERS :]
+    return [m for g in kept for m in g]
 
 
 def _build_flat(
@@ -412,6 +496,7 @@ def _build_flat(
     resolve: Optional[Callable[[Optional[str]], str]],
     label: str,
     on_retrieved: Optional[Callable[[List[Dict[str, Any]]], Any]] = None,
+    self_user_id: Optional[str] = None,
 ) -> DraftContext:
     window, _, coverage = _load_window(
         client, space_id, anchors[0], cfg.DRAFT_WINDOW_FETCH
@@ -428,18 +513,26 @@ def _build_flat(
         window, idxs = _dedup_sorted(anchors), list(range(len(anchors)))
         coverage = "partial"
 
-    # core＝從最早那個錨點的連發起點，到最晚那個錨點為止。錨點之間夾著的訊息
-    # （常見的是自己先前的回覆）也要留著——那是這幾則問題之間的來龍去脈。
-    first_idx = min(_run_start(window, i) for i in idxs)
-    last_idx = max(idxs)
-    core = list(window[first_idx : last_idx + 1])
-    anchor_names = {
+    # 每個錨點各自往前後收攏成「這個人講了但我還沒回的那一段」，再取聯集。
+    spans = [_run_span(window, i, self_user_id) for i in idxs]
+    marked = {
         window[j].get("name")
-        for i in idxs
-        for j in range(_run_start(window, i), i + 1)
+        for lo, hi in spans
+        for j in range(lo, hi + 1)
         if window[j].get("name")
     }
+    # 超過 N 個問題就只標最近的幾個——較舊的仍然看得到，只是不標成「要回的」
+    capped = _cap_clusters([m for m in window if m.get("name") in marked])
+    anchor_names = {m.get("name") for m in capped}
+    anchor_idxs = [i for i, m in enumerate(window) if m.get("name") in anchor_names]
+
+    # core＝從最早那則要回的，到最晚那則為止。中間夾著的訊息（常見的是自己
+    # 先前的回覆）也要留著——那是這幾則問題之間的來龍去脈。
+    first_idx = min(anchor_idxs) if anchor_idxs else min(idxs)
+    last_idx = max(anchor_idxs) if anchor_idxs else max(idxs)
+    core = list(window[first_idx : last_idx + 1])
     anchor_run = [m for m in core if m.get("name") in anchor_names]
+    cluster_count = len(cluster_messages(anchor_run))
 
     before = list(window[max(0, first_idx - cfg.DRAFT_CTX_BEFORE) : first_idx])
     after = list(window[last_idx + 1 : last_idx + 1 + cfg.DRAFT_CTX_AFTER])
@@ -459,7 +552,7 @@ def _build_flat(
     messages = before + core + after
     resolve = _apply_hook(on_retrieved, list(messages), resolve)
     image_before = before[-cfg.DRAFT_IMAGE_BEFORE :] if cfg.DRAFT_IMAGE_BEFORE else []
-    subject = "這幾則" if len(idxs) > 1 else "該則"
+    subject = "這幾則" if cluster_count > 1 else "該則"
     block = ContextBlock(
         kind="flat_window",
         label=f"這個{label}在{subject}前後的連續對話"
@@ -473,7 +566,7 @@ def _build_flat(
         mode="flat_window",
         blocks=[block],
         anchor_run=anchor_run,
-        anchor_count=len(idxs),
+        anchor_count=cluster_count,
         anchor_text=format_with_anchor(anchor_run, resolve),
         anchor_plain_text=_plain_text(anchor_run),
         # 用 core 而不是 anchor_run：多錨點時夾在中間的訊息也可能帶圖。
@@ -494,6 +587,7 @@ def _build_threaded(
     resolve: Optional[Callable[[Optional[str]], str]],
     label: str,
     on_retrieved: Optional[Callable[[List[Dict[str, Any]]], Any]] = None,
+    self_user_id: Optional[str] = None,
 ) -> DraftContext:
     anchor_msg = anchors[0]
     if thread_name:
@@ -517,9 +611,26 @@ def _build_threaded(
 
     resolve = _apply_hook(on_retrieved, list(thread_msgs) + list(cross), resolve)
 
-    # 討論串路徑**不**收攏「一串連發」：整串本來就都印出來了，收攏只會讓
-    # 【要回覆的訊息】區塊重複更多內容。這與 flat_window 的取捨不同，見 _collect_anchor_run。
-    anchor_names = [a.get("name") for a in anchors if a.get("name")]
+    # 同一個人在這一串裡連問了幾句、而我一句都還沒回時，那幾句都要標成「要回的」。
+    # 判準與 flat_window 完全一樣（見 _collect_anchor_run）——只是這裡的搜尋範圍
+    # 是這一串，不是時間窗。撈回來的訊息一則都沒變，變的只有「哪幾則標 ▶」。
+    marked = set()
+    for a in anchors:
+        i = _index_of(thread_msgs, a.get("name") or "")
+        if i is None:
+            if a.get("name"):
+                marked.add(a["name"])
+            continue
+        lo, hi = _run_span(thread_msgs, i, self_user_id)
+        marked.update(
+            thread_msgs[j].get("name") for j in range(lo, hi + 1) if thread_msgs[j].get("name")
+        )
+    anchor_run = _cap_clusters([m for m in thread_msgs if m.get("name") in marked])
+    if not anchor_run:
+        anchor_run = list(anchors)
+    anchor_names = [m.get("name") for m in anchor_run if m.get("name")]
+    cluster_count = len(cluster_messages(anchor_run))
+
     thread_block = ContextBlock(
         kind="thread",
         label=f"該討論串的完整對話（共 {len(thread_msgs)} 則）",
@@ -531,10 +642,10 @@ def _build_threaded(
         return DraftContext(
             mode="thread",
             blocks=[thread_block],
-            anchor_run=list(anchors),
-            anchor_count=len(anchors),
-            anchor_text=format_with_anchor(anchors, resolve),
-            anchor_plain_text=_plain_text(anchors),
+            anchor_run=anchor_run,
+            anchor_count=cluster_count,
+            anchor_text=format_with_anchor(anchor_run, resolve),
+            anchor_plain_text=_plain_text(anchor_run),
             image_messages=thread_msgs,
             coverage="full",
             space_type_label=label,
@@ -561,10 +672,10 @@ def _build_threaded(
     return DraftContext(
         mode="thread_thin",
         blocks=blocks,
-        anchor_run=list(anchors),
-        anchor_count=len(anchors),
-        anchor_text=format_with_anchor(anchors, resolve),
-        anchor_plain_text=_plain_text(anchors),
+        anchor_run=anchor_run,
+        anchor_count=cluster_count,
+        anchor_text=format_with_anchor(anchor_run, resolve),
+        anchor_plain_text=_plain_text(anchor_run),
         # 排除 cross_thread：別串的截圖幾乎必然不相關，而 attachments 依
         # 「越新越優先」排序，一張較新的無關圖會排在同串較舊的相關圖前面，
         # 把 8 張／8000 tokens 吃掉。priority_message_names 只保障第 1 張。

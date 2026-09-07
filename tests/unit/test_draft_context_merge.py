@@ -196,13 +196,27 @@ class TestPromptMultiAnchor(unittest.TestCase):
 
     def test_multi_anchor_header_states_the_count(self):
         out = self._render(2)
-        self.assertIn("共 2 則", out)
+        self.assertIn("2 件事", out)
         self.assertIn("一則回話全部回完", out)
 
     def test_multi_anchor_warns_they_are_independent(self):
         out = self._render(2)
         self.assertIn("各自獨立", out)
-        self.assertIn("一則都不能漏", out)
+        self.assertIn("一件都不能漏", out)
+
+    def test_multi_anchor_says_what_binds_them(self):
+        """要講清楚這幾件的共同點是「我還沒回」，模型才知道為什麼要一起處理。"""
+        self.assertIn("還沒回", self._render(2))
+
+    def test_multi_anchor_bans_the_bare_deferral(self):
+        """實測踩過：模型把其中一題寫成「我另外看，確認完再回你」就算交差。
+
+        那等於沒回。答不了要說出缺什麼／要去查什麼，讓對方知道卡在誰身上。
+        """
+        out = self._render(2)
+        self.assertIn("我再看看", out)
+        self.assertIn("我另外看", out)
+        self.assertIn("缺什麼", out)
 
     def test_multi_anchor_adds_a_per_item_checklist_field(self):
         """〈逐則確認〉是唯一能讓「漏回一題」被看見的欄位。"""

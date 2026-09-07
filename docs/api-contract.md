@@ -312,6 +312,12 @@ mentions 表**只存識別資訊**，不存內容）。
 ```
 `answering` 是這份草稿會回掉的全部 Mention（合併時 > 1 則）。**送出時要照它走**，
 不要沿用送出前的勾選——伺服器實際採用的才算數。
+
+`context.anchor_count` 是「這次要回**幾件事**」，與 `answering` 的長度**不是同一件事**：
+系統會自動把「從我上次發言到現在、對方講了而我還沒回」的訊息都標成要回的，
+所以就算只選了一則 Mention，`anchor_count` 也可能是 2（對方問了兩件事都還沒回）。
+同一群連發（間隔 < `DRAFT_ANCHOR_RUN_GAP_MINUTES`）算一件；上限
+`DRAFT_ANCHOR_MAX_CLUSTERS`，超出的較舊問題仍在脈絡裡但不標成要回的。
 `thread_message_count` 保留舊名，值是 `context.message_count`（這次送進模型的對話則數）。
 `coverage: "partial"` 代表系統沒能取回錨點周圍的完整對話（那則太舊了），prompt 會據此
 要模型更保守，前端會把則數標成橘色。
