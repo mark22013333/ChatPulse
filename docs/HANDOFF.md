@@ -1,6 +1,6 @@
 # 交接：接續 ChatPulse 的下一個 session
 
-> 更新於 2026-09-06。這份是給「沒有前一個 session 記憶」的人／AI 看的。
+> 更新於 2026-09-07。這份是給「沒有前一個 session 記憶」的人／AI 看的。
 > 只寫**接手時真的需要知道的事**，其餘一律指向對應文件。
 
 ---
@@ -51,10 +51,10 @@ export CHATPULSE_BOOTSTRAP_USER_ID=users/109827265019732088641
 .venv/bin/python tests/e2e/test_attachments.py        # 圖片附件與視覺
 .venv/bin/python tests/e2e/test_static.py             # 靜態托管、授權迴歸
 .venv/bin/python tests/e2e/test_add_annotation.py     # Mention 判定條件
-npm --prefix dashboard/frontend run test              # 前端 72 項
-.venv/bin/python -m unittest discover -s tests/unit   # 單元 111 項（零 API、零配額、0.02 秒）
+npm --prefix dashboard/frontend run test              # 前端 77 項
+.venv/bin/python -m unittest discover -s tests/unit   # 單元 134 項（零 API、零配額、0.03 秒）
 node tests/e2e/test_merge_reply.cjs                   # 收件匣多選合併 11 項
-node tests/e2e/test_message_preview.cjs               # 最近訊息預覽 16 項（唯讀、零 AI）
+node tests/e2e/test_message_preview.cjs               # 最近訊息預覽 21 項（唯讀、零 AI）
 ```
 
 **跑 e2e 之前先確認 8000 埠上是誰的服務**：那幾支 `.cjs` 會走 `/api/v1/auth/bootstrap`，
@@ -226,6 +226,19 @@ node tests/e2e/test_message_preview.cjs               # 最近訊息預覽 16 �
 - **PreToolUse hook** 會攔截遞迴刪除與**推送到 main**，且是對**整條指令文字**比對——
   commit message 裡提到危險指令的字樣也會被擋。push 要由人執行
 - 測試報告寫**兩份**（帶時間戳的那份不會被覆蓋），落在 `tests/e2e/reports/`（已 gitignore）
+
+### 身分與名字
+
+- **user id 不是名字**（2026-09-07 修）。舊的三 scope token 沒有 userinfo 權限，
+  `identity.resolve()` 的 fallback 路徑就拿 `users/1098…` 當 `display_name` 回傳。
+  後果有兩層：畫面右上角顯示那一串數字；而且登入時的
+  `directory.remember(user_id, display_name)` 把同一串寫進**人名名錄**——
+  於是對話裡的「我（users/1098…）」也是這麼來的，而那份名錄是摘要與草稿共用的。
+  現在三道防線：identity 回 `None`、`directory.remember()` 擋 id 形狀的名字、
+  `load_all()` 濾掉資料庫裡已有的髒資料（名錄唯一的出口，濾一次全部乾淨）。
+  `_viewer_public()` 讀到髒的會即時查名錄補上並寫回資料庫。
+- **名錄通常查得到自己**：只要你曾經在任何群組被 @ 過，
+  `learn_from_messages()` 就從 annotation 學到你的名字了（實測 55 個人）。
 
 ### Draft Reply 的「要回哪幾則」
 

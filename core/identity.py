@@ -71,7 +71,14 @@ def resolve(credentials: Credentials) -> Dict[str, Optional[str]]:
         return {
             "google_user_id": user_id,
             "email": cfg.BOOTSTRAP_EMAIL or None,
-            "display_name": cfg.BOOTSTRAP_EMAIL or user_id,
+            # **不可以拿 user_id 當顯示名稱。** 這條路徑（舊的三 scope token，
+            # 沒有 userinfo 權限）本來就查不到名字，回 None 讓上層 COALESCE
+            # 保留既有的名字、或改用名錄去查。
+            # 原本這裡回 user_id，後果有兩層：viewers.display_name 被覆寫成
+            # 「users/1098…」（畫面右上角就顯示那一串），而且 server 的
+            # `directory.remember(..., display_name)` 會把同一串寫進人名名錄，
+            # 於是連對話裡的「我（users/1098…）」也是這麼來的。
+            "display_name": cfg.BOOTSTRAP_EMAIL or None,
         }
 
     raise NotAuthenticated(
