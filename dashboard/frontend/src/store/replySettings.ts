@@ -34,13 +34,16 @@ interface ReplySettingsState {
   sepiaRules: SepiaRulesInfo
 
   loading: boolean
+  /** 目錄是否已經載入過（避免每次切頁籤重打 4 個端點） */
+  loaded: boolean
   /** 匯入／更新 Persona 進行中 */
   busy: boolean
   error: string | null
   /** 偏好是否已經套用過（避免覆寫使用者當下的選擇） */
   initialised: boolean
 
-  load: () => Promise<void>
+  /** 載入目錄。已載入過就直接返回；`force: true` 強制重載。 */
+  load: (options?: { force?: boolean }) => Promise<void>
   loadPersonas: () => Promise<void>
   loadReplyPrompts: () => Promise<void>
   applyPreferences: (prefs: Preferences | null | undefined) => void
@@ -146,6 +149,37 @@ export function needsPublicFigureNotice(persona: Persona | undefined): boolean {
   return Boolean(persona && persona.source_type !== 'manual')
 }
 
+/**
+ * 把 Select 的值轉成 id 型 store 值（Persona／提示詞 preset 共用）。
+ *
+ * 回 `undefined` 代表**不要動**——這是這個函式存在的唯一理由：
+ * Base UI 的 Select 在清除選擇時會給 `null`（既有慣例見 SummaryWorkspace
+ * 的摘要風格下拉），而 `Number(null)` 正好是 `0`，也就是 `NONE_ID`
+ * ＝「這一次明確不使用」。那會**覆寫掉 Viewer 的偏好**，而使用者
+ * 根本沒做任何選擇——他設的預設 Persona 會無聲失效。
+ *
+ * 抽成純函式是為了讓這個陷阱有測試覆蓋：vitest 跑在 node 環境、
+ * 只收 `.test.ts`，寫在 JSX 的 onValueChange 裡就沒有人能測它。
+ */
+export function selectToId(
+  value: string | null | undefined,
+  noneId: number,
+): number | null | undefined {
+  if (!value) return undefined
+  if (value === INHERIT) return null
+  if (value === NONE) return noneId
+  const parsed = Number(value)
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined
+}
+
+/** 把 Select 的值轉成 tone store 值。回 `undefined` 代表不要動。 */
+export function selectToTone(
+  value: string | null | undefined,
+): string | null | undefined {
+  if (!value) return undefined
+  return value === INHERIT ? null : value
+}
+
 export const useReplySettingsStore = create<ReplySettingsState>((set, get) => ({
   tones: [],
   serverDefaultTone: 'natural',
@@ -156,12 +190,17 @@ export const useReplySettingsStore = create<ReplySettingsState>((set, get) => ({
   sepiaRules: {},
 
   loading: false,
+  loaded: false,
   busy: false,
   error: null,
   initialised: false,
 
-  load: async () => {
-    if (get().loading) return
+  load: async ({ force = false } = {}) => {
+    // App.tsx 用條件渲染切換工作區，所以 DraftReplyWorkspace（連帶
+    // ReplySettings）**每次切頁籤都會卸載重掛**。沒有這個旗標的話，
+    // 每次切回草稿頁都會重打這四個端點——其中 /personas 與 /reply-prompts
+    // 還會查資料庫。`loading` 只防併發，防不了重複。
+    if (get().loading || (get().loaded && !force)) return
     set({ loading: true })
     try {
       // 四個端點互不相依，一起發。任何一個失敗都不該讓其他三個的結果消失，
@@ -189,7 +228,10 @@ export const useReplySettingsStore = create<ReplySettingsState>((set, get) => ({
       }
       set(patch)
     } finally {
-      set({ loading: false })
+      // 標成已載入即使部分端點失敗：那些失敗會讓對應的清單留空，
+      // 而使用者的動作（匯入 Persona、存提示詞）各自會刷新自己那份，
+      // 不需要靠重打整組來補。想強制重載的路徑用 `force: true`。
+      set({ loading: false, loaded: true })
     }
   },
 

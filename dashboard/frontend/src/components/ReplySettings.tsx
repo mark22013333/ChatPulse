@@ -39,6 +39,8 @@ import {
   PUBLIC_FIGURE_NOTICE,
   needsPublicFigureNotice,
   personaSourceLine,
+  selectToId,
+  selectToTone,
   sepiaAvailability,
   settingsSummary,
   toneLabel,
@@ -158,7 +160,10 @@ export function ReplySettings({ disabled }: ReplySettingsProps) {
             <Select
               items={toneItems}
               value={toneValue}
-              onValueChange={(v) => setToneId(v === INHERIT ? null : (v as string))}
+              onValueChange={(v) => {
+                const next = selectToTone(v as string | null)
+                if (next !== undefined) setToneId(next)
+              }}
             >
               <SelectTrigger id="draft-tone" size="sm" className="w-full" disabled={disabled}>
                 <SelectValue />
@@ -212,9 +217,10 @@ export function ReplySettings({ disabled }: ReplySettingsProps) {
             <Select
               items={personaItems}
               value={personaValue}
-              onValueChange={(v) =>
-                setPersonaId(v === INHERIT ? null : v === NONE ? NONE_ID : Number(v))
-              }
+              onValueChange={(v) => {
+                const next = selectToId(v as string | null, NONE_ID)
+                if (next !== undefined) setPersonaId(next)
+              }}
             >
               <SelectTrigger id="draft-persona" size="sm" className="w-full" disabled={disabled}>
                 <SelectValue />
@@ -289,19 +295,13 @@ export function ReplySettings({ disabled }: ReplySettingsProps) {
                 items={promptItems}
                 value={promptValue}
                 onValueChange={(v) => {
-                  if (v === INHERIT) {
-                    setCustomPromptId(null)
-                    return
-                  }
-                  if (v === NONE) {
-                    setCustomPromptId(NONE_ID)
-                    return
-                  }
-                  const preset = replyPrompts.find((p) => String(p.id) === v)
-                  setCustomPromptId(Number(v))
+                  const next = selectToId(v as string | null, NONE_ID)
+                  if (next === undefined) return
+                  setCustomPromptId(next)
                   // 套用 preset 就把內容填進輸入框，讓使用者看得到、也改得動。
                   // 送出時 inline 內容優先於 preset id（後端規則），所以填進去
                   // 之後實際送的是這段文字——這正是「套用後可微調」該有的行為。
+                  const preset = next ? replyPrompts.find((p) => p.id === next) : undefined
                   if (preset) setCustomPrompt(preset.prompt)
                 }}
               >

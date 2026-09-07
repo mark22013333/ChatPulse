@@ -4,6 +4,8 @@ import { NONE_ID, useDraftStore } from './draft'
 import {
   needsPublicFigureNotice,
   personaSourceLine,
+  selectToId,
+  selectToTone,
   sepiaAvailability,
   settingsSummary,
   toneLabel,
@@ -84,6 +86,7 @@ const SETTINGS_INITIAL = {
   polishers: [],
   sepiaRules: {},
   loading: false,
+  loaded: false,
   busy: false,
   error: null,
   initialised: false,
@@ -223,6 +226,105 @@ describe('needsPublicFigureNotice', () => {
 
   it('沒選 Persona 時不需要', () => {
     expect(needsPublicFigureNotice(undefined)).toBe(false)
+  })
+})
+
+describe('selectToId / selectToTone —— Base UI 的 null 陷阱', () => {
+  /**
+   * Base UI 的 Select 在清除選擇時會給 `null`（既有慣例見 SummaryWorkspace
+   * 的摘要風格下拉，那裡有 `if (!value) return`）。而 `Number(null)` 正好是
+   * `0`，也就是 `NONE_ID` ＝「這一次明確不使用」。
+   *
+   * 那個值會**覆寫 Viewer 的偏好**：使用者設了預設 Persona，一次意外的清除
+   * 就讓這次草稿不套用它——而他根本沒做任何選擇，畫面上也看不出差別。
+   */
+  it('清除選擇（null）回 undefined＝不要動', () => {
+    expect(selectToId(null, NONE_ID)).toBeUndefined()
+    expect(selectToTone(null)).toBeUndefined()
+  })
+
+  it('空字串與 undefined 一樣視為不要動', () => {
+    expect(selectToId('', NONE_ID)).toBeUndefined()
+    expect(selectToId(undefined, NONE_ID)).toBeUndefined()
+    expect(selectToTone('')).toBeUndefined()
+    expect(selectToTone(undefined)).toBeUndefined()
+  })
+
+  it('null 絕對不可以被當成 NONE_ID（這正是那個 bug）', () => {
+    expect(selectToId(null, NONE_ID)).not.toBe(NONE_ID)
+    expect(selectToId(null, NONE_ID)).not.toBe(0)
+  })
+
+  it('「跟隨預設」回 null', () => {
+    expect(selectToId('__inherit__', NONE_ID)).toBeNull()
+    expect(selectToTone('__inherit__')).toBeNull()
+  })
+
+  it('「不使用」回 NONE_ID', () => {
+    expect(selectToId('__none__', NONE_ID)).toBe(NONE_ID)
+  })
+
+  it('真實 id 回數字', () => {
+    expect(selectToId('3', NONE_ID)).toBe(3)
+    expect(selectToId('12345', NONE_ID)).toBe(12345)
+  })
+
+  it('不合法的 id 字串回 undefined，不會變成 0 或 NaN', () => {
+    // '0' 特別重要：它與 NONE_ID 同值，但語意是「一個 id 為 0 的項目」，
+    // 而 AUTOINCREMENT 不會產生 0。放它過去會讓兩種語意混在一起。
+    for (const bad of ['abc', '-1', '0', '1.5', 'NaN', ' ']) {
+      expect(selectToId(bad, NONE_ID)).toBeUndefined()
+    }
+  })
+
+  it('tone 回原字串', () => {
+    expect(selectToTone('engineer')).toBe('engineer')
+    expect(selectToTone('custom')).toBe('custom')
+  })
+})
+
+describe('load 的重複載入保護', () => {
+  /**
+   * App.tsx 用條件渲染切換工作區，所以 DraftReplyWorkspace（連帶
+   * ReplySettings）每次切頁籤都會卸載重掛。`loading` 只防併發、防不了重複，
+   * 沒有 `loaded` 旗標的話每次切回草稿頁都會重打四個端點。
+   */
+  function stubAll() {
+    vi.spyOn(api, 'replyTones').mockResolvedValue({ tones: TONES, default: 'natural' })
+    vi.spyOn(api, 'personas').mockResolvedValue({ personas: [], sources: [] })
+    vi.spyOn(api, 'replyPrompts').mockResolvedValue({ reply_prompts: [] })
+    return vi.spyOn(api, 'polishers').mockResolvedValue({ polishers: [], sepia: {} })
+  }
+
+  it('第二次呼叫不再打 API', async () => {
+    const spy = stubAll()
+    await useReplySettingsStore.getState().load()
+    expect(spy).toHaveBeenCalledTimes(1)
+    await useReplySettingsStore.getState().load()
+    expect(spy).toHaveBeenCalledTimes(1)
+  })
+
+  it('載入後 loaded 為 true', async () => {
+    stubAll()
+    await useReplySettingsStore.getState().load()
+    expect(useReplySettingsStore.getState().loaded).toBe(true)
+  })
+
+  it('force: true 可以強制重載', async () => {
+    const spy = stubAll()
+    await useReplySettingsStore.getState().load()
+    await useReplySettingsStore.getState().load({ force: true })
+    expect(spy).toHaveBeenCalledTimes(2)
+  })
+
+  it('部分端點失敗時仍標成已載入（各自的動作會刷新自己那份）', async () => {
+    vi.spyOn(api, 'replyTones').mockResolvedValue({ tones: TONES, default: 'natural' })
+    vi.spyOn(api, 'personas').mockRejectedValue(new Error('壞了'))
+    vi.spyOn(api, 'replyPrompts').mockResolvedValue({ reply_prompts: [] })
+    vi.spyOn(api, 'polishers').mockResolvedValue({ polishers: [], sepia: {} })
+    await useReplySettingsStore.getState().load()
+    expect(useReplySettingsStore.getState().loaded).toBe(true)
+    expect(useReplySettingsStore.getState().tones).toHaveLength(2)
   })
 })
 
