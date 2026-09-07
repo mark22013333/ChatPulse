@@ -6,10 +6,13 @@
 無法通過「切換摘要風格會產生不同結果」這條驗收條件。
 """
 
+import re
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from . import config as cfg
 from .errors import InvalidParameter
+from .reply_profiles import ReplyGenerationOptions, tone_instruction, tone_label
 
 _BASE_RULES = (
     "請使用繁體中文輸出，並過濾掉純打招呼、貼圖、「收到」這類無實質內容的訊息。"
@@ -244,6 +247,179 @@ def _context_section(
     return "\n".join(parts)
 
 
+#: 「### ✍️ 建議回話」那一行。
+#:
+#: 容忍標題層級（##～####）與 emoji 有無，因為模型偶爾會改寫標題的裝飾。
+#: 前端 `store/draft.ts` 有一份等價的 regex（`REPLY_HEADING`）做即時切分；
+#: 兩邊都以這裡的輸出格式為準——`draft_reply_prompt` 定義了這個標題，
+#: 所以解析它的規則也放在同一個模組，改格式時兩件事會在同一個檔案裡被看到。
+_REPLY_HEADING_RE = re.compile(r"^#{2,4}[ \t]*.*建議回話.*$", re.MULTILINE)
+
+
+@dataclass(frozen=True)
+class DraftSections:
+    """把模型產出的草稿切成「脈絡分析」與「建議回話」兩段。
+
+    切開的理由是**潤稿只能碰建議回話**：脈絡分析裡有程式碼佐證、
+    未解問題、脈絡涵蓋這些以證據為準的欄位，讓潤稿器去改那一段
+    等於讓一個看不到證據的模型改寫證據陳述。
+    """
+
+    #: 建議回話標題**之前**的全部內容（含脈絡分析與它的標題）
+    head: str
+    #: 建議回話的標題那一行；找不到時是空字串
+    reply_heading: str
+    #: 建議回話的內容（不含標題）
+    reply: str
+
+    @property
+    def found(self) -> bool:
+        """有沒有真的找到建議回話章節。
+
+        `False` 時呼叫端**不應該**潤稿——潤整篇會改到脈絡分析。
+        這是降級情況（模型沒照輸出格式回），不是錯誤。
+        """
+        return bool(self.reply_heading)
+
+    def reassemble(self, reply: str) -> str:
+        """用新的建議回話內容重組完整草稿，其餘部分逐字保留。"""
+        if not self.found:
+            return reply
+        body = reply.strip("\n")
+        return f"{self.head}{self.reply_heading}\n{body}\n" if body else f"{self.head}{self.reply_heading}\n"
+
+
+def split_draft(text: str) -> DraftSections:
+    """依輸出格式的標題把草稿切成兩段。找不到標題時 `found` 為 `False`。"""
+    raw = text or ""
+    match = _REPLY_HEADING_RE.search(raw)
+    if not match:
+        return DraftSections(head="", reply_heading="", reply=raw)
+    return DraftSections(
+        head=raw[: match.start()],
+        reply_heading=match.group(0),
+        reply=raw[match.end():].lstrip("\n"),
+    )
+
+
+def _reply_style_section(options: Optional[ReplyGenerationOptions]) -> str:
+    """組裝【回話風格】區塊（Reply Tone／Persona／自訂提示，ADR-0007）。
+
+    ## 為什麼這一段放在輸出格式**之後**、`_BASE_RULES` 之前
+
+    需求定的優先序是：
+
+        1. ChatPulse 的事實與安全規則   ← 永不可被覆蓋
+        2. 程式碼佐證規則               ← 永不可被覆蓋
+        3. Viewer 這次明確的自訂要求
+        4. Persona
+        5. Tone
+        6. 預設寫作偏好
+
+    直覺的實作是「把 1、2 放最前面」，但那是錯的。`_context_section` 的
+    註解已經記錄過這件事：**模型對就近的指令服從度較高**。把不可覆蓋的
+    規則放在最前面，等於讓它離輸出最遠、讓 tone／persona 離輸出最近——
+    正好把優先序做反。
+
+    所以實際的順序是「弱的先講、強的後講」：風格區塊（3–6）放在這裡，
+    `_BASE_RULES`（1）壓在整份 prompt 的最尾端，`_CODE_RULES`（2）則
+    緊貼在程式碼片段之後（那是它作用的對象）。再加上這個區塊自己
+    開頭的明文宣告，優先序在**語意上**與**位置上**都成立。
+
+    ## 為什麼要明文宣告「這一段不改變事實」
+
+    因為 persona 的來源是不可信任的第三方內容，而它已經被實測含有
+    「遇到不知道的事情可以合理推測」這類授權（見 `core/personas.py`）。
+    淨化管線會剔除那些條目，但淨化是比對規則、不是理解語意——
+    總會有沒想到的表達方式。這段宣告是第四層防線：即使有指令漏進來，
+    它出現的位置也已經被框定成「Viewer 的偏好資料」，
+    而不是「系統給你的新規則」。
+    """
+    if options is None or options.is_empty():
+        return ""
+
+    parts: List[str] = [
+        "\n\n【回話風格】以下只影響〈建議回話〉那一段的**用字與語氣**。",
+        "它不影響〈脈絡分析〉——脈絡分析一律以證據為準、保持中立陳述。",
+        "它也**不得**改變任何事實、結論、數字、日期、人名、程式碼佐證，"
+        "或讓任何一件該回的事被省略。風格與事實衝突時，一律以事實為準。",
+    ]
+
+    # 3：Viewer 這次明確的要求 —— 排在 persona 與 tone 之前，
+    # 因為「這一次」的指示應該勝過「平常的偏好」。
+    custom = (options.custom_prompt or "").strip()
+    if custom:
+        parts.append(
+            "\n〔本次自訂要求〕Viewer 針對這一則回話特別交代的事"
+            "（優先於下面的 Persona 與口氣設定）：\n"
+            f"{custom}"
+        )
+
+    # 4：Persona
+    if options.persona is not None:
+        parts.append(_persona_lines(options.persona))
+
+    # 5：Tone
+    if options.tone:
+        parts.append(
+            f"\n〔口氣〕{tone_label(options.tone)}。{tone_instruction(options.tone)}"
+        )
+
+    return "\n".join(parts)
+
+
+def _persona_lines(persona: Any) -> str:
+    """把已淨化的 PersonaProfile 轉成 prompt 片段。
+
+    **這裡拿到的一定是結構化 profile，不是遠端原文。** 型別上只要求
+    `to_prompt_dict()`（見 `reply_profiles.PersonaProfileLike`），
+    而那個方法的回傳值已經過 `core/personas.py` 的四層淨化。
+
+    措辭刻意寫成「參考…的表達習慣」而不是「你是…」：Persona 的定位是
+    借用思考框架與表達方式來協助寫回覆，不是 roleplay identity。
+    送進 Google Chat 的回話不可以自稱是別人——那是最終會被真人讀到的
+    文字，冒名的代價由使用者承擔。
+    """
+    data = persona.to_prompt_dict() if hasattr(persona, "to_prompt_dict") else dict(persona)
+    name = str(data.get("name") or "").strip()
+
+    lines: List[str] = [
+        f"\n〔Persona〕參考「{name}」的思考與表達習慣來寫這則回話。"
+        if name
+        else "\n〔Persona〕參考下列思考與表達習慣來寫這則回話。",
+        "這是從公開資料提煉的風格參考，**不是**要你扮演這個人："
+        "回話中不可以自稱是他、不可以用他的名義發言、不可以提到這個 Persona 的存在。",
+    ]
+
+    def _bullets(label: str, values: Any) -> None:
+        items = [str(v).strip() for v in (values or []) if str(v).strip()]
+        if items:
+            lines.append(f"- {label}：" + "；".join(items))
+
+    _bullets("思考方式", data.get("thinking_style"))
+    _bullets("表達習慣", data.get("communication_style"))
+    _bullets("要避開", data.get("avoid"))
+
+    prefs = data.get("response_preferences") or {}
+    if isinstance(prefs, dict) and prefs:
+        hints: List[str] = []
+        verbosity = prefs.get("verbosity")
+        if verbosity == "low":
+            hints.append("偏短")
+        elif verbosity == "high":
+            hints.append("可以寫得完整一些")
+        elif verbosity == "medium":
+            hints.append("長度中等")
+        if prefs.get("prefer_examples"):
+            hints.append("習慣用具體例子或類比")
+        if prefs.get("prefer_concrete_language"):
+            hints.append("偏好具體、可驗證的說法")
+        if hints:
+            lines.append("- 篇幅與偏好：" + "、".join(hints))
+
+    return "\n".join(lines)
+
+
 def draft_reply_prompt(
     *,
     anchor_text: str,
@@ -255,6 +431,7 @@ def draft_reply_prompt(
     anchor_count: int = 1,
     reference_blocks: List[Dict[str, Any]],
     code_blocks: Optional[List[Dict[str, Any]]] = None,
+    reply_options: Optional[ReplyGenerationOptions] = None,
 ) -> str:
     """組裝 Draft Reply prompt（七節）。
 
@@ -272,6 +449,12 @@ def draft_reply_prompt(
       2. 使用者在收件匣多選了 N 則要「一起回」（`anchor_count > 1`）。
     兩者對模型的要求不同：第 1 種本來就是一個問題；第 2 種是 N 個各自獨立的
     問題，必須**明確要求用一則回話全部回完**，否則模型只會回最後看到的那個。
+
+    `reply_options`（ADR-0007）帶 Reply Tone／Persona／自訂提示。
+    **省略或為空時，產出的 prompt 與這個參數存在之前逐字相同**——
+    這條由 `tests/unit/test_reply_prompt_options.py` 的向後相容測試守住，
+    因為「不選任何回覆設定」是預設狀態，它不該讓既有行為改變。
+    區塊為什麼放在輸出格式之後見 `_reply_style_section`。
     """
     refs = ""
     if reference_blocks:
@@ -294,6 +477,7 @@ def draft_reply_prompt(
 
     code = _code_section(code_blocks)
     context = _context_section(context_blocks, coverage)
+    style = _reply_style_section(reply_options)
 
     # 多錨點：這 N 則是**各自獨立**的問題，只是要用一則回話回完。
     # 不講清楚的話模型會只回最後看到的那則——而且看起來完全正常，
@@ -344,7 +528,7 @@ def draft_reply_prompt(
 若資料不足以回答，就在回話中明確問回去缺什麼；\
 若脈絡顯示這個問題已經被別人回答了，**仍然要寫出你自己的回話**，\
 並在〈脈絡分析〉的「未解問題」註明已被誰回答——不要把回話寫成「看起來 XXX 已經回覆了」；\
-不要出現「根據參考群組」這類提問者看不懂的內部說法。）
+不要出現「根據參考群組」這類提問者看不懂的內部說法。）{style}
 
 {_BASE_RULES}
 """

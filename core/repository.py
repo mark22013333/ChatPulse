@@ -126,19 +126,80 @@ def get_preferences(viewer_id: int) -> Dict[str, Any]:
         # code_refs 在 API 契約上仍維持預設空，與 reference_space_ids 一致。
         "default_code_project_id": row["default_code_project_id"],
         "default_code_environment": row["default_code_environment"] or None,
+        # ADR-0007：Draft Reply 的回覆設定預設值。
+        # default_style（摘要章節結構）與 default_reply_tone（回話語氣）
+        # 是兩件不同的事，不共用值域也不互相影響。
+        #
+        # 這四個欄位用 `row.get()` 而不是 `row[...]`：schema 還沒遷移的
+        # 資料庫沒有這些欄位，而**讀取路徑遇到舊 schema 應該降級成
+        # 「沒有偏好」，不該是 500**。遷移由 `db.init_db()` 在啟動時保證，
+        # 但讀取端不必假設它一定已經跑過（測試與工具腳本會繞過啟動流程）。
+        "default_reply_tone": row.get("default_reply_tone") or None,
+        # 指向的 persona／preset 可能已被刪除（欄位刻意無外鍵，見 db.py）。
+        # 這裡照實回傳，由 API 層在使用前驗擁有權與存在性——
+        # 在這裡靜默改成 None 會讓「我的預設 persona 不見了」變成無法察覺的事。
+        "default_persona_id": row.get("default_persona_id"),
+        "default_reply_prompt_id": row.get("default_reply_prompt_id"),
+        # NULL 代表沒有偏好；轉成 bool 前先保留 None 語意（0 是明確關閉）
+        "default_sepia_enabled": (
+            None
+            if row.get("default_sepia_enabled") is None
+            else bool(row["default_sepia_enabled"])
+        ),
         "updated_at": row["updated_at"],
     }
+
+
+class _Unset:
+    """「這個參數沒有被指定」的哨兵型別。
+
+    存在的理由是 `None` 在新欄位上有實際語意：`default_persona_id = None`
+    就是「不使用 Persona」，那是使用者會主動選的選項，必須存得下去。
+
+    既有欄位（`default_provider` 等）沿用 `None` ＝「不改」的舊語意，
+    **刻意不一起改**：那會改變既有呼叫端的行為，而需求明確要求
+    不藉這次功能順便改既有決策。代價是同一個函式有兩種慣例，
+    所以兩邊都在簽章與註解裡標清楚。
+
+    （附帶記錄一個既有限制：因為舊欄位沿用 `None` ＝不改，
+    `default_provider` 目前**無法**被清成 NULL。前端「設為預設」選
+    「自動」時送 `null`，後端會當成「不改」。這是本功能之前就存在的
+    行為，不在這次的範圍內。）
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "UNSET"
+
+    def __bool__(self) -> bool:
+        return False
+
+
+#: 給 API 層引用的哨兵單例。
+UNSET: Any = _Unset()
+
+
+def _pick(new: Any, current: Any) -> Any:
+    """哨兵語意的取值：沒指定就沿用現值，指定了就用新值（含 None）。"""
+    return current if isinstance(new, _Unset) else new
 
 
 def update_preferences(
     viewer_id: int,
     *,
+    # --- 舊欄位：`None` ＝ 不改（既有語意，不要改） ---
     pinned_space_ids: Optional[List[str]] = None,
     default_limit: Optional[int] = None,
     default_style: Optional[str] = None,
     default_provider: Optional[str] = None,
     default_code_project_id: Optional[int] = None,
     default_code_environment: Optional[str] = None,
+    # --- 新欄位：沒傳 ＝ 不改，傳 `None` ＝ 清除（見 `_Unset`） ---
+    default_reply_tone: Any = UNSET,
+    default_persona_id: Any = UNSET,
+    default_reply_prompt_id: Any = UNSET,
+    default_sepia_enabled: Any = UNSET,
 ) -> Dict[str, Any]:
     current = get_preferences(viewer_id)
     pinned = current["pinned_space_ids"] if pinned_space_ids is None else pinned_space_ids
@@ -157,12 +218,18 @@ def update_preferences(
         if default_code_environment is None
         else default_code_environment
     )
+    tone = _pick(default_reply_tone, current.get("default_reply_tone"))
+    persona_id = _pick(default_persona_id, current.get("default_persona_id"))
+    prompt_id = _pick(default_reply_prompt_id, current.get("default_reply_prompt_id"))
+    sepia = _pick(default_sepia_enabled, current.get("default_sepia_enabled"))
     db.execute(
         """
         UPDATE preferences
            SET pinned_space_ids = ?, default_limit = ?, default_style = ?,
                default_provider = ?, default_code_project_id = ?,
-               default_code_environment = ?, updated_at = ?
+               default_code_environment = ?, default_reply_tone = ?,
+               default_persona_id = ?, default_reply_prompt_id = ?,
+               default_sepia_enabled = ?, updated_at = ?
          WHERE viewer_id = ?
         """,
         (
@@ -172,6 +239,10 @@ def update_preferences(
             provider,
             code_project,
             code_env,
+            tone,
+            persona_id,
+            prompt_id,
+            None if sepia is None else int(bool(sepia)),
             _now(),
             viewer_id,
         ),
@@ -383,10 +454,30 @@ def count_mentions(viewer_id: int) -> Dict[str, int]:
 # --------------------------------------------------------------------------
 
 
-def create_draft(mention_id: int, content_md: str) -> int:
+def create_draft(
+    mention_id: int,
+    content_md: str,
+    generation_config: Optional[Dict[str, Any]] = None,
+) -> int:
+    """存一份草稿。
+
+    `generation_config` 是「這份草稿用什麼設定產生的」（provider／model／
+    tone／persona／sepia 與潤稿結果）。**選填**，理由有兩個：舊資料庫的
+    既有草稿沒有這份資訊，而斷線補存路徑（`server.save_partial`）拿到的
+    是一段不完整的文字，那時候記下設定仍然有意義但不該是必要條件。
+
+    只存一份 `content_md`（潤稿後的最終版），不另存未潤稿版——
+    見 `core/db.py` 的欄位註解。
+    """
     cur = db.execute(
-        "INSERT INTO draft_replies(mention_id, content_md, created_at) VALUES(?, ?, ?)",
-        (mention_id, content_md, _now()),
+        "INSERT INTO draft_replies(mention_id, content_md, created_at, "
+        "generation_config_json) VALUES(?, ?, ?, ?)",
+        (
+            mention_id,
+            content_md,
+            _now(),
+            json.dumps(generation_config, ensure_ascii=False) if generation_config else None,
+        ),
     )
     return int(cur.lastrowid)
 
@@ -762,3 +853,307 @@ def record_project_verification(
         """,
         (_now(), error, viewer_id, project_id),
     )
+
+
+# --------------------------------------------------------------------------
+# Persona（ADR-0007）
+#
+# 每一個函式都把 viewer_id 列為必填的第一個位置參數，與 summaries／mentions／
+# code_projects 同一條紀律（見模組 docstring）：Viewer A 不得讀到 Viewer B 的
+# Persona。沒有「查全部」的入口。
+# --------------------------------------------------------------------------
+
+
+def _persona_row(row: Dict[str, Any], *, include_raw: bool = False) -> Dict[str, Any]:
+    """DB 列 → API 形狀。
+
+    **預設不含 `raw_source`。** 那是遠端原文，只在使用者明確要看「淨化掉了
+    什麼」時才需要，而它有 20 KB 上下——放進列表回應會讓 `GET /personas`
+    的體積跟著 persona 數量線性膨脹。更重要的是：讓原文預設不出現在
+    API 回應裡，可以少一條「有人把它接回 prompt」的路徑。
+    """
+    out = {
+        "id": row["id"],
+        "name": row["name"],
+        "description": row["description"] or "",
+        "source_type": row["source_type"],
+        "source_repository": row["source_repository"],
+        "source_url": row["source_url"],
+        "source_ref": row["source_ref"],
+        "source_commit_sha": row["source_commit_sha"],
+        "source_hash": row["source_hash"],
+        "enabled": bool(row["enabled"]),
+        "imported_at": row["imported_at"],
+        "refreshed_at": row["refreshed_at"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "profile": json.loads(row["profile_json"] or "{}"),
+    }
+    if include_raw:
+        out["raw_source"] = row["raw_source"]
+    return out
+
+
+def list_personas(viewer_id: int, *, enabled_only: bool = False) -> List[Dict[str, Any]]:
+    sql = "SELECT * FROM personas WHERE viewer_id = ?"
+    params: List[Any] = [viewer_id]
+    if enabled_only:
+        sql += " AND enabled = 1"
+    sql += " ORDER BY name COLLATE NOCASE"
+    return [_persona_row(row) for row in db.query_all(sql, params)]
+
+
+def get_persona(
+    viewer_id: int, persona_id: int, *, include_raw: bool = False
+) -> Optional[Dict[str, Any]]:
+    row = db.query_one(
+        "SELECT * FROM personas WHERE id = ? AND viewer_id = ?",
+        (persona_id, viewer_id),
+    )
+    return _persona_row(row, include_raw=include_raw) if row else None
+
+
+def find_persona_by_name(viewer_id: int, name: str) -> Optional[Dict[str, Any]]:
+    """按名稱找，用於匯入時判斷是「新增」還是「更新」。"""
+    row = db.query_one(
+        "SELECT * FROM personas WHERE viewer_id = ? AND name = ?",
+        (viewer_id, (name or "").strip()),
+    )
+    return _persona_row(row) if row else None
+
+
+def create_persona(
+    viewer_id: int,
+    *,
+    name: str,
+    description: str,
+    profile_json: str,
+    source_type: str,
+    source_repository: Optional[str] = None,
+    source_url: Optional[str] = None,
+    source_ref: Optional[str] = None,
+    source_commit_sha: Optional[str] = None,
+    source_hash: Optional[str] = None,
+    raw_source: Optional[str] = None,
+) -> int:
+    now = _now()
+    cur = db.execute(
+        """
+        INSERT INTO personas(
+            viewer_id, name, description, source_type, source_repository,
+            source_url, source_ref, source_commit_sha, source_hash,
+            profile_json, raw_source, enabled, imported_at, created_at, updated_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+        """,
+        (
+            viewer_id,
+            name.strip(),
+            (description or "").strip(),
+            source_type,
+            source_repository,
+            source_url,
+            source_ref,
+            source_commit_sha,
+            source_hash,
+            profile_json,
+            raw_source,
+            now,
+            now,
+            now,
+        ),
+    )
+    return int(cur.lastrowid)
+
+
+def update_persona(
+    viewer_id: int,
+    persona_id: int,
+    *,
+    name: Any = UNSET,
+    description: Any = UNSET,
+    profile_json: Any = UNSET,
+    enabled: Any = UNSET,
+    source_ref: Any = UNSET,
+    source_commit_sha: Any = UNSET,
+    source_hash: Any = UNSET,
+    raw_source: Any = UNSET,
+    touch_refreshed: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """更新 Persona。用 UNSET 哨兵，因為 `description` 可以被清成空字串。
+
+    `touch_refreshed=True` 用在「更新 Persona」（重新從來源取得）——
+    它與 `updated_at` 分開記錄：後者任何編輯都會動，前者專指
+    「重新從遠端拉了一次」。使用者要判斷的是「這份人格多久沒同步了」，
+    改個名字不該讓那個時間跟著跳。
+    """
+    current = get_persona(viewer_id, persona_id)
+    if current is None:
+        return None
+
+    new_name = _pick(name, current["name"])
+    new_desc = _pick(description, current["description"])
+    new_profile = _pick(profile_json, json.dumps(current["profile"], ensure_ascii=False))
+    new_enabled = _pick(enabled, current["enabled"])
+    new_ref = _pick(source_ref, current["source_ref"])
+    new_sha = _pick(source_commit_sha, current["source_commit_sha"])
+    new_hash = _pick(source_hash, current["source_hash"])
+
+    sets = [
+        "name = ?",
+        "description = ?",
+        "profile_json = ?",
+        "enabled = ?",
+        "source_ref = ?",
+        "source_commit_sha = ?",
+        "source_hash = ?",
+        "updated_at = ?",
+    ]
+    params: List[Any] = [
+        (new_name or "").strip(),
+        (new_desc or "").strip(),
+        new_profile,
+        int(bool(new_enabled)),
+        new_ref,
+        new_sha,
+        new_hash,
+        _now(),
+    ]
+    # raw_source 只在明確傳入時才寫，避免把既有原文覆蓋成 None
+    if not isinstance(raw_source, _Unset):
+        sets.append("raw_source = ?")
+        params.append(raw_source)
+    if touch_refreshed:
+        sets.append("refreshed_at = ?")
+        params.append(_now())
+
+    params.extend([persona_id, viewer_id])
+    db.execute(
+        f"UPDATE personas SET {', '.join(sets)} WHERE id = ? AND viewer_id = ?",
+        params,
+    )
+    return get_persona(viewer_id, persona_id)
+
+
+def delete_persona(viewer_id: int, persona_id: int) -> bool:
+    """刪除 Persona，並清掉指向它的偏好。
+
+    偏好欄位刻意沒有外鍵（見 `core/db.py`），所以這裡要自己清。
+    不清的話 `default_persona_id` 會指向一個不存在的 id，
+    而使用者下次產草稿時會拿到「沒有套用 persona」但 UI 顯示有選——
+    那種不一致查起來很費時。
+    """
+    cur = db.execute(
+        "DELETE FROM personas WHERE id = ? AND viewer_id = ?",
+        (persona_id, viewer_id),
+    )
+    deleted = cur.rowcount > 0
+    if deleted:
+        db.execute(
+            "UPDATE preferences SET default_persona_id = NULL, updated_at = ? "
+            "WHERE viewer_id = ? AND default_persona_id = ?",
+            (_now(), viewer_id, persona_id),
+        )
+    return deleted
+
+
+# --------------------------------------------------------------------------
+# Reply Prompt Preset（ADR-0007）
+# --------------------------------------------------------------------------
+
+
+def _reply_prompt_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "description": row["description"] or "",
+        "prompt": row["prompt"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def list_reply_prompts(viewer_id: int) -> List[Dict[str, Any]]:
+    return [
+        _reply_prompt_row(row)
+        for row in db.query_all(
+            "SELECT * FROM reply_prompts WHERE viewer_id = ? "
+            "ORDER BY name COLLATE NOCASE",
+            (viewer_id,),
+        )
+    ]
+
+
+def get_reply_prompt(viewer_id: int, prompt_id: int) -> Optional[Dict[str, Any]]:
+    row = db.query_one(
+        "SELECT * FROM reply_prompts WHERE id = ? AND viewer_id = ?",
+        (prompt_id, viewer_id),
+    )
+    return _reply_prompt_row(row) if row else None
+
+
+def get_reply_prompt_by_name(viewer_id: int, name: str) -> Optional[Dict[str, Any]]:
+    """按名稱找。
+
+    存在的理由是給 API 層做「同名檢查」：`UNIQUE(viewer_id, name)` 會擋住
+    重複，但那會變成 sqlite3.IntegrityError（500）。先查一次才能回
+    一句使用者看得懂的 400。
+    """
+    row = db.query_one(
+        "SELECT * FROM reply_prompts WHERE viewer_id = ? AND name = ?",
+        (viewer_id, (name or "").strip()),
+    )
+    return _reply_prompt_row(row) if row else None
+
+
+def create_reply_prompt(
+    viewer_id: int, *, name: str, description: str, prompt: str
+) -> int:
+    now = _now()
+    cur = db.execute(
+        "INSERT INTO reply_prompts(viewer_id, name, description, prompt, "
+        "created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?)",
+        (viewer_id, name.strip(), (description or "").strip(), prompt, now, now),
+    )
+    return int(cur.lastrowid)
+
+
+def update_reply_prompt(
+    viewer_id: int,
+    prompt_id: int,
+    *,
+    name: Any = UNSET,
+    description: Any = UNSET,
+    prompt: Any = UNSET,
+) -> Optional[Dict[str, Any]]:
+    current = get_reply_prompt(viewer_id, prompt_id)
+    if current is None:
+        return None
+    db.execute(
+        "UPDATE reply_prompts SET name = ?, description = ?, prompt = ?, "
+        "updated_at = ? WHERE id = ? AND viewer_id = ?",
+        (
+            (_pick(name, current["name"]) or "").strip(),
+            (_pick(description, current["description"]) or "").strip(),
+            _pick(prompt, current["prompt"]),
+            _now(),
+            prompt_id,
+            viewer_id,
+        ),
+    )
+    return get_reply_prompt(viewer_id, prompt_id)
+
+
+def delete_reply_prompt(viewer_id: int, prompt_id: int) -> bool:
+    """刪除 preset，並清掉指向它的偏好（理由同 `delete_persona`）。"""
+    cur = db.execute(
+        "DELETE FROM reply_prompts WHERE id = ? AND viewer_id = ?",
+        (prompt_id, viewer_id),
+    )
+    deleted = cur.rowcount > 0
+    if deleted:
+        db.execute(
+            "UPDATE preferences SET default_reply_prompt_id = NULL, updated_at = ? "
+            "WHERE viewer_id = ? AND default_reply_prompt_id = ?",
+            (_now(), viewer_id, prompt_id),
+        )
+    return deleted

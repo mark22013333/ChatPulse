@@ -3,7 +3,7 @@ import { api, errorMessage, LIMIT_DEFAULT, streamUrls } from '@/lib/api'
 import { streamSse } from '@/lib/sse'
 import { streamErrorMessage } from '@/lib/aiErrors'
 import { providerRequestField } from '@/store/providers'
-import type { CodeEnvironment, Mention, SseMeta } from '@/lib/types'
+import type { CodeEnvironment, DraftPolishMeta, Mention, SseMeta } from '@/lib/types'
 
 /** 建議回話段落的標題（契約：`### ✍️ 建議回話`）。容忍 emoji 與空白差異。 */
 const REPLY_HEADING = /^#{2,4}\s*.*建議回話.*$/m
@@ -50,6 +50,20 @@ interface DraftState {
   refLimit: number
   refLimitError: string | null
 
+  /**
+   * 回覆設定（ADR-0007）。這五個欄位與上面的參考來源勾選同一類：
+   * 它們是**跨 Mention 的偏好**，所以 `reset()` 刻意不清空它們
+   * （切一則 Mention 就把選好的口氣洗掉會很難用）。
+   *
+   * `null` 一律代表「沒有覆寫，照 Viewer 偏好或系統預設」；
+   * 要表達「這一次明確不使用」則送 `NONE_ID`（0）給後端。
+   */
+  toneId: string | null
+  personaId: number | null
+  customPrompt: string
+  customPromptId: number | null
+  sepiaEnabled: boolean | null
+
   streaming: boolean
   raw: string
   meta: SseMeta | null
@@ -57,6 +71,8 @@ interface DraftState {
   error: string | null
   /** 這份草稿屬於哪一則 Mention */
   mentionId: number | null
+  /** 這次潤稿的結果（沒開潤稿時是 null）。UI 用它顯示「Sepia 有沒有生效」。 */
+  polish: DraftPolishMeta | null
 
   /** 行內編輯器的內容 */
   replyText: string
@@ -71,6 +87,11 @@ interface DraftState {
   clearCodeRefs: () => void
   setReferenceSearch: (value: string) => void
   setRefLimit: (raw: string) => void
+  setToneId: (toneId: string | null) => void
+  setPersonaId: (personaId: number | null) => void
+  setCustomPrompt: (value: string) => void
+  setCustomPromptId: (promptId: number | null) => void
+  setSepiaEnabled: (enabled: boolean | null) => void
   setReplyText: (text: string) => void
   /** `mergeIds` 是要「一起回」的其他 Mention（不含 mentionId 自己） */
   generate: (mentionId: number, mergeIds?: number[]) => Promise<void>
@@ -78,6 +99,15 @@ interface DraftState {
   reset: () => void
   send: (mentionId: number) => Promise<Mention[]>
 }
+
+/**
+ * 「這一次明確不使用」的哨兵，要與後端的 `NONE_ID` 一致。
+ *
+ * 需要它是因為 `null` 已經被「沿用 Viewer 偏好」佔用了：Viewer 設了預設
+ * Persona 之後，「這次不要用」沒有別的方式表達——送 `null` 會被當成
+ * 「照偏好來」，於是使用者關不掉它。
+ */
+export const NONE_ID = 0
 
 /**
  * 送出時要結掉哪幾則：以伺服器在 meta.answering 回報的為準。
@@ -100,12 +130,19 @@ export const useDraftStore = create<DraftState>((set, get) => ({
   refLimit: LIMIT_DEFAULT,
   refLimitError: null,
 
+  toneId: null,
+  personaId: null,
+  customPrompt: '',
+  customPromptId: null,
+  sepiaEnabled: null,
+
   streaming: false,
   raw: '',
   meta: null,
   draftId: null,
   error: null,
   mentionId: null,
+  polish: null,
 
   replyText: '',
   replyEdited: false,
@@ -156,10 +193,26 @@ export const useDraftStore = create<DraftState>((set, get) => ({
     set({ refLimit: parsed, refLimitError: null })
   },
 
+  setToneId: (toneId) => set({ toneId }),
+  setPersonaId: (personaId) => set({ personaId }),
+  setCustomPrompt: (value) => set({ customPrompt: value }),
+  setCustomPromptId: (customPromptId) => set({ customPromptId }),
+  setSepiaEnabled: (sepiaEnabled) => set({ sepiaEnabled }),
+
   setReplyText: (text) => set({ replyText: text, replyEdited: true }),
 
   generate: async (mentionId, mergeIds = []) => {
-    const { refLimit, refLimitError, referenceSpaceIds, codeRefs } = get()
+    const {
+      refLimit,
+      refLimitError,
+      referenceSpaceIds,
+      codeRefs,
+      toneId,
+      personaId,
+      customPrompt,
+      customPromptId,
+      sepiaEnabled,
+    } = get()
     if (refLimitError || !Number.isInteger(refLimit)) return
 
     controller?.abort()
@@ -173,9 +226,20 @@ export const useDraftStore = create<DraftState>((set, get) => ({
       draftId: null,
       error: null,
       mentionId,
+      polish: null,
       replyText: '',
       replyEdited: false,
     })
+
+    // 回覆設定一律「有值才送」：省略欄位代表「沿用 Viewer 偏好」，
+    // 送 null 在後端是「清除偏好」的意思（只用在 PATCH /preferences），
+    // 兩者不可混用——見 lib/api.ts 的 updatePreferences 註解。
+    const replyFields: Record<string, unknown> = {}
+    if (toneId !== null) replyFields.tone_id = toneId
+    if (personaId !== null) replyFields.persona_id = personaId
+    if (customPrompt.trim()) replyFields.custom_prompt = customPrompt.trim()
+    else if (customPromptId !== null) replyFields.custom_prompt_id = customPromptId
+    if (sepiaEnabled !== null) replyFields.sepia_enabled = sepiaEnabled
 
     await streamSse(
       streamUrls.draft(mentionId),
@@ -186,6 +250,7 @@ export const useDraftStore = create<DraftState>((set, get) => ({
         merge_mention_ids: mergeIds.filter((id) => id !== mentionId),
         code_refs: codeRefs,
         ...providerRequestField(),
+        ...replyFields,
       },
       {
         onMeta: (meta) => set({ meta }),
@@ -200,7 +265,17 @@ export const useDraftStore = create<DraftState>((set, get) => ({
           set((state) => ({
             streaming: false,
             draftId: done.draft_id ?? null,
-            replyText: state.replyEdited ? state.replyText : splitDraft(state.raw).reply.trim(),
+            polish: done.polish ?? null,
+            // `done.reply` 是潤稿後的版本。**必須採用它**，否則開了 Sepia
+            // 之後畫面上是未潤稿的內容、資料庫是潤稿後的內容，而使用者
+            // 按送出時送的是畫面這一份——那等於 Sepia 完全沒生效，
+            // 而且從畫面看不出來。
+            //
+            // 使用者已經動過編輯器時仍然尊重他的版本：他的編輯比潤稿更晚、
+            // 也更明確。這與 onChunk 的 replyEdited 判斷是同一條規則。
+            replyText: state.replyEdited
+              ? state.replyText
+              : (done.reply ?? splitDraft(state.raw).reply).trim(),
           })),
         onError: (event) =>
           set({
@@ -225,6 +300,10 @@ export const useDraftStore = create<DraftState>((set, get) => ({
   reset: () => {
     controller?.abort()
     controller = null
+    // 刻意**不清** referenceSpaceIds／codeRefs／refLimit／referenceSearch
+    // 與回覆設定（toneId／personaId／customPrompt／customPromptId／sepiaEnabled）：
+    // 那些是跨 Mention 的偏好，切一則就洗掉會很難用。
+    // `polish` 相反——它是這一次草稿的結果，要跟著清。
     set({
       streaming: false,
       raw: '',
@@ -232,6 +311,7 @@ export const useDraftStore = create<DraftState>((set, get) => ({
       draftId: null,
       error: null,
       mentionId: null,
+      polish: null,
       replyText: '',
       replyEdited: false,
       sending: false,

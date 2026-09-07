@@ -44,6 +44,25 @@ ANCHOR = {
 }
 
 
+#: 偏好的替身。`draft_stream` 會讀偏好來解析回覆設定（ADR-0007），
+#: 不 patch 的話單元測試會連到真的資料庫——那既違反「tests/unit 不碰 DB」
+#: 的紀律，也會讓測試結果隨開發者自己的偏好設定而變。
+#: 全部給「沒有偏好」，這樣這一套測試驗的仍然是原本的行為。
+PREFERENCES = {
+    "pinned_space_ids": [],
+    "default_limit": 50,
+    "default_style": "general",
+    "default_provider": None,
+    "default_code_project_id": None,
+    "default_code_environment": None,
+    "default_reply_tone": None,
+    "default_persona_id": None,
+    "default_reply_prompt_id": None,
+    "default_sepia_enabled": None,
+    "updated_at": "2026-09-07T00:00:00+00:00",
+}
+
+
 class FakeProvider:
     model = "fake"
     supports_vision = False
@@ -79,7 +98,8 @@ def run_stream(req=None, captured=None):
     provider = FakeProvider()
     request = req or server.DraftRequest()
     with mock.patch.object(server.repo, "get_mention", lambda vid, mid: dict(MENTION)), \
-         mock.patch.object(server.repo, "create_draft", lambda mid, text: 1), \
+         mock.patch.object(server.repo, "create_draft", lambda mid, text, config=None: 1), \
+         mock.patch.object(server.repo, "get_preferences", lambda vid: dict(PREFERENCES)), \
          mock.patch.object(server, "get_client", lambda vid: FakeClient()), \
          mock.patch.object(server, "get_provider", lambda vid, p: provider), \
          mock.patch.object(server, "space_shape", lambda vid, sid: ("SPACE", "THREADED_MESSAGES")), \
@@ -129,6 +149,45 @@ class TestSelfUserIdIsWired(unittest.TestCase):
         self.assertEqual(meta["type"], "meta")
         self.assertIn("context", meta)
         self.assertIn("answering", meta)
+
+
+class TestStreamActuallySucceeds(unittest.TestCase):
+    """這一串必須跑到 done，不可以在中途變成 error 事件。
+
+    **為什麼這一套要存在。** 2026-09-07 為 Draft Reply 加回覆設定時，
+    `repo.create_draft` 多了第三個參數，而這個檔案的替身還是
+    `lambda mid, text`。於是每一次串流都在存檔那一步 TypeError、
+    被 `except Exception` 接住、變成 `INTERNAL_ERROR` 事件——
+    **而上面五個測試全部照樣綠燈**，因為它們只檢查
+    `draft_context.build` 收到什麼，沒有人檢查這串到底有沒有成功。
+
+    這條測試守的就是那個缺口：任何讓串流中途失敗的改動，
+    在這裡會直接紅燈，而不是等到有人手動打開畫面才發現。
+    """
+
+    def _events(self):
+        import json  # noqa: PLC0415
+
+        _, events, _ = run_stream()
+        return [json.loads(e.split("data: ", 1)[1]) for e in events]
+
+    def test_no_error_event_is_emitted(self):
+        errors = [e for e in self._events() if e["type"] == "error"]
+        self.assertEqual(
+            errors, [], f"串流中途失敗了：{errors[0]['message'] if errors else ''}"
+        )
+
+    def test_stream_reaches_done_with_a_draft_id(self):
+        events = self._events()
+        self.assertEqual(events[-1]["type"], "done", f"最後一個事件是 {events[-1]}")
+        self.assertEqual(events[-1]["draft_id"], 1)
+
+    def test_meta_reports_the_reply_settings_it_applied(self):
+        """meta 要說出「系統以為你選了什麼」，理由同 code_refs。"""
+        meta = self._events()[0]
+        self.assertIn("reply", meta)
+        # 沒有任何偏好、request 也沒帶 → 只有 sepia 一個鍵，且是關閉
+        self.assertEqual(meta["reply"], {"sepia": False})
 
 
 if __name__ == "__main__":

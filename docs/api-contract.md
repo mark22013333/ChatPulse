@@ -28,8 +28,13 @@
 | 401 | `NOT_AUTHENTICATED` | 未登入或 session 過期 |
 | 403 | `SPACE_FORBIDDEN` | 不是該聊天室成員 |
 | 404 | `SPACE_NOT_FOUND` / `MENTION_NOT_FOUND` / `ROUTE_NOT_FOUND` | 目標不存在；`ROUTE_NOT_FOUND` 專指 API 路徑打錯（刻意與 SPACE_NOT_FOUND 分開，否則前端會把「端點打錯」顯示成「聊天室不見了」） |
+| 404 | `PERSONA_NOT_FOUND` | 找不到指定的 Persona（**只在「這一次明確指定」時拋**；偏好裡的 id 失效是降級成不使用，不是錯誤） |
+| 404 | `REPLY_PROMPT_NOT_FOUND` | 找不到指定的 Reply Prompt Preset。同上，偏好失效不拋 |
+| 409 | `PERSONA_INVALID` | 這份 Persona 淨化後沒有可用的風格資訊，或已被停用。**東西存在但不能用**，與 `CODE_PROJECT_UNAVAILABLE` 同族。淨化後為空是**可預期的正常結果**，不是 bug |
+| 409 | `SEPIA_UNAVAILABLE` | 要求潤稿但 vendored 規則檔不可用。**在 SSE 開始之前就回**。這與「潤稿跑了但完整性檢查沒過」不同——後者退回未潤稿版本並在 `polish.fallback_reason` 說明，不拋錯 |
 | 429 | `CHAT_RATE_LIMITED` / `GEMINI_QUOTA_EXCEEDED` / `CLAUDE_QUOTA_EXCEEDED` | 上游限流，帶 `Retry-After`。兩個 AI 的配額分開列，前端可據此建議「換一個供應商試試」 |
 | 502 | `CHAT_API_ERROR` / `GEMINI_API_ERROR` / `CLAUDE_API_ERROR` | 上游非預期回應。`CLAUDE_API_ERROR` 指的是「Claude 這條路徑出錯」，**不是**已移除的 `claude_api` 供應商——`claude_cli` 也用這個碼 |
+| 502 | `PERSONA_SOURCE_ERROR` | 從外部來源取得 Persona 失敗（網路、404、超過大小上限、格式不對）。**刻意與 `PERSONA_INVALID` 分開**：這個是「東西拿不到」（換網址、稍後再試、確認 repo 是公開的），那個是「拿到了但讀不出東西」（換來源或改用手動填寫）。502 而不是 400，因為問題出在外部服務或外部內容，不是呼叫端的參數 |
 | 500 | `CONFIGURATION_ERROR` | 伺服器設定不完整（例如缺 GOOGLE_API_KEY） |
 | 500 | `INTERNAL_ERROR` | 未預期錯誤的兜底 |
 
@@ -114,10 +119,24 @@ scope 含 chat 三項 ＋ `openid`/`userinfo.email`/`userinfo.profile`。
 需登入。body 任一欄位可省略：
 ```json
 { "pinned_space_ids": ["spaces/AAA"], "default_limit": 100, "default_style": "technical",
-  "default_provider": "claude_cli" }
+  "default_provider": "claude_cli",
+  "default_code_project_id": 3, "default_code_environment": "production",
+  "default_reply_tone": "professional", "default_persona_id": 4,
+  "default_reply_prompt_id": 2, "default_sepia_enabled": true }
 ```
 回傳更新後的 preferences，另含 `updated_at`（ISO 8601 UTC）。
 `default_provider` 傳空字串等同清除（回到伺服器預設）；傳非法值回 `400 INVALID_PARAMETER`。
+
+**`null` 的語意在新舊欄位之間不一致，這是實作上真實存在的差異，呼叫端必須知道：**
+
+| 欄位 | 送 `null` 的意思 |
+| :--- | :--- |
+| `pinned_space_ids`／`default_limit`／`default_style`／`default_provider`／`default_code_project_id`／`default_code_environment` | **不改**（等同沒帶這個欄位） |
+| `default_reply_tone`／`default_persona_id`／`default_reply_prompt_id`／`default_sepia_enabled` | **清除**（回到「沒有預設值」的狀態） |
+
+四個回覆設定欄位需要「清除」這個動作，是因為「不使用 Persona」「不套用預設口氣」「不要自動潤稿」都是使用者會主動選的狀態，必須存得下去；而舊欄位的 `null`＝不改已經被現有前端依賴，改掉會弄壞它。handler 靠 `model_fields_set` 區分「沒帶這個欄位」與「帶了 null」，對應到 repository 的 `UNSET` 哨兵或 `None`。
+
+`default_reply_tone` 是**回話的語氣**，`default_style` 是**摘要的章節結構**——兩者不同層次也不同值域，刻意不共用欄位（ADR-0007）。這四個欄位**刻意沒有外鍵**：Persona 或 Preset 被刪除時偏好會留著一個失效的 id，產草稿時降級成「不使用」並記 log，不擋住功能。
 
 ---
 
@@ -272,7 +291,9 @@ mentions 表**只存識別資訊**，不存內容）。
 ```json
 { "reference_space_ids": ["spaces/BBB", "spaces/CCC"], "limit": 50, "provider": "claude_cli",
   "merge_mention_ids": [46],
-  "code_refs": [ { "project_id": 3, "environment": "production" } ], "code_terms": [] }
+  "code_refs": [ { "project_id": 3, "environment": "production" } ], "code_terms": [],
+  "tone_id": "engineer", "persona_id": 4, "custom_prompt": null,
+  "custom_prompt_id": 2, "sepia_enabled": true }
 ```
 `reference_space_ids` **預設空陣列**（7.3：不自動選擇 Reference Space）。
 
@@ -296,6 +317,27 @@ mentions 表**只存識別資訊**，不存內容）。
 就是「比對正式與 UAT」**——「這是不是 bug」這類問題最有價值的用法。
 每筆可另帶 `paths`（明確指定檔案，跳過關鍵字搜尋）。
 `code_terms` 覆寫自動抽詞。
+
+**回覆設定（7.4／ADR-0007）**——五個欄位全部選填，只作用於〈建議回話〉：
+
+| 欄位 | 型別 | 語意 |
+| :--- | :--- | :--- |
+| `tone_id` | `string` | Reply Tone。合法值見 `GET /api/v1/reply-tones`。`null`＝用 Viewer 偏好，偏好也沒有就**完全不介入**（產出與這個功能存在之前逐字相同） |
+| `persona_id` | `int` | 要套用的 Persona。`null`＝用 Viewer 偏好；**`0` 是「這一次明確不使用」** |
+| `custom_prompt` | `string` | 這一次直接輸入的自訂要求（上限見下方）。有值時**忽略** `custom_prompt_id` |
+| `custom_prompt_id` | `int` | 要套用的 Reply Prompt Preset。`null`＝用 Viewer 偏好；**`0` 是「這一次明確不使用」** |
+| `sepia_enabled` | `bool` | 要不要跑潤稿。`null`＝用 Viewer 偏好，偏好也沒有就**不潤**（系統預設關閉） |
+
+`persona_id` 與 `custom_prompt_id` 需要 `0` 這個哨兵，是因為 `null` 已被「沿用 Viewer 偏好」佔用——Viewer 設了預設 Persona 之後，「這次不要用」沒有別的方式表達，送 `null` 會被當成照偏好來。`0` 不可能是合法的 AUTOINCREMENT id。
+
+解析優先序：**Per Draft Override > Viewer Preference > System Default**。兩種「找不到」處置不同，這是呼叫端最容易誤判的地方：
+
+- **這一次明確指定的 id 找不到** → `404 PERSONA_NOT_FOUND` / `404 REPLY_PROMPT_NOT_FOUND`。指定的 Persona 被停用 → `409 PERSONA_INVALID`。`tone_id` 不是合法值 → `400 INVALID_PARAMETER`。
+- **Viewer 偏好裡的 id 或 tone 失效** → 降級成「不使用」並記 log，請求正常進行。
+
+`sepia_enabled: true` 但規則檔不可用 → `409 SEPIA_UNAVAILABLE`。
+`custom_prompt` 過長 → `400 INVALID_PARAMETER`（訊息會帶實際字數與上限）。
+**以上全部在 SSE 開始之前就回**，不是 error 事件。
 
 專案不存在回 **404 `CODE_PROJECT_NOT_FOUND`**、環境沒有對應分支回
 **400 `INVALID_PARAMETER`**——**這兩個都在 SSE 開始前就回**，不是 error 事件。
@@ -327,7 +369,10 @@ mentions 表**只存識別資訊**，不存內容）。
                    "truncated": false, "notes": [] } ],
   "code_skipped": [],
   "provider": "claude_cli", "model": "claude-cli:opus",
-  "image_count": 1, "images_skipped": [] }
+  "image_count": 1, "images_skipped": [],
+  "reply": { "tone": "engineer", "tone_label": "工程師協作",
+             "persona_id": 4, "persona_name": "羅振宇",
+             "custom_prompt": true, "custom_prompt_id": 2, "sepia": true } }
 ```
 `answering` 是這份草稿會回掉的全部 Mention（合併時 > 1 則）。**送出時要照它走**，
 不要沿用送出前的勾選——伺服器實際採用的才算數。
@@ -345,8 +390,38 @@ mentions 表**只存識別資訊**，不存內容）。
 查了哪個環境、哪個 commit、用哪些關鍵字、命中哪些檔案。搜錯環境一眼就看得到，
 不必先讀完生成文字。`hit_count` 為 0 代表「查了但沒找到」，與「沒有查」是不同的事，
 前端與 prompt 都必須分得出來。
-`done`：`{"type":"done","draft_id":3}`
+
+`meta.reply` 是**這次實際套用的回覆設定**，用途與 `code_refs` 相同：讓 Viewer 在模型開口
+之前就看到「系統以為我選了什麼」。只有實際生效的鍵會出現（沒選 tone 就沒有 `tone`），
+`sepia` 一律有。**`custom_prompt` 是布林，不是全文**——自訂提示是使用者輸入，沒有必要
+出現在 SSE 事件與 devtools 裡；要知道是哪一筆 preset 看 `custom_prompt_id`。
+
+`done`：`{"type":"done","draft_id":3,"reply":null,"polish":null}`
 輸出內容為兩段 Markdown：`### 🧭 脈絡分析` 與 `### ✍️ 建議回話`。
+
+開了潤稿時 `done` 的兩個欄位會有值：
+
+```json
+{ "type": "done", "draft_id": 3,
+  "reply": "（潤稿後的〈建議回話〉全文）",
+  "polish": { "polisher": "sepia", "polished": true, "polish_model": "claude-cli:opus" } }
+```
+
+| 欄位 | 語意 |
+| :--- | :--- |
+| `reply` | 潤稿後的〈建議回話〉全文。**未潤稿時為 `null`** |
+| `polish` | 潤稿 meta。**未啟用潤稿時為 `null`**。`polished: false` 時帶 `fallback_reason` |
+
+**前端必須處理 `reply`**：潤稿後 DB 存的內容與前端串流累積的不一致，而使用者按「送出」
+時送的是前端那一份。忽略這個欄位的話，開了潤稿就會把**未潤稿**的版本送到 Google Chat。
+`reply` 有值時要用它取代串流累積的〈建議回話〉那一段。
+
+`polished: false` 有兩種來源，都**不是錯誤而是降級**，但都必須讓使用者看到：
+草稿裡切不到〈建議回話〉標題（潤整篇會改到脈絡分析，所以不潤），
+或潤稿跑了但錨點完整性檢查沒過（退回未潤稿的版本）。兩者的 `fallback_reason` 都是
+可直接顯示的繁中句子。
+
+**事件型別沒有新增**——仍然只有 `meta`／`chunk`／`done`／`error` 四種。
 
 ### 參考專案（ADR-0006）
 
@@ -387,6 +462,181 @@ POST／PATCH／verify 回傳帶 `verification`：
 ```
 **分支不存在仍然建立成功**（分支可能之後才開），但 `last_verify_error` 會被記下來
 讓設定頁標警告。登錄時大聲失敗，遠比產草稿時才發現便宜。
+
+### 回覆設定（ADR-0007）
+
+兩個靜態清單端點**不需登入**（理由同 `/styles` 與 `/providers`：登入畫面也可能要顯示
+「目前沒有可用的潤稿器」）。其餘全部需登入，且**一律限於自己的資料**——`viewer_id` 是
+repository 層的必填查詢條件，沒有「查全部」的入口，別人的 Persona 與 Preset 連 id
+猜對了也讀不到（回 404，不是 403）。這與 ADR-0002 對 Summary 的私有標準一致。
+
+#### `GET /api/v1/reply-tones`
+**不需登入。** Reply Tone 選項，供下拉選單。
+```json
+{ "tones": [ { "id": "natural", "label": "自然直接", "description": "…",
+               "example": "（固定的示例回話）" } ],
+  "default": "natural" }
+```
+八個 id：`natural`／`professional`／`concise`／`friendly`／`engineer`／`soft`／
+`assertive`／`custom`。**回應不含 prompt instruction**——那是送給模型的片段，
+前端不需要，送出去只會變成使用者讀得到卻改不了的死資料。`example` 有送，
+UI 拿它做固定預覽，不必為了預覽去打一次 AI。
+
+與 `GET /api/v1/styles` 是**兩個不同的東西**：那個是**摘要**的章節結構
+（`general`／`technical`／`action_only`），這個是**回話**的語氣。值域不共用，
+不要互相套用。
+
+#### `GET /api/v1/polishers`
+**不需登入。** 潤稿器清單與可用性，形狀比照 `/providers`。
+```json
+{ "polishers": [ { "name": "noop", "label": "不潤稿", "available": true, "reason": "" },
+                 { "name": "sepia", "label": "Sepia 潤稿", "available": true, "reason": "" } ],
+  "sepia": { "name": "sepia", "version": "0.8.0",
+             "source_repository": "Nanako0129/sepia", "source_ref": "v0.8.0",
+             "source_commit_sha": "d8a0f948cc46a0ba0d610df7458c4e8943bfe51a",
+             "license": "MIT" } }
+```
+`available: false` 的 `reason` 寫的是**規則檔在哪、怎麼補**——前端要顯示出來，不要吞掉。
+`sepia` 是 vendored 規則的 provenance，要能一路顯示到 UI——半年後回頭看一份草稿，
+必須答得出「當時用的是哪一版規則」。
+
+**`available` 回答的是「規則裝好了嗎」，不是「現在這一刻能不能跑」。** 這個端點用的是
+`ResponsePolisher.static_available()`（sepia 的實作是 `sepia.rules_available()`，只看
+vendored 規則檔），刻意不含 AI 供應商的可用性——後者由 `GET /api/v1/providers` 回答。
+兩者混在一個布林裡的話，前端就無法判斷該叫使用者去補裝規則、還是去設定 API key。
+
+前端用這個欄位決定「使用 Sepia 潤稿」的勾選框能不能勾。要判斷「這一次能不能潤稿」，
+仍以送 `sepia_enabled: true` 時是否回 `409 SEPIA_UNAVAILABLE` 為準——
+`polish()` 之前會跑含供應商的完整檢查（`available()`）。
+
+#### `GET /api/v1/personas`
+需登入。自己的 Persona 清單 ＋ 可用的來源型別。
+```json
+{ "personas": [ { "id": 4, "name": "羅振宇", "description": "…",
+                  "source_type": "github", "source_repository": "fxp/persona-distill-skills",
+                  "source_url": null, "source_ref": "main",
+                  "source_commit_sha": "24c9850e4a8bbb8b3b1ab797b428163fa3c07066",
+                  "source_hash": "sha256:…", "enabled": true,
+                  "imported_at": "…", "refreshed_at": null,
+                  "created_at": "…", "updated_at": "…",
+                  "profile": { "name": "羅振宇", "thinking_style": ["…"],
+                               "communication_style": ["…"], "response_preferences": {},
+                               "avoid": ["…"], "boundaries": ["…"], "schema_version": 1 } } ],
+  "sources": [ { "name": "github", "label": "GitHub 公開 repository" },
+               { "name": "manual", "label": "自訂（手動填寫）" } ] }
+```
+`profile` 是**已淨化**的結構化資料，這是 Persona 唯一能進 prompt 的形狀。
+**列表不含 `raw_source`**（遠端原文有 20 KB 上下，放進列表會讓回應體積隨 Persona
+數量線性膨脹；更重要的是少一條「有人把它接回 prompt」的路徑）。
+`source_type` 的合法值：`github`／`manual`，另有別名 `url`（走 GitHub source 的網址入口）。
+
+#### `GET /api/v1/personas/{persona_id}`
+需登入。單筆，形狀同列表的元素。query：`include_raw`（預設 `false`；
+`true` 才附上 `raw_source`——**僅供 debug 與「淨化掉了什麼」的比對**）。
+不存在回 `404 PERSONA_NOT_FOUND`。
+
+#### `POST /api/v1/personas`
+需登入。手動建立。兩種輸入形態，二選一：
+```json
+{ "name": "我的風格", "description": "…", "raw_text": "（一段 markdown 風格描述）" }
+```
+```json
+{ "name": "我的風格", "description": "…",
+  "profile": { "thinking_style": ["…"], "communication_style": ["…"], "avoid": ["…"] } }
+```
+回 `{"persona": {...}, "created": true}`。
+
+**手填內容一樣走完整淨化流程。** 使用者最可能的填寫方式就是從某處複製一份 skill
+全文貼進來，那與遠端抓下來的沒有任何差別。淨化後沒有剩下可用風格資訊回
+`409 PERSONA_INVALID`（**這是可預期的正常結果**）；同名已存在回 `400 INVALID_PARAMETER`。
+
+#### `PATCH /api/v1/personas/{persona_id}`
+需登入。body 任一欄位可省略：
+```json
+{ "name": "新名字", "description": "…", "enabled": false }
+```
+回傳更新後的 Persona。不存在回 `404 PERSONA_NOT_FOUND`。
+
+**只能改名稱、簡介與啟用狀態，不能改 `profile`。** profile 只能由匯入流程產生，
+因為那條路徑保證跑過淨化——開一個「直接寫 profile_json」的入口等於開一個繞過淨化的後門。
+要改內容就重新匯入或刪掉重建。
+
+#### `DELETE /api/v1/personas/{persona_id}`
+需登入。回 `{"deleted": true}`。不存在回 `404 PERSONA_NOT_FOUND`。
+**刻意不檢查有沒有偏好指向它**：`preferences.default_persona_id` 沒有外鍵，
+刪掉之後那筆偏好會失效，產草稿時降級成「不使用」並記 log。
+
+#### `POST /api/v1/personas/import`
+需登入。從外部來源匯入，並**固定版本**。兩種形態：
+```json
+{ "source_type": "github", "repository": "fxp/persona-distill-skills",
+  "persona": "luozhenyu-perspective", "ref": "main", "name": "羅振宇" }
+```
+```json
+{ "source_type": "url", "url": "https://github.com/owner/repo/blob/main/skills/x/SKILL.md" }
+```
+`ref` 可省略（用預設分支），但**一律會解析成 commit SHA 存下來**。`name` 是覆寫顯示
+名稱——來源檔案的 `name` 常常是 skill 識別字（實測到 `luozhenyu-perspective`）而不是人名。
+
+```json
+{ "persona": { "id": 4, "...": "..." }, "created": true }
+```
+**同名視為「更新」而不是衝突**（`created: false`）：使用者按「更新 Persona」走的就是
+同一條匯入流程，報 409 會逼他先刪再匯入，中間那段時間偏好會斷掉。
+
+取不到／格式不對／超過大小上限回 `502 PERSONA_SOURCE_ERROR`；
+取到了但淨化後為空回 `409 PERSONA_INVALID`；
+`source_type` 不合法或判斷不出名稱回 `400 INVALID_PARAMETER`。
+
+#### `POST /api/v1/personas/{persona_id}/refresh`
+需登入。重新從原來的來源取檔（會更新 `source_commit_sha`）。無 body。
+```json
+{ "persona": { "...": "..." }, "created": false, "changed": true }
+```
+**刻意用原本的 `source_ref`（分支名）重新解析，而不是沿用舊的 commit SHA**——
+「更新」的意思就是去看那個分支現在長什麼樣。`changed` 由 `source_hash` 比對得出，
+因為「更新後內容有沒有真的變」沒有別的方式判斷。
+
+`source_type` 是 `manual` 的回 `400 INVALID_PARAMETER`（自訂 Persona 沒有外部來源）。
+不存在回 `404 PERSONA_NOT_FOUND`，其餘錯誤同 import。
+
+#### `GET /api/v1/personas/sources/{source_type}/list`
+需登入。列出某個來源 repo 有哪些 Persona 可以匯入。
+query：`repository`（**必填**，`owner/repo`）、`ref`（選填）。
+```json
+{ "personas": [ { "id": "luozhenyu-perspective", "name": "luozhenyu-perspective",
+                  "path": "skills/luozhenyu-perspective/SKILL.md", "size": 8421,
+                  "repository": "fxp/persona-distill-skills",
+                  "ref": "main", "commit_sha": "24c9850e…" } ] }
+```
+**需登入但不讀 Viewer 的資料**——這裡的登入檢查純粹當認證閘門，避免變成一個未登入
+就能用的對外 GET 代理（寫法比照 `POST /api/v1/code-projects/{id}/verify`）。
+GitHub 未認證每小時只有 60 次呼叫，前端不要拿它做輸入即時提示。
+
+#### `GET /api/v1/reply-prompts`
+需登入。自己的 Reply Prompt Preset 清單。
+```json
+{ "reply_prompts": [ { "id": 2, "name": "客戶回覆", "description": "…",
+                       "prompt": "（自訂要求全文）",
+                       "created_at": "…", "updated_at": "…" } ] }
+```
+
+#### `POST /api/v1/reply-prompts`
+需登入。
+```json
+{ "name": "客戶回覆", "description": "對外窗口用", "prompt": "（自訂要求全文）" }
+```
+回傳建立後的單筆（形狀同列表元素）。名稱或內容為空、內容超過字數上限、
+同名已存在，一律回 `400 INVALID_PARAMETER`（訊息會帶實際字數與上限）。
+
+#### `PATCH /api/v1/reply-prompts/{prompt_id}`
+需登入。body 任一欄位可省略：`name`／`description`／`prompt`。
+回傳更新後的單筆。帶了 `prompt` 但內容為空或過長回 `400 INVALID_PARAMETER`；
+不存在回 `404 REPLY_PROMPT_NOT_FOUND`。
+
+#### `DELETE /api/v1/reply-prompts/{prompt_id}`
+需登入。回 `{"deleted": true}`。不存在回 `404 REPLY_PROMPT_NOT_FOUND`。
+與刪 Persona 同理，不檢查 `preferences.default_reply_prompt_id` 是否指向它。
 
 ### `POST /api/v1/mentions/{id}/reply`
 需登入。送出回話（**前端必須先二次確認**）。

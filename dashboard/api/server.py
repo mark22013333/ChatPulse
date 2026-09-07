@@ -14,6 +14,7 @@ API 契約的單一事實來源是 docs/api-contract.md。
 """
 
 import concurrent.futures as futures
+import dataclasses
 import json
 import logging
 import os
@@ -46,8 +47,12 @@ from core import (
     directory,
     draft_context,
     identity,
+    persona_sources,
+    personas,
+    polishers,
     prompts,
     providers,
+    reply_profiles,
 )
 from core import repository as repo
 from core.chat_client import (
@@ -63,9 +68,14 @@ from core.errors import (
     InvalidParameter,
     MentionNotFound,
     NotAuthenticated,
+    PersonaInvalid,
+    PersonaNotFound,
+    ReplyPromptNotFound,
     RouteNotFound,
+    SepiaUnavailable,
 )
 from core.mentions import CollectorRunner
+from core.polishers import sepia as sepia_polisher
 
 logging.basicConfig(
     level=os.environ.get("CHATPULSE_LOG_LEVEL", "INFO"),
@@ -695,6 +705,19 @@ class PreferencesRequest(BaseModel):
     #: 草稿預設要查哪個參考專案的哪個環境（ADR-0006）
     default_code_project_id: Optional[int] = None
     default_code_environment: Optional[str] = None
+    #: Draft Reply 的回覆設定預設值（ADR-0007）。
+    #:
+    #: 這四個欄位與上面的舊欄位有一個關鍵差異：**送 `null` 代表「清除」，
+    #: 不是「不改」**。因為「不使用 Persona」「不套用預設口氣」都是使用者
+    #: 會主動選的狀態，必須存得下去。handler 靠 `model_fields_set` 區分
+    #: 「沒帶這個欄位」與「帶了 null」，再對應到 `repo.UNSET` 或 `None`。
+    #:
+    #: `default_style` 是**摘要**的章節結構，`default_reply_tone` 是**回話**
+    #: 的語氣——兩者不同層次也不同值域，刻意不共用欄位（見 ADR-0007）。
+    default_reply_tone: Optional[str] = None
+    default_persona_id: Optional[int] = None
+    default_reply_prompt_id: Optional[int] = None
+    default_sepia_enabled: Optional[bool] = None
 
 
 # ==========================================================================
@@ -896,6 +919,355 @@ def remove_code_project(project_id: int, viewer: Dict[str, Any] = ViewerDep):
     return {"deleted": True}
 
 
+# ==========================================================================
+# Persona（Draft Reply 的表達風格參考，ADR-0007）
+#
+# 與參考專案、Reference Space 同一個哲學：由人指定，系統不自動發現。
+# 所有查詢都帶 viewer_id（repository 的簽章強制），沒有跨 Viewer 的入口。
+# ==========================================================================
+
+
+class PersonaImportRequest(BaseModel):
+    """從外部來源匯入 Persona。
+
+    兩種形態：`{"source_type":"github","repository":"owner/repo","persona":"slug"}`
+    或 `{"source_type":"url","url":"..."}`。網域限制與大小／轉址／私有 IP 的
+    防護在 `core/persona_sources/base.py`。
+    """
+
+    source_type: str
+    repository: Optional[str] = None
+    persona: Optional[str] = None
+    url: Optional[str] = None
+    #: 指定分支或 tag。省略時用預設分支，但**一律會解析成 commit SHA 存下來**
+    #: （見 `GitHubPersonaSource._resolve_commit`）。
+    ref: Optional[str] = None
+    #: 覆寫顯示名稱。來源檔案的 `name` 常常是 skill 識別字
+    #: （實測到 `luozhenyu-perspective`）而不是人名，所以要能改。
+    name: Optional[str] = None
+
+
+class PersonaCreateRequest(BaseModel):
+    """手動建立 Persona。"""
+
+    name: str
+    description: str = ""
+    #: 貼一段風格描述（markdown），走與遠端相同的章節抽取
+    raw_text: Optional[str] = None
+    #: 或直接給結構化欄位（thinking_style／communication_style／avoid…）
+    profile: Optional[Dict[str, Any]] = None
+
+
+class PersonaUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    enabled: Optional[bool] = None
+
+
+def _persona_import_result(
+    viewer_id: int, fetched: persona_sources.FetchedPersona, override_name: Optional[str]
+) -> Dict[str, Any]:
+    """把取回的原文淨化、落地，回 API 形狀。
+
+    **這是遠端內容唯一的入口。** 原文在這裡就被轉成 `PersonaProfile`，
+    之後的任何路徑都只看得到淨化後的結構化資料（`raw_source` 只為 debug
+    與更新時比較差異而存，不進 prompt——見 `core/personas.py`）。
+    """
+    profile = personas.normalize_persona(
+        fetched.raw_text,
+        name_hint=override_name or fetched.name_hint,
+        description_hint=fetched.description_hint,
+    )
+    if not profile.is_usable():
+        # 這是**可預期的正常結果**，不是 bug：來源檔案可能整份都是角色扮演
+        # 指令與工作流程，那些一律不採用，淨化完就空了。
+        raise PersonaInvalid(
+            "這份來源淨化之後沒有留下任何可用的風格資訊"
+            "（角色扮演指令、工作流程、工具呼叫一律不採用）。"
+            "你可以改用自訂 Persona 手動填寫風格描述。"
+        )
+
+    name = (override_name or profile.name or fetched.name_hint or "").strip()
+    if not name:
+        raise InvalidParameter("無法判斷 Persona 名稱，請用 name 欄位指定")
+
+    payload = dict(
+        name=name,
+        description=profile.description,
+        profile_json=profile.to_json(),
+        source_repository=fetched.source_repository,
+        source_url=fetched.source_url,
+        source_ref=fetched.source_ref,
+        source_commit_sha=fetched.source_commit_sha,
+        source_hash=fetched.source_hash,
+        raw_source=fetched.raw_text,
+    )
+
+    existing = repo.find_persona_by_name(viewer_id, name)
+    if existing is not None:
+        # 同名視為「更新」而不是報衝突：使用者按「更新 Persona」時走的就是
+        # 同一條匯入流程，報 409 會逼他先刪再匯入，中間那段時間偏好會斷掉。
+        updated = repo.update_persona(
+            viewer_id,
+            existing["id"],
+            description=payload["description"],
+            profile_json=payload["profile_json"],
+            source_ref=payload["source_ref"],
+            source_commit_sha=payload["source_commit_sha"],
+            source_hash=payload["source_hash"],
+            raw_source=payload["raw_source"],
+            touch_refreshed=True,
+        )
+        return {"persona": updated, "created": False}
+
+    persona_id = repo.create_persona(
+        viewer_id, source_type=fetched.source_type, **payload
+    )
+    return {"persona": repo.get_persona(viewer_id, persona_id), "created": True}
+
+
+@app.get("/api/v1/personas")
+def get_personas(viewer: Dict[str, Any] = ViewerDep):
+    """列出自己匯入的 Persona 與可用的來源型別。"""
+    return {
+        "personas": repo.list_personas(viewer["id"]),
+        "sources": persona_sources.describe_all(),
+    }
+
+
+@app.get("/api/v1/personas/{persona_id}")
+def get_persona_detail(
+    persona_id: int,
+    include_raw: bool = Query(False, description="是否附上遠端原文（僅供 debug）"),
+    viewer: Dict[str, Any] = ViewerDep,
+):
+    persona = repo.get_persona(viewer["id"], persona_id, include_raw=include_raw)
+    if persona is None:
+        raise PersonaNotFound(f"找不到 Persona {persona_id}")
+    return persona
+
+
+@app.post("/api/v1/personas/import")
+def import_persona(req: PersonaImportRequest, viewer: Dict[str, Any] = ViewerDep):
+    """從公開來源匯入 Persona，並固定版本。
+
+    版本固定不是嚴謹好看：遠端隨時可以改 SKILL.md，而 Viewer 不會知道。
+    匯入時解析成 commit SHA 存下來，只有按「更新」才重新取得——
+    否則「今天產生的回話」會因為明天遠端偷偷改了檔案而變一個樣子。
+    """
+    source = persona_sources.resolve(req.source_type)
+    fetched = source.fetch(
+        repository=req.repository,
+        persona=req.persona,
+        url=req.url,
+        ref=req.ref,
+    )
+    return _persona_import_result(viewer["id"], fetched, req.name)
+
+
+@app.get("/api/v1/personas/sources/{source_type}/list")
+def list_source_personas(
+    source_type: str,
+    repository: str = Query(..., description="owner/repo"),
+    ref: Optional[str] = Query(None),
+    viewer: Dict[str, Any] = ViewerDep,
+):
+    """列出某個來源 repo 有哪些 Persona 可以匯入。
+
+    需要登入（`ViewerDep`）但不讀 Viewer 的資料——這裡的 `ViewerDep` 純粹
+    當認證閘門，避免變成一個未登入就能用的對外 GET 代理。
+    寫法比照 `verify_code_project`。
+    """
+    source = persona_sources.resolve(source_type)
+    return {"personas": source.list_personas(repository=repository, ref=ref)}
+
+
+@app.post("/api/v1/personas/{persona_id}/refresh")
+def refresh_persona(persona_id: int, viewer: Dict[str, Any] = ViewerDep):
+    """重新從原來的來源取得這份 Persona（會更新 commit SHA）。"""
+    viewer_id = viewer["id"]
+    existing = repo.get_persona(viewer_id, persona_id)
+    if existing is None:
+        raise PersonaNotFound(f"找不到 Persona {persona_id}")
+    if existing["source_type"] == "manual":
+        raise InvalidParameter("自訂 Persona 沒有外部來源可以更新，請直接編輯內容")
+
+    source = persona_sources.resolve(existing["source_type"])
+    fetched = source.fetch(
+        repository=existing["source_repository"],
+        persona=existing["name"],
+        url=existing["source_url"],
+        # 刻意用原本的 ref（分支名）重新解析，而不是沿用舊的 commit SHA——
+        # 「更新」的意思就是去看那個分支現在長什麼樣。
+        ref=existing["source_ref"],
+    )
+    result = _persona_import_result(viewer_id, fetched, existing["name"])
+    result["changed"] = existing["source_hash"] != fetched.source_hash
+    return result
+
+
+@app.post("/api/v1/personas")
+def post_persona(req: PersonaCreateRequest, viewer: Dict[str, Any] = ViewerDep):
+    """手動建立 Persona。
+
+    手填內容**一樣**走完整的淨化流程：使用者最可能的填寫方式就是從某處
+    複製一份 skill 全文貼進來，那與遠端抓下來的沒有任何差別。
+    """
+    source = persona_sources.resolve("manual")
+    fetched = source.fetch(
+        name=req.name,
+        description=req.description,
+        raw_text=req.raw_text,
+        profile=req.profile,
+    )
+    if req.profile is not None:
+        # 結構化輸入不需要章節抽取，但要過 `_coerce` 的逐條淨化
+        profile = personas.PersonaProfile.from_json(
+            json.dumps({**req.profile, "name": req.name}, ensure_ascii=False)
+        )
+        if not profile.is_usable():
+            raise PersonaInvalid("填寫的內容淨化之後沒有留下可用的風格資訊")
+        name = req.name.strip()
+        if not name:
+            raise InvalidParameter("Persona 需要名稱")
+        if repo.find_persona_by_name(viewer["id"], name) is not None:
+            raise InvalidParameter(f"已經有一個叫「{name}」的 Persona")
+        persona_id = repo.create_persona(
+            viewer["id"],
+            name=name,
+            description=(req.description or "").strip(),
+            profile_json=profile.to_json(),
+            source_type="manual",
+            source_hash=fetched.source_hash,
+            raw_source=fetched.raw_text,
+        )
+        return {"persona": repo.get_persona(viewer["id"], persona_id), "created": True}
+
+    return _persona_import_result(viewer["id"], fetched, req.name)
+
+
+@app.patch("/api/v1/personas/{persona_id}")
+def patch_persona(
+    persona_id: int, req: PersonaUpdateRequest, viewer: Dict[str, Any] = ViewerDep
+):
+    """改名、改簡介、啟用／停用。**不能從這裡改 profile 內容**。
+
+    profile 只能由匯入流程產生，因為那條路徑保證跑過淨化。開一個
+    「直接寫 profile_json」的入口等於開一個繞過淨化的後門。
+    """
+    sent = req.model_fields_set
+
+    # 改名一定要過淨化。`personas.name` 會被寫進 prompt（見
+    # `resolve_reply_options` 以 row.name 為單一事實來源），所以它與匯入時的
+    # frontmatter `name` 是同一個信任等級——不淨化的話「改名」就是一條
+    # 繞過全部四層防線、把任意文字直接送進 prompt 的路徑。
+    name = repo.UNSET
+    if "name" in sent:
+        name = personas.clean_display_name(req.name)
+        if not name:
+            raise InvalidParameter(
+                "Persona 名稱不可以是空的，也不可以包含指令性的內容"
+            )
+
+    description = repo.UNSET
+    if "description" in sent:
+        # 簡介只顯示給人看、不進 prompt，但一樣走淨化——它會出現在選單裡，
+        # 而使用者可能貼進整段 skill 文字。
+        description = personas.clean_display_description(req.description)
+
+    updated = repo.update_persona(
+        viewer["id"],
+        persona_id,
+        name=name,
+        description=description,
+        enabled=req.enabled if "enabled" in sent else repo.UNSET,
+    )
+    if updated is None:
+        raise PersonaNotFound(f"找不到 Persona {persona_id}")
+    return updated
+
+
+@app.delete("/api/v1/personas/{persona_id}")
+def remove_persona(persona_id: int, viewer: Dict[str, Any] = ViewerDep):
+    if not repo.delete_persona(viewer["id"], persona_id):
+        raise PersonaNotFound(f"找不到 Persona {persona_id}")
+    return {"deleted": True}
+
+
+# ==========================================================================
+# Reply Prompt Preset（存起來重複使用的自訂提示詞，ADR-0007）
+# ==========================================================================
+
+
+class ReplyPromptRequest(BaseModel):
+    name: str
+    description: str = ""
+    prompt: str
+
+
+class ReplyPromptUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    prompt: Optional[str] = None
+
+
+@app.get("/api/v1/reply-prompts")
+def get_reply_prompts(viewer: Dict[str, Any] = ViewerDep):
+    return {"reply_prompts": repo.list_reply_prompts(viewer["id"])}
+
+
+@app.post("/api/v1/reply-prompts")
+def post_reply_prompt(req: ReplyPromptRequest, viewer: Dict[str, Any] = ViewerDep):
+    name = req.name.strip()
+    prompt = (req.prompt or "").strip()
+    if not name:
+        raise InvalidParameter("回覆提示詞需要名稱")
+    if not prompt:
+        raise InvalidParameter("回覆提示詞的內容不可以是空的")
+    if len(prompt) > MAX_CUSTOM_PROMPT_CHARS:
+        raise InvalidParameter(
+            f"回覆提示詞過長（{len(prompt)} 字，上限 {MAX_CUSTOM_PROMPT_CHARS} 字）"
+        )
+    if repo.get_reply_prompt_by_name(viewer["id"], name) is not None:
+        raise InvalidParameter(f"已經有一個叫「{name}」的回覆提示詞")
+    prompt_id = repo.create_reply_prompt(
+        viewer["id"], name=name, description=req.description, prompt=prompt
+    )
+    return repo.get_reply_prompt(viewer["id"], prompt_id)
+
+
+@app.patch("/api/v1/reply-prompts/{prompt_id}")
+def patch_reply_prompt(
+    prompt_id: int, req: ReplyPromptUpdateRequest, viewer: Dict[str, Any] = ViewerDep
+):
+    sent = req.model_fields_set
+    if "prompt" in sent:
+        text = (req.prompt or "").strip()
+        if not text:
+            raise InvalidParameter("回覆提示詞的內容不可以是空的")
+        if len(text) > MAX_CUSTOM_PROMPT_CHARS:
+            raise InvalidParameter(
+                f"回覆提示詞過長（{len(text)} 字，上限 {MAX_CUSTOM_PROMPT_CHARS} 字）"
+            )
+    updated = repo.update_reply_prompt(
+        viewer["id"],
+        prompt_id,
+        name=req.name if "name" in sent else repo.UNSET,
+        description=req.description if "description" in sent else repo.UNSET,
+        prompt=req.prompt if "prompt" in sent else repo.UNSET,
+    )
+    if updated is None:
+        raise ReplyPromptNotFound(f"找不到回覆提示詞 {prompt_id}")
+    return updated
+
+
+@app.delete("/api/v1/reply-prompts/{prompt_id}")
+def remove_reply_prompt(prompt_id: int, viewer: Dict[str, Any] = ViewerDep):
+    if not repo.delete_reply_prompt(viewer["id"], prompt_id):
+        raise ReplyPromptNotFound(f"找不到回覆提示詞 {prompt_id}")
+    return {"deleted": True}
+
+
 class DraftTargetRequest(BaseModel):
     """指定一個 Space，對「對方最後說的話」產生回覆草稿。"""
 
@@ -1008,6 +1380,7 @@ def patch_space_alias(req: SpaceAliasRequest, viewer: Dict[str, Any] = ViewerDep
 
 @app.patch("/api/v1/preferences")
 def patch_preferences(req: PreferencesRequest, viewer: Dict[str, Any] = ViewerDep):
+    viewer_id = viewer["id"]
     limit = validate_limit(req.default_limit) if req.default_limit is not None else None
     style = prompts.validate_style(req.default_style) if req.default_style else None
     provider = req.default_provider
@@ -1017,16 +1390,60 @@ def patch_preferences(req: PreferencesRequest, viewer: Dict[str, Any] = ViewerDe
     # 同樣先驗一次，避免存下一個會在每次產草稿時才爆的值
     code_env = _env(req.default_code_environment) if req.default_code_environment else None
     if req.default_code_project_id is not None:
-        if repo.get_code_project(viewer["id"], req.default_code_project_id) is None:
+        if repo.get_code_project(viewer_id, req.default_code_project_id) is None:
             raise CodeProjectNotFound(f"找不到參考專案 {req.default_code_project_id}")
+
+    # ---- 回覆設定（ADR-0007）----
+    #
+    # 這四個欄位要區分「沒帶這個欄位」與「帶了 null」：後者是使用者主動選
+    # 「不使用 Persona」「不套用預設口氣」，必須存得下去。`model_fields_set`
+    # 只包含請求 JSON 裡實際出現過的鍵，所以能分得出來；沒出現的就傳
+    # `repo.UNSET`，讓 repository 沿用現值。
+    sent = req.model_fields_set
+    tone = repo.UNSET
+    if "default_reply_tone" in sent:
+        # 存進偏好前先驗一次，避免存下一個會在每次產草稿時才降級的值
+        tone = (
+            reply_profiles.validate_tone(req.default_reply_tone)
+            if req.default_reply_tone
+            else None
+        )
+
+    persona_id = repo.UNSET
+    if "default_persona_id" in sent:
+        persona_id = req.default_persona_id
+        if persona_id:
+            if repo.get_persona(viewer_id, persona_id) is None:
+                raise PersonaNotFound(f"找不到 Persona {persona_id}")
+        else:
+            # 0 與 null 都當成「清除」——前端的「不使用 Persona」選項送哪個都行
+            persona_id = None
+
+    prompt_id = repo.UNSET
+    if "default_reply_prompt_id" in sent:
+        prompt_id = req.default_reply_prompt_id
+        if prompt_id:
+            if repo.get_reply_prompt(viewer_id, prompt_id) is None:
+                raise ReplyPromptNotFound(f"找不到回覆提示詞 {prompt_id}")
+        else:
+            prompt_id = None
+
+    sepia = repo.UNSET
+    if "default_sepia_enabled" in sent:
+        sepia = req.default_sepia_enabled
+
     return repo.update_preferences(
-        viewer["id"],
+        viewer_id,
         pinned_space_ids=req.pinned_space_ids,
         default_limit=limit,
         default_style=style,
         default_provider=provider,
         default_code_project_id=req.default_code_project_id,
         default_code_environment=code_env,
+        default_reply_tone=tone,
+        default_persona_id=persona_id,
+        default_reply_prompt_id=prompt_id,
+        default_sepia_enabled=sepia,
     )
 
 
@@ -1134,6 +1551,40 @@ def get_messages(
 @app.get("/api/v1/styles")
 def get_styles():
     return {"styles": prompts.style_options()}
+
+
+@app.get("/api/v1/reply-tones")
+def get_reply_tones():
+    """列出 Draft Reply 的回覆口氣選項（ADR-0007）。
+
+    與 `/styles` 刻意分開：那個是**摘要**的章節結構，這個是**回話**的語氣，
+    兩者值域不同、作用的功能也不同（見 `core/reply_profiles.py` 的模組說明）。
+
+    回應**不含** prompt instruction——那是送給模型的片段，前端不需要，
+    送出去只會變成使用者讀得到卻改不了的死資料。`example` 有送，
+    UI 拿它做固定預覽，不必為了預覽去打一次 AI。
+
+    不需登入，理由同 `/styles`：這是靜態選項清單。
+    """
+    return {
+        "tones": reply_profiles.tone_options(),
+        "default": reply_profiles.REPLY_TONE_DEFAULT,
+    }
+
+
+@app.get("/api/v1/polishers")
+def get_polishers():
+    """列出可用的潤稿器與可用性（ADR-0007）。
+
+    `available: false` 時 `reason` 要說得出下一步（規則檔在哪、怎麼補），
+    比照 `/providers` 的契約。這裡刻意不帶 provider 去檢查——
+    這個端點只回答「規則裝好了嗎」，供應商的可用性由 `/providers` 回答，
+    兩者混在一起會讓前端無法判斷是哪一邊沒裝好。
+    """
+    return {
+        "polishers": polishers.describe_all(),
+        "sepia": sepia_polisher.rules_version(),
+    }
 
 
 @app.get("/api/v1/providers")
@@ -1534,6 +1985,39 @@ class DraftRequest(BaseModel):
     #: 的說明），猜錯時使用者可以直接指定
     code_terms: List[str] = Field(default_factory=list)
 
+    # ---- 回覆設定（ADR-0007）。全部選填，省略時走 Viewer 偏好或系統預設。 ----
+    #
+    # `docs/draft-context-design.md`（C-7）曾決定「DraftRequest 不新增欄位」。
+    # 那條決策針對的是**脈絡窗口大小**這類參數：`limit` 已被 Reference Space
+    # 佔用，再加一個主窗參數會讓前端「每群抓取則數」的標籤變成靜默錯誤，
+    # 所以第一版的脈絡旋鈕全走 config 常數。
+    #
+    # 下面四個欄位不屬於那一類，理由是它們**必須由使用者逐次選擇**：
+    # 同一個人早上回 PM 要用「專業正式」、下午回工程師要用「工程師協作」，
+    # 走 config 常數表達不了「這一次要用哪個」。它們也不影響任何既有欄位的
+    # 語意（不碰 limit、不碰脈絡形狀），因此不會產生 C-7 擔心的靜默錯誤。
+    #
+    #: 回覆口氣。`None`＝用 Viewer 偏好，偏好也沒有就完全不介入（見 ADR-0007
+    #: 的向後相容一節：不選 tone 的產出與這個功能存在之前逐字相同）。
+    tone_id: Optional[str] = None
+    #: 要套用的 Persona。`None`＝用 Viewer 偏好；`0` 是明確的「這次不用」。
+    persona_id: Optional[int] = None
+    #: 這一次直接輸入的自訂提示（inline）。優先於 `custom_prompt_id`。
+    custom_prompt: Optional[str] = None
+    #: 要套用的已存提示詞 preset。`custom_prompt` 有值時忽略這個。
+    custom_prompt_id: Optional[int] = None
+    #: 要不要跑 Sepia 潤稿。`None`＝用 Viewer 偏好，偏好也沒有就不潤。
+    sepia_enabled: Optional[bool] = None
+
+
+#: `persona_id` / `custom_prompt_id` 用 0 表達「這一次明確不使用」。
+#:
+#: 需要這個哨兵是因為 `None` 已經被「沿用 Viewer 偏好」佔用了：Viewer 設了
+#: 預設 Persona 之後，「這次不要用 Persona」沒有別的方式可以表達——
+#: 送 `null` 會被當成「照偏好來」，於是使用者關不掉它。
+#: 0 不可能是合法的 AUTOINCREMENT id，所以拿它當哨兵不會與真實資料衝突。
+NONE_ID = 0
+
 
 def resolve_merge_targets(
     viewer_id: int, primary: Dict[str, Any], merge_ids: List[int]
@@ -1675,6 +2159,179 @@ def collect_code_context(
     return blocks, skipped
 
 
+#: 自訂提示的長度上限（字元）。
+#:
+#: 「這一次的回話要怎麼寫」用 2000 字綽綽有餘；超過通常是誤貼了一整份文件。
+#: 上限同時也是成本與注入面積的控制——這段文字會原封不動進 prompt。
+MAX_CUSTOM_PROMPT_CHARS = 2000
+
+
+def resolve_reply_options(
+    viewer_id: int, req: DraftRequest
+) -> Tuple[reply_profiles.ReplyGenerationOptions, bool, Dict[str, Any]]:
+    """解析這一次草稿的回覆設定，回 `(options, sepia_enabled, meta)`。
+
+    ## 優先序
+
+        Per Draft Override  >  Viewer Preference  >  System Default
+
+    刻意**不套** Global／Conversation／Message 那種三層模型——ChatPulse
+    沒有「Conversation Session」這種 domain object，硬套會產生一層沒有
+    對應實體的設定，而那層設定要存在哪裡、什麼時候失效都答不出來。
+
+    ## 兩種「找不到」要用不同方式處理
+
+    這是這個函式最容易寫錯的地方：
+
+    * **這一次明確指定的 id 找不到** → 拋 404。使用者剛剛選的東西不存在，
+      那是他需要知道的事，靜默忽略會讓他以為 Persona 生效了。
+    * **Viewer 偏好裡的 id 找不到** → 降級成「不使用」並記 log。那通常是
+      persona 被刪掉而偏好沒清乾淨（欄位刻意沒有外鍵，見 `core/db.py`），
+      拿它去擋住產草稿等於讓一筆過期的偏好把功能鎖死。
+
+    同一條判準也適用於 tone：這次傳的值不合法要擋（400），
+    偏好裡存的值不合法就降級（可能是那個 tone 在版本更新後被移除了）。
+    """
+    prefs = repo.get_preferences(viewer_id)
+    meta: Dict[str, Any] = {}
+
+    # ---------------------------------------------------------------- tone
+    tone: Optional[str] = None
+    if req.tone_id is not None:
+        # 這次明確指定 → 不合法就擋（400）
+        tone = reply_profiles.validate_tone(req.tone_id)
+    elif prefs.get("default_reply_tone"):
+        try:
+            tone = reply_profiles.validate_tone(prefs["default_reply_tone"])
+        except InvalidParameter:
+            log.warning(
+                "Viewer %s 的偏好 default_reply_tone=%r 已不是合法值，這次略過",
+                viewer_id,
+                prefs.get("default_reply_tone"),
+            )
+            tone = None
+    # 兩者都沒有 → tone 保持 None，prompt 完全不加風格區塊（向後相容）
+
+    # ---------------------------------------------------------------- persona
+    profile: Optional[personas.PersonaProfile] = None
+    persona_row: Optional[Dict[str, Any]] = None
+    if req.persona_id == NONE_ID:
+        pass  # 這一次明確不使用
+    elif req.persona_id is not None:
+        persona_row = repo.get_persona(viewer_id, req.persona_id)
+        if persona_row is None:
+            raise PersonaNotFound(f"找不到 Persona {req.persona_id}")
+        if not persona_row["enabled"]:
+            raise PersonaInvalid(
+                f"Persona「{persona_row['name']}」已停用，請先啟用或改選其他 Persona"
+            )
+    elif prefs.get("default_persona_id"):
+        persona_row = repo.get_persona(viewer_id, prefs["default_persona_id"])
+        if persona_row is None or not persona_row["enabled"]:
+            log.info(
+                "Viewer %s 的預設 Persona %s 已不存在或已停用，這次略過",
+                viewer_id,
+                prefs.get("default_persona_id"),
+            )
+            persona_row = None
+
+    if persona_row is not None:
+        # 從 DB 讀回來時**再跑一次淨化**（`from_json` 內建），不直接信任
+        # 落地的 profile_json——淨化規則會演進，而且有人可能直接改過 DB。
+        profile = personas.PersonaProfile.from_json(
+            json.dumps(persona_row["profile"], ensure_ascii=False)
+        )
+        # 進 prompt 的名字一律以 `personas.name` 為準，不用 profile_json 裡的。
+        #
+        # 兩者會分歧：改名只更新 `personas.name`，profile_json 內嵌的 name 是
+        # 匯入當時從來源抽出的原始值（常是 skill 識別字或真人姓名，例如
+        # `luozhenyu-perspective`／`罗振宇`）。而「改名」正是使用者想把那個
+        # 識別身份換掉時會做的動作——他改完會以為 prompt 裡不再提到那個人，
+        # 實際上 prompt 用的是 profile_json 那份，永遠不會變。
+        #
+        # 這條分歧沒有任何外顯訊號：UI 與 meta 顯示新名字，送進模型的是舊的，
+        # 而 prompt 不外顯，使用者無法從產出察覺。所以以 row 為單一事實來源。
+        row_name = personas.clean_display_name(persona_row["name"])
+        if row_name and row_name != profile.name:
+            profile = dataclasses.replace(profile, name=row_name)
+        if not profile.is_usable():
+            log.info(
+                "Persona %s（%s）淨化後沒有可用內容，這次略過",
+                persona_row["id"],
+                persona_row["name"],
+            )
+            profile = None
+        else:
+            meta["persona_id"] = persona_row["id"]
+            meta["persona_name"] = persona_row["name"]
+
+    # ------------------------------------------------------------- custom prompt
+    custom_text: Optional[str] = None
+    used_prompt_id: Optional[int] = None
+    inline = (req.custom_prompt or "").strip()
+    if inline:
+        # inline 優先於 preset：使用者在輸入框打的字是「這一次」最明確的意圖
+        if len(inline) > MAX_CUSTOM_PROMPT_CHARS:
+            raise InvalidParameter(
+                f"自訂提示過長（{len(inline)} 字，上限 {MAX_CUSTOM_PROMPT_CHARS} 字）"
+            )
+        custom_text = inline
+    elif req.custom_prompt_id == NONE_ID:
+        pass  # 這一次明確不使用
+    elif req.custom_prompt_id is not None:
+        preset = repo.get_reply_prompt(viewer_id, req.custom_prompt_id)
+        if preset is None:
+            raise ReplyPromptNotFound(f"找不到回覆提示詞 {req.custom_prompt_id}")
+        custom_text = (preset["prompt"] or "").strip() or None
+        used_prompt_id = preset["id"]
+    elif prefs.get("default_reply_prompt_id"):
+        preset = repo.get_reply_prompt(viewer_id, prefs["default_reply_prompt_id"])
+        if preset is None:
+            log.info(
+                "Viewer %s 的預設回覆提示詞 %s 已不存在，這次略過",
+                viewer_id,
+                prefs.get("default_reply_prompt_id"),
+            )
+        else:
+            custom_text = (preset["prompt"] or "").strip() or None
+            used_prompt_id = preset["id"]
+
+    # ---------------------------------------------------------------- sepia
+    if req.sepia_enabled is not None:
+        sepia_enabled = bool(req.sepia_enabled)
+    elif prefs.get("default_sepia_enabled") is not None:
+        sepia_enabled = bool(prefs["default_sepia_enabled"])
+    else:
+        sepia_enabled = False  # 系統預設不潤稿（向後相容）
+
+    # 擋在 SSE 開始之前：串流一旦開始就是 HTTP 200，之後只能發 error 事件。
+    # 這裡只驗規則檔（不需要 AI 供應商），供應商的檢查留在 generator 內。
+    if sepia_enabled:
+        ok, reason = sepia_polisher.rules_available()
+        if not ok:
+            raise SepiaUnavailable(
+                f"{reason} 你可以關閉 Sepia 潤稿後重新產生草稿。"
+            )
+
+    if tone:
+        meta["tone"] = tone
+        meta["tone_label"] = reply_profiles.tone_label(tone)
+    # 只記「有沒有」與「是哪一筆 preset」，**不把自訂提示全文放進 meta**：
+    # 那是使用者輸入，沒有必要出現在 SSE 事件與 devtools 裡。
+    if custom_text:
+        meta["custom_prompt"] = True
+        if used_prompt_id is not None:
+            meta["custom_prompt_id"] = used_prompt_id
+    meta["sepia"] = sepia_enabled
+
+    options = reply_profiles.ReplyGenerationOptions(
+        tone=tone,
+        custom_prompt=custom_text,
+        persona=profile,
+    )
+    return options, sepia_enabled, meta
+
+
 @app.post("/api/v1/mentions/{mention_id}/draft/stream")
 def draft_stream(
     mention_id: int, req: DraftRequest, viewer: Dict[str, Any] = ViewerDep
@@ -1701,6 +2358,9 @@ def draft_stream(
     # error 事件，使用者比較難注意到。參數錯誤要用正常的 4xx 擋在門外。
     targets = resolve_merge_targets(viewer_id, mention, req.merge_mention_ids)
     resolved_code_refs = resolve_code_refs(viewer_id, req.code_refs)
+    # 回覆設定（ADR-0007）也在這裡解析：不合法的 tone、不存在的 Persona／
+    # preset、以及「要 Sepia 但規則沒安裝」都要變成 4xx，不是 error 事件。
+    reply_options, sepia_enabled, reply_meta = resolve_reply_options(viewer_id, req)
 
     def generate() -> Generator[str, None, None]:
         # 放在 try 外面：客戶端中途斷線時 yield 會拋 GeneratorExit，
@@ -1868,6 +2528,9 @@ def draft_stream(
                     "model": ai.model,
                     "image_count": len(images),
                     "images_skipped": skipped_images,
+                    # 這次套用的回覆設定（ADR-0007）。與 code_refs 同一個理由：
+                    # 讓 Viewer 在模型開口之前就看得到「系統以為我選了什麼」。
+                    "reply": reply_meta,
                 }
             )
 
@@ -1881,6 +2544,7 @@ def draft_stream(
                 anchor_count=ctx.anchor_count,
                 reference_blocks=ref_blocks,
                 code_blocks=code_blocks or None,
+                reply_options=reply_options,
             )
 
             for chunk in ai.stream_text(prompt, operation="draft_reply", images=images):
@@ -1888,9 +2552,77 @@ def draft_stream(
                 yield sse({"type": "chunk", "text": chunk})
 
             content = "".join(collected)
-            draft_id = repo.create_draft(mention_id, content) if content.strip() else None
+
+            # ---- 潤稿（ADR-0007）。只潤〈建議回話〉，脈絡分析逐字保留。 ----
+            polish_meta: Dict[str, Any] = {}
+            final_reply: Optional[str] = None
+            if sepia_enabled and content.strip():
+                sections = prompts.split_draft(content)
+                if not sections.found:
+                    # 模型沒照輸出格式回。潤整篇會改到脈絡分析（連程式碼佐證
+                    # 一起改），所以不潤——這是降級，不是錯誤。
+                    polish_meta = {
+                        "polisher": "sepia",
+                        "polished": False,
+                        "fallback_reason": "草稿裡找不到〈建議回話〉章節，"
+                        "為避免改動脈絡分析而略過潤稿",
+                    }
+                    log.info("Draft %s 找不到建議回話章節，略過潤稿", mention_id)
+                else:
+                    polisher = polishers.resolve("sepia", provider=ai)
+                    result = polisher.polish(
+                        polishers.PolishRequest(
+                            reply=sections.reply,
+                            tone=reply_options.tone,
+                            tone_instruction=(
+                                reply_profiles.tone_instruction(reply_options.tone)
+                                if reply_options.tone
+                                else None
+                            ),
+                            persona=(
+                                reply_options.persona.to_prompt_dict()
+                                if reply_options.persona is not None
+                                else None
+                            ),
+                            custom_instruction=reply_options.custom_prompt,
+                        )
+                    )
+                    polish_meta = result.to_meta()
+                    if result.polished:
+                        content = sections.reassemble(result.text)
+                        final_reply = result.text
+                    else:
+                        # 完整性檢查沒過（或模型沒照契約回）→ 用未潤稿的版本，
+                        # 但**必須**讓使用者知道。靜默退回會讓他以為潤過了。
+                        log.warning(
+                            "Draft %s 的 Sepia 潤稿未採用：%s",
+                            mention_id,
+                            result.fallback_reason,
+                        )
+
+            generation_config = {
+                "provider": resolved_provider,
+                "model": ai.model,
+                **reply_meta,
+                **polish_meta,
+            }
+            draft_id = (
+                repo.create_draft(mention_id, content, generation_config)
+                if content.strip()
+                else None
+            )
             saved = True
-            yield sse({"type": "done", "draft_id": draft_id})
+            # `reply` 帶潤稿後的建議回話全文。這不是 UX 裝飾——潤稿後 DB 存的
+            # 與前端串流累積的會不一致，而使用者按「送出」時送的是前端那一份。
+            # 沒有這個欄位，開了 Sepia 就會把**未潤稿**的版本送到 Google Chat。
+            yield sse(
+                {
+                    "type": "done",
+                    "draft_id": draft_id,
+                    "reply": final_reply,
+                    "polish": polish_meta or None,
+                }
+            )
         except ChatPulseError as exc:
             yield sse(exc.to_sse_event())
         except Exception as exc:
@@ -1900,8 +2632,17 @@ def draft_stream(
             )
         finally:
             if not saved:
+                # 斷線補存也要帶設定，否則「串流中斷的那些草稿」會是唯一
+                # 答不出「當時用什麼語氣產的」的一批。標 partial 讓它與
+                # 正常完成的草稿分得出來——這一份沒有經過潤稿。
+                partial_config = {
+                    "provider": resolved_provider,
+                    **reply_meta,
+                    "partial": True,
+                    "polished": False,
+                }
                 save_partial(
-                    lambda text: repo.create_draft(mention_id, text),
+                    lambda text: repo.create_draft(mention_id, text, partial_config),
                     "草稿",
                     "".join(collected),
                 )

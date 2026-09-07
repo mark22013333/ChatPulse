@@ -39,3 +39,19 @@ _Avoid_: 回應、Answer、自動回覆
 **Reference Space**：
 產生 Draft Reply 時，Viewer 手動勾選、用來補充脈絡的其他 Space。存在的理由是：@ 提出的問題，答案經常不在提問的那個 Space 裡。
 _Avoid_: 相關群組、脈絡來源
+
+**Reply Tone**：
+Draft Reply 的〈建議回話〉要用哪一種語氣，由 Viewer 逐次選擇的封閉選項（自然直接、專業正式、簡潔明確、親切友善、工程師協作、委婉柔和、堅定明確、自訂）。它只影響用字與語氣，不影響〈脈絡分析〉，也不得改變任何事實。與 Summary 的 `style` 是**兩件不同的事**：那個決定摘要的章節結構，這個決定回話的語氣，兩者值域不同、作用的功能也不同。
+_Avoid_: 摘要風格、Summary Style、style、口吻設定
+
+**Persona**：
+Viewer 匯入或自訂的一組個人寫作風格偏好（思考方式、表達習慣、要避免的寫法），套在〈建議回話〉上。它**不是角色扮演身分**——ChatPulse 不會以別人的名義發話，Draft Reply 永遠以 Viewer 本人的身分送出；來源原文中的冒名與臆測授權會在匯入時被淨化掉，只有結構化的風格資訊會進 prompt。一次只能套用一個。
+_Avoid_: 人格、角色、Role、Character、分身、roleplay identity
+
+**Reply Prompt Preset**：
+存起來重複使用的一段自訂回覆提示詞，屬於某位 Viewer。它是「這次希望回話怎麼寫」的自由文字，優先於 Persona 與 Reply Tone；當次直接輸入的提示又優先於已存的 Preset。與 Persona 的差別是：Persona 描述「我平常怎麼寫」，Preset 描述「這種場合要怎麼寫」。
+_Avoid_: 提示詞、Prompt、範本、Template、指令
+
+**潤稿**（Polishing）：
+Draft Reply 產出之後、落地之前，對〈建議回話〉再跑一次的文字修訂，用意是讓回話不讀起來像機器寫的。作用範圍只有〈建議回話〉那一段，〈脈絡分析〉逐字保留；契約是最小幅度就地修訂，保留結構、立場與事實，改壞事實會被錨點比對擋下並退回未潤稿的版本。預設關閉，目前唯一的實作是 Sepia。
+_Avoid_: 改寫、重寫、Rewrite、去 AI 味、後處理

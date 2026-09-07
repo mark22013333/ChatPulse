@@ -15,6 +15,7 @@ import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/store/auth'
 import { useMentionsStore } from '@/store/mentions'
 import { useProviderStore } from '@/store/providers'
+import { useReplySettingsStore } from '@/store/replySettings'
 import { findSpace, useSpacesStore } from '@/store/spaces'
 import { useSummaryStore } from '@/store/summary'
 import { useDraftStore } from '@/store/draft'
@@ -60,6 +61,8 @@ export default function App() {
   const loadProviders = useProviderStore((state) => state.loadProviders)
   const providersLoaded = useProviderStore((state) => state.initialised)
 
+  const applyReplyPreferences = useReplySettingsStore((state) => state.applyPreferences)
+
   useEffect(() => {
     void init()
   }, [init])
@@ -80,6 +83,15 @@ export default function App() {
       style: me.preferences.default_style,
     })
   }, [me?.preferences, applyDefaults])
+
+  // 回覆設定的偏好（ADR-0007）：口氣／Persona／提示詞／潤稿。
+  // 技術上不套也能運作（送出時省略欄位，後端自己會讀偏好），但那樣側欄的
+  // 下拉會顯示「跟隨預設」而實際上有生效——畫面與行為不一致比沒有預設更糟。
+  // store 內建 initialised 旗標，不會覆寫使用者當下已經改過的選擇。
+  useEffect(() => {
+    if (!me?.preferences) return
+    applyReplyPreferences(me.preferences)
+  }, [me?.preferences, applyReplyPreferences])
 
   // 供應商清單：/me 已經帶了 ai 就直接用（少一次往返），否則補打 /providers。
   // 初始選擇＝偏好的 default_provider → 沒有就用伺服器的 default（見 store/providers.ts）

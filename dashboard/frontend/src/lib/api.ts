@@ -11,8 +11,14 @@ import type {
   MentionState,
   MentionsResponse,
   MessagesResponse,
+  Persona,
+  PersonaSourceInfo,
+  PolisherInfo,
   PublishResponse,
+  ReplyPrompt,
   ReplyResponse,
+  ReplyToneConfig,
+  SepiaRulesInfo,
   SpacesResponse,
   StylesResponse,
   SummariesResponse,
@@ -130,13 +136,81 @@ export const api = {
   // ── AI 供應商 ──────────────────────────────────────────
   /** 未登入也能打；登入後可改用 `/me` 的 `ai` 欄位，少一次往返。 */
   providers: () => request<AIConfig>('/providers', {}, { skipAuthRedirect: true }),
-  /** `default_provider` 傳 null＝清掉偏好、沿用伺服器預設。 */
+  /**
+   * 更新偏好。
+   *
+   * **兩組欄位的 null 語意不同，不要弄混：**
+   * - 舊欄位（`default_provider`／`default_limit`／`default_style`）：
+   *   後端把 `null`／省略都當成「不改」。
+   * - 回覆設定（`default_reply_tone` 等四個，ADR-0007）：
+   *   **送 `null` 代表「清除」**，省略才是「不改」。因為「不使用 Persona」
+   *   是使用者會主動選的狀態，必須存得下去。
+   */
   updatePreferences: (body: {
     default_provider?: string | null
     default_limit?: number
     default_style?: string
+    default_reply_tone?: string | null
+    default_persona_id?: number | null
+    default_reply_prompt_id?: number | null
+    default_sepia_enabled?: boolean | null
   }) =>
     request<Preferences>('/preferences', { method: 'PATCH', body: JSON.stringify(body) }),
+
+  // ── 回覆設定（ADR-0007）────────────────────────────────
+  /** 回覆口氣清單。未登入也能打（靜態選項，理由同 `/styles`）。 */
+  replyTones: () => request<ReplyToneConfig>('/reply-tones', {}, { skipAuthRedirect: true }),
+  /** 潤稿器與 vendored 規則版本。未登入也能打。 */
+  polishers: () =>
+    request<{ polishers: PolisherInfo[]; sepia: SepiaRulesInfo }>(
+      '/polishers',
+      {},
+      { skipAuthRedirect: true },
+    ),
+
+  personas: () =>
+    request<{ personas: Persona[]; sources: PersonaSourceInfo[] }>('/personas'),
+  /** `include_raw` 只在要看「淨化掉了什麼」時才開——原文有 20 KB 上下。 */
+  persona: (id: number, includeRaw = false) =>
+    request<Persona>(`/personas/${id}${query({ include_raw: includeRaw || undefined })}`),
+  /** 從公開來源匯入並固定版本。同名視為更新（`created: false`）。 */
+  importPersona: (body: {
+    source_type: string
+    repository?: string
+    persona?: string
+    url?: string
+    ref?: string
+    name?: string
+  }) => post<{ persona: Persona; created: boolean }>('/personas/import', body as unknown as Json),
+  /** 列出某個來源 repo 有哪些 Persona 可以匯入。 */
+  personaSourceList: (sourceType: string, repository: string, ref?: string) =>
+    request<{ personas: Array<Record<string, unknown>> }>(
+      `/personas/sources/${encodeURIComponent(sourceType)}/list${query({ repository, ref })}`,
+    ),
+  /** 重新從原來的來源取得（會更新 commit SHA）。`changed` 說內容有沒有真的變。 */
+  refreshPersona: (id: number) =>
+    post<{ persona: Persona; created: boolean; changed: boolean }>(`/personas/${id}/refresh`),
+  createPersona: (body: {
+    name: string
+    description?: string
+    raw_text?: string
+    profile?: Record<string, unknown>
+  }) => post<{ persona: Persona; created: boolean }>('/personas', body as unknown as Json),
+  /** 只能改名／簡介／啟用狀態。profile 內容只能由匯入流程產生（那條路徑保證跑過淨化）。 */
+  updatePersona: (id: number, body: { name?: string; description?: string; enabled?: boolean }) =>
+    request<Persona>(`/personas/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deletePersona: (id: number) =>
+    request<{ deleted: boolean }>(`/personas/${id}`, { method: 'DELETE' }),
+
+  replyPrompts: () => request<{ reply_prompts: ReplyPrompt[] }>('/reply-prompts'),
+  createReplyPrompt: (body: { name: string; description?: string; prompt: string }) =>
+    post<ReplyPrompt>('/reply-prompts', body as unknown as Json),
+  updateReplyPrompt: (
+    id: number,
+    body: { name?: string; description?: string; prompt?: string },
+  ) => request<ReplyPrompt>(`/reply-prompts/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteReplyPrompt: (id: number) =>
+    request<{ deleted: boolean }>(`/reply-prompts/${id}`, { method: 'DELETE' }),
 
   /**
    * 對某個 Space「對方最後說的話」建立草稿目標，回傳可以拿去產草稿的 mention。

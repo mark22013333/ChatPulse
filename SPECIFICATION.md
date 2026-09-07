@@ -491,6 +491,44 @@ PM 會 @ 你發問，**正是因為答案不在他看得到的地方**。若草�
 - **不自動送出。** 任何情況下系統都不會在未經確認時發話。
 - **不自動選擇 Reference Space。** 跨群向量檢索（RAG）已排除於 v2.0 之外，理由見 ADR-0003。
 
+### 7.4 回覆設定（Reply Tone／Persona／自訂提示／潤稿）
+
+同一份事實用錯語氣送出去一樣是失敗的。產草稿時 Viewer 可逐次選擇四種設定，它們**只作用於〈建議回話〉**，〈脈絡分析〉不受影響。全部選填，一個都不選時產出與這個功能存在之前逐字相同（ADR-0007）。
+
+**四個能力**
+
+| 能力 | 是什麼 | 端點 |
+| :--- | :--- | :--- |
+| **Reply Tone** | 8 種語氣的封閉選項：`natural`（自然直接）／`professional`（專業正式）／`concise`（簡潔明確）／`friendly`（親切友善）／`engineer`（工程師協作）／`soft`（委婉柔和）／`assertive`（堅定明確）／`custom`（自訂）。與 5.5 的摘要 `style` **刻意不共用**——那是章節結構，這是語氣 | `GET /api/v1/reply-tones` |
+| **Persona** | 從公開來源匯入或手動建立的個人寫作風格。**不是角色扮演身分**：遠端原文經四層淨化才進 prompt，且釘在匯入當下的 commit SHA | `/api/v1/personas*` |
+| **自訂提示** | 這一次直接輸入的一段要求，或套用已存的 **Reply Prompt Preset** | `/api/v1/reply-prompts*` |
+| **潤稿** | 草稿產出後、落地前對〈建議回話〉再跑一次的最小幅度修訂。目前唯一實作是 vendored 的 Sepia 規則（MIT，0.8.0），**預設關閉** | `GET /api/v1/polishers` |
+
+**流程**（接續 7.2 的步驟 3 之後）
+
+1. Viewer 選 Reply Tone、Persona、自訂提示與要不要潤稿（四項各自可省略）
+2. 伺服器以 **Per Draft Override > Viewer Preference > System Default** 解析出這次要用的設定，並在 `meta` 事件的 `reply` 物件回顯——讓 Viewer 在模型開口之前就看得到「系統以為我選了什麼」
+3. 串流輸出〈脈絡分析〉與〈建議回話〉兩段（與 7.2 相同）
+4. 若開了潤稿：切出〈建議回話〉那一段送同一個供應商做一次 `refactor`，通過錨點完整性比對才採用；`done` 事件帶 `reply`（潤稿後全文）與 `polish`（潤稿 meta）
+5. 之後同 7.2 的步驟 5、6
+
+「這次明確指定的 id 找不到」拋 404（`PERSONA_NOT_FOUND`／`REPLY_PROMPT_NOT_FOUND`），「Viewer 偏好裡的 id 找不到」降級成不使用並記 log——一筆過期的偏好不該把產草稿鎖死。四項設定連同 provider、model 與潤稿結果一併存進 `draft_replies.generation_config_json`，讓每份草稿答得出「當時用什麼設定產的」。
+
+**優先序**
+
+①ChatPulse 事實與安全規則 ②程式碼佐證規則 ③Viewer 本次自訂要求 ④Persona ⑤Tone。①② 永不可被覆蓋。
+
+實作上**靠位置達成，不靠宣告**：`core/prompts.py` 的 `_reply_style_section` 放在輸出格式之後，`_BASE_RULES` 壓在整份 prompt 最尾端，`_CODE_RULES` 緊貼程式碼片段之後。理由是「模型對就近的指令服從度較高」——把不可覆蓋的規則放最前面等於讓它離輸出最遠，正好把優先序做反（ADR-0007）。
+
+**不做的事**
+
+- **不做 Persona Marketplace。** 不提供瀏覽、評分、推薦或站內分享，只有「你自己指定的來源」。理由與 ADR-0003 的手動指定哲學同一條。
+- **不做多 Persona 混合。** 一次只能套用一個。兩份風格混起來的產物沒有人為它負責，出問題也歸因不到任一份。
+- **不自動選 Tone。** 系統不從對話內容猜「這則該用什麼語氣」。該用什麼語氣是 Viewer 對收訊者的判斷，不是可從文本推導的事。
+- **不做任意網站 crawler。** Persona 來源限於 allowlist 內的網域，並有回應大小、轉址與私有 IP 防護（`core/persona_sources/base.py`）。
+- **潤稿不改〈脈絡分析〉。** 那一段有程式碼佐證與未解問題，讓看不到證據的模型改寫證據陳述是淨損失。切不到〈建議回話〉標題時**不潤稿**（降級，不是錯誤）。
+- **不載入遠端 skill、不動用 tool runtime。** 規則與風格一律以純文字進 prompt，`AIProvider` 仍然只有 `generate()` 與 `stream_text()`。理由（含 19,085 token 的實測成本）見 ADR-0007。
+
 ---
 
 ## 八、API 規格
@@ -512,9 +550,27 @@ Google Chat 的 space id 形如 `spaces/AAAAxLxqJxY`——**內含斜線**。v1.
 | `GET` | `/api/v1/me` | 目前 Viewer 身分與 Google user id | Phase 2 |
 | `GET` | `/api/v1/mentions` | 待處理 Mention 清單（`?state=`） | Phase 2 |
 | `PATCH` | `/api/v1/mentions/{id}` | 標記狀態（body: `state`） | Phase 2 |
-| `POST` | `/api/v1/mentions/{id}/draft/stream` | 產生 Draft Reply SSE（body: `reference_space_ids[]`、`limit`） | Phase 2 |
+| `POST` | `/api/v1/mentions/{id}/draft/stream` | 產生 Draft Reply SSE（body: `reference_space_ids[]`、`limit`、回覆設定 5 欄） | Phase 2 |
 | `GET` | `/api/v1/summaries` | 本人的歷史 Summary | Phase 2 |
 | `GET` | `/api/v1/providers` | AI 供應商清單與各自可用狀態（不需登入） | 2026-09-05 新增 |
+| `GET` | `/api/v1/reply-tones` | Reply Tone 靜態清單（**不需登入**，同 `/styles`） | 7.4 新增 |
+| `GET` | `/api/v1/polishers` | 潤稿器清單、可用性與 Sepia 規則版本（**不需登入**） | 7.4 新增 |
+| `GET` | `/api/v1/personas` | 自己的 Persona 清單 ＋ 可用來源型別 | 7.4 新增 |
+| `POST` | `/api/v1/personas` | 手動建立 Persona（同樣走完整淨化） | 7.4 新增 |
+| `GET` | `/api/v1/personas/{persona_id}` | 單筆；`?include_raw=true` 才回遠端原文 | 7.4 新增 |
+| `PATCH` | `/api/v1/personas/{persona_id}` | 改名／簡介／啟用停用。**不能改 profile** | 7.4 新增 |
+| `DELETE` | `/api/v1/personas/{persona_id}` | 刪除 | 7.4 新增 |
+| `POST` | `/api/v1/personas/import` | 從外部來源匯入，並釘成 commit SHA | 7.4 新增 |
+| `POST` | `/api/v1/personas/{persona_id}/refresh` | 用原本的 ref 重新解析取檔，回 `changed` | 7.4 新增 |
+| `GET` | `/api/v1/personas/sources/{source_type}/list` | 列出某個來源 repo 有哪些 Persona 可匯入 | 7.4 新增 |
+| `GET` | `/api/v1/reply-prompts` | 自己的 Reply Prompt Preset 清單 | 7.4 新增 |
+| `POST` | `/api/v1/reply-prompts` | 建立 Preset | 7.4 新增 |
+| `PATCH` | `/api/v1/reply-prompts/{prompt_id}` | 更新 Preset | 7.4 新增 |
+| `DELETE` | `/api/v1/reply-prompts/{prompt_id}` | 刪除 Preset | 7.4 新增 |
+
+`PATCH /api/v1/preferences` 另加四個回覆設定預設值欄位（`default_reply_tone`／`default_persona_id`／`default_reply_prompt_id`／`default_sepia_enabled`）。**這四個欄位送 `null` 代表「清除」，與既有欄位的「不改」相反**——理由與逐欄語意見 `docs/api-contract.md`。
+
+Persona 與 Reply Prompt 的端點**一律限於自己的資料**（`viewer_id` 是 repository 層的必填查詢條件，沒有「查全部」的入口），與 ADR-0002 對 Summary 的標準一致。
 
 `cardsV2` 於 v2.0 移除（v1:134 曾列出，實作從未支援，且純文字已足夠）。
 
@@ -535,6 +591,17 @@ data: {"type":"done","summary_id":12}
 `meta` 與 `done` 的欄位依端點而異（摘要端點的 `done` 帶 `summary_id`，
 Draft Reply 端點帶 `draft_id`）；`chunk` 與 `error` 兩種事件的形狀所有端點一致。
 逐端點的完整欄位以 [`docs/api-contract.md`](./docs/api-contract.md) 為準。
+
+**事件型別只有 `meta`／`chunk`／`done`／`error` 四種**，7.4 的回覆設定**沒有新增任何事件型別**，只在既有事件上加欄位：
+
+- Draft Reply 的 `meta` 多一個 `reply` 物件——這次實際套用的回覆設定（`tone`／`tone_label`／`persona_id`／`persona_name`／`custom_prompt` 布林／`custom_prompt_id`／`sepia` 布林）。用途與 `code_refs` 相同：讓 Viewer 在模型開口之前就看到系統以為他選了什麼。**自訂提示全文不放進 meta**，只記「有沒有」與「是哪一筆 preset」。
+- Draft Reply 的 `done` 多兩個欄位：`reply`（潤稿後的〈建議回話〉全文，未潤稿時為 `null`）與 `polish`（潤稿 meta，未啟用時為 `null`）。
+
+```
+data: {"type":"done","draft_id":3,"reply":"…潤稿後的建議回話…","polish":{"polisher":"sepia","polished":true,"polish_model":"claude-cli:opus"}}
+```
+
+`reply` 不是 UX 裝飾：潤稿後 DB 存的與前端串流累積的會不一致，而使用者按「送出」時送的是前端那一份。**沒有這個欄位，開了潤稿就會把未潤稿的版本送到 Google Chat。**
 
 錯誤以事件傳遞，**不中斷連線**（HTTP 200 已送出，無法再改狀態碼）：
 
@@ -573,6 +640,12 @@ data: {"type":"error","code":"GEMINI_QUOTA_EXCEEDED","message":"Gemini 配額已
 | `INTERNAL_ERROR` | 串流開始之後才發生的未預期錯誤 |
 
 Google Chat 回 429 時採指數退避重試，最多 3 次；仍失敗才向前端拋出。
+
+**功能專屬的錯誤碼不列在這張表裡**，以 [`docs/api-contract.md`](./docs/api-contract.md)
+的錯誤碼對照表為準（那份是 API 契約的單一事實來源）。上表收的是跨端點的通用碼；
+參考專案的 `CODE_*` 系列（10.4）與回覆設定的 `PERSONA_*`／`REPLY_PROMPT_NOT_FOUND`／
+`SEPIA_UNAVAILABLE`（7.4）都只出現在特定端點上，列進通用表會讓它看起來像是
+任何請求都可能收到的東西。
 
 ---
 

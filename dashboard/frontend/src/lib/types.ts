@@ -26,6 +26,126 @@ export interface Preferences {
   default_style: SummaryStyleValue
   /** 使用者偏好的 AI 供應商；null＝沿用伺服器預設 */
   default_provider?: string | null
+  /** 草稿頁預選的參考專案與環境（ADR-0006） */
+  default_code_project_id?: number | null
+  default_code_environment?: CodeEnvironment | null
+  /**
+   * Draft Reply 的回覆設定預設值（ADR-0007）。
+   *
+   * `default_style` 是**摘要**的章節結構，`default_reply_tone` 是**回話**的
+   * 語氣——兩者不同層次也不同值域，不要混用。
+   *
+   * 這四個欄位在 `PATCH /api/v1/preferences` 上的語意與 `default_provider`
+   * **不同**：送 `null` 代表「清除」，不是「不改」。「不使用 Persona」是
+   * 使用者會主動選的狀態，必須存得下去。
+   */
+  default_reply_tone?: string | null
+  default_persona_id?: number | null
+  default_reply_prompt_id?: number | null
+  default_sepia_enabled?: boolean | null
+}
+
+/**
+ * 一個回覆口氣（`GET /api/v1/reply-tones`）。
+ *
+ * 刻意**沒有** `instruction` 欄位——那是送給模型的 prompt 片段，前端不需要。
+ * `example` 是固定的預覽文字：所有 tone 的 example 都在描述同一個事實
+ * （「production 的 timeout 是 30 秒」），並排顯示時使用者一眼就看得出
+ * **變的是語氣、不是內容**，而且不必為了預覽去打一次 AI。
+ */
+export interface ReplyTone {
+  id: string
+  label: string
+  description: string
+  example: string
+}
+
+/** `GET /api/v1/reply-tones` 的回應。 */
+export interface ReplyToneConfig {
+  tones: ReplyTone[]
+  default: string
+}
+
+/**
+ * 已淨化的 Persona profile。
+ *
+ * 這是 Persona 唯一會進 prompt 的形狀——遠端原文永遠不進（見 ADR-0007）。
+ * 每個欄位都是短句清單，因為淨化管線刻意把 Persona 能表達的東西限制在
+ * 「一組風格形容詞」，讓它在語意上就沒有空間表達指令。
+ */
+export interface PersonaProfile {
+  name: string
+  description?: string
+  thinking_style: string[]
+  communication_style: string[]
+  response_preferences: {
+    verbosity?: 'low' | 'medium' | 'high'
+    prefer_examples?: boolean
+    prefer_concrete_language?: boolean
+  }
+  avoid: string[]
+  boundaries?: string[]
+  schema_version?: number
+}
+
+/**
+ * 一個匯入的 Persona（`GET /api/v1/personas`）。
+ *
+ * `source_commit_sha` 不是稽核裝飾：沒有它就無法保證「今天產生的草稿
+ * 明天還是同樣行為」，因為遠端隨時可以改 SKILL.md。UI 要把它顯示出來。
+ */
+export interface Persona {
+  id: number
+  name: string
+  description: string
+  source_type: 'github' | 'url' | 'manual'
+  source_repository?: string | null
+  source_url?: string | null
+  source_ref?: string | null
+  source_commit_sha?: string | null
+  source_hash?: string | null
+  enabled: boolean
+  imported_at: string
+  refreshed_at?: string | null
+  created_at: string
+  updated_at: string
+  profile: PersonaProfile
+  /** 只在 `?include_raw=true` 時出現，僅供 debug——**不得拿去組 prompt**。 */
+  raw_source?: string
+}
+
+/** Persona 來源型別（`GET /api/v1/personas` 的 `sources`）。 */
+export interface PersonaSourceInfo {
+  name: string
+  label: string
+}
+
+/** 存起來重複使用的自訂提示詞（`GET /api/v1/reply-prompts`）。 */
+export interface ReplyPrompt {
+  id: number
+  name: string
+  description: string
+  prompt: string
+  created_at: string
+  updated_at: string
+}
+
+/** 一個潤稿器與它現在可不可用（`GET /api/v1/polishers`）。 */
+export interface PolisherInfo {
+  name: string
+  label: string
+  available: boolean
+  reason: string
+}
+
+/** vendored 的 Sepia 規則版本資訊（`GET /api/v1/polishers` 的 `sepia`）。 */
+export interface SepiaRulesInfo {
+  name?: string
+  version?: string
+  source_repository?: string
+  source_ref?: string
+  source_commit_sha?: string
+  license?: string
 }
 
 /**
@@ -353,6 +473,41 @@ export interface SseMeta {
    */
   provider?: string
   model?: string
+  /**
+   * 這次實際套用的回覆設定（ADR-0007）。與 `code_refs` 同一個理由：
+   * 讓使用者在模型開口**之前**就看到「系統以為我選了什麼」。
+   *
+   * 只有被套用的項目才會出現。`custom_prompt` 刻意只有布林——
+   * 自訂提示的全文是使用者輸入，沒有必要回送到瀏覽器。
+   */
+  reply?: DraftReplySettingsMeta
+}
+
+/** SSE `meta` 事件裡的回覆設定摘要。 */
+export interface DraftReplySettingsMeta {
+  tone?: string
+  tone_label?: string
+  persona_id?: number
+  persona_name?: string
+  /** 有沒有套用自訂提示（不含內容本身） */
+  custom_prompt?: boolean
+  custom_prompt_id?: number
+  sepia: boolean
+}
+
+/**
+ * 潤稿的結果（SSE `done` 事件的 `polish`，以及草稿的 generation config）。
+ *
+ * `polished: false` 有三種原因，`fallback_reason` 會說是哪一種：
+ * 完整性檢查沒過、模型沒照輸出契約回、或草稿裡找不到〈建議回話〉章節。
+ * **這與「Sepia 根本不可用」是不同的事**——後者會讓請求收到
+ * `SEPIA_UNAVAILABLE` 錯誤，根本不會走到這裡。
+ */
+export interface DraftPolishMeta {
+  polisher: string
+  polished: boolean
+  fallback_reason?: string
+  polish_model?: string
 }
 
 export interface SseChunk {
@@ -364,6 +519,17 @@ export interface SseDone {
   type: 'done'
   summary_id?: number
   draft_id?: number
+  /**
+   * 潤稿後的〈建議回話〉全文（Draft Reply 專用，未潤稿時為 null）。
+   *
+   * **這不是 UX 裝飾。** 潤稿發生在串流結束之後，所以前端累積的 `raw` 是
+   * 未潤稿的版本，而資料庫存的是潤稿後的版本。使用者按「送出」時送的是
+   * 前端這一份——沒有這個欄位，開了 Sepia 就會把未潤稿的內容送到
+   * Google Chat，而且畫面上看不出差別。
+   */
+  reply?: string | null
+  /** 潤稿 meta（未啟用時為 null） */
+  polish?: DraftPolishMeta | null
 }
 
 export interface SseError {
