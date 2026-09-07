@@ -86,9 +86,24 @@ def learn_from_messages(messages: Iterable[Dict[str, Any]]) -> int:
     return len(learned)
 
 
+def looks_like_user_id(name: Optional[str]) -> bool:
+    """這個「名字」其實只是 user id 嗎？
+
+    名錄與 viewers.display_name 都曾經被寫進 `users/1098…` 這種字串
+    （見 core/identity.py 的說明），於是畫面上到處顯示一串數字。
+    寫入端與讀取端都用這個判斷擋掉，兩邊都擋是刻意的——寫入端擋住新的，
+    讀取端擋住資料庫裡已經有的。
+    """
+    return bool(name) and str(name).strip().startswith("users/")
+
+
 def remember(user_id: str, display_name: str, source: str = "identity") -> None:
     """明確登記一筆（例如登入時解析出的自己）。"""
     if not user_id or not display_name:
+        return
+    # 把 id 當名字記進去，等於讓畫面顯示一串數字，而且會蓋掉從 annotation
+    # 學到的真名字（這個 INSERT 是 upsert，會覆寫）
+    if looks_like_user_id(display_name):
         return
     db.execute(
         """
@@ -129,6 +144,13 @@ def load_all() -> Dict[str, str]:
 
     手動取的名字（source=manual_name）**算**人名，所以會在這裡——
     使用者為某人取的名字，摘要與草稿裡的發言者也該用它。
+
+    **會濾掉「名字其實是 user id」的記錄。** 舊版登入流程曾經把
+    `users/1098…` 當名字寫進來（見 `looks_like_user_id`），那些資料還在
+    資料庫裡。濾在這裡而不是各個讀取端：這是名錄唯一的出口，
+    摘要、草稿、訊息預覽、`make_resolver` 全都走它，擋一次就全部乾淨。
+    濾掉之後那個人會退回 `short_code()` 的「成員…8641」，
+    比一整串 id 好讀，而且之後從 annotation 學到真名字就會自己補上。
     """
     return {
         r["user_id"]: r["display_name"]
@@ -137,6 +159,7 @@ def load_all() -> Dict[str, str]:
             "WHERE source NOT IN (?, ?, ?)",
             _NON_PERSON_SOURCES,
         )
+        if not looks_like_user_id(r["display_name"])
     }
 
 

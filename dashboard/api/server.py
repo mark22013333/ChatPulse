@@ -502,12 +502,50 @@ def current_viewer(request: Request) -> Dict[str, Any]:
 ViewerDep = Depends(current_viewer)
 
 
+def viewer_display_name(viewer: Dict[str, Any]) -> Optional[str]:
+    """Viewer 自己該顯示成什麼名字。
+
+    順序：資料庫存的名字 → 人名名錄 → email。三個都沒有才回 None
+    （前端會退回 email，再沒有就什麼都不顯示）。
+
+    **為什麼不直接信資料庫那欄**：舊的三 scope token 沒有 userinfo 權限，
+    以前那條路徑把 `users/1098…` 當名字存進去（見 core/identity.py），
+    畫面右上角就顯示那一串。identity 已經不再這樣寫，但資料庫裡的舊資料還在，
+    所以讀取端也要擋。
+
+    名錄通常查得到自己——只要你曾經在任何群組被 @ 過，
+    `directory.learn_from_messages()` 就從 annotation 學到你的名字了。
+    """
+    stored = viewer.get("display_name")
+    if stored and not directory.looks_like_user_id(stored):
+        return stored
+    try:
+        known = directory.load_all().get(viewer.get("google_user_id") or "")
+    except Exception:
+        log.exception("查名錄取自己的名字失敗（不影響登入）")
+        known = None
+    # load_all() 已經濾過一次，這裡再擋一次是刻意的：這個函式的承諾是
+    # 「絕不回傳 user id」，不該取決於別的模組有沒有做對
+    if directory.looks_like_user_id(known):
+        known = None
+    return known or viewer.get("email") or None
+
+
 def _viewer_public(viewer: Dict[str, Any]) -> Dict[str, Any]:
+    name = viewer_display_name(viewer)
+    # 順手把資料庫裡那筆壞的修回來。只在「存的是 user id」時才寫，
+    # 不會蓋掉使用者本來就正確的名字。
+    stored = viewer.get("display_name")
+    if name and directory.looks_like_user_id(stored):
+        try:
+            repo.upsert_viewer(viewer["google_user_id"], viewer.get("email"), name)
+        except Exception:
+            log.exception("修正 viewers.display_name 失敗（不影響顯示）")
     return {
         "id": viewer["id"],
         "google_user_id": viewer["google_user_id"],
         "email": viewer.get("email"),
-        "display_name": viewer.get("display_name"),
+        "display_name": name,
     }
 
 

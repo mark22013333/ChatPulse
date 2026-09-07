@@ -93,7 +93,18 @@ const check = (label, ok, detail = '') => {
   )
 
   console.log('\n【3】勾第二則（同一個私訊）')
-  await boxes.nth(1).click()
+  // **不可以直接點 nth(1)**：收件匣是按時間排序的，而採集器每 45 秒跑一輪，
+  // 第 0、1 個未必在同一個 Space——那個假設會讓這支測試偶發失敗，
+  // 而且失敗訊息看起來像功能壞掉。
+  // 勾第一則之後，不同 Space 的項目會被 app 自己停用，所以「第一個還能勾的」
+  // 必然與它同一個 Space。用 app 的規則挑，不用位置猜。
+  const enabled = page.locator('[role="checkbox"]:not([data-disabled]):not([disabled])')
+  const second = enabled.nth(1) // nth(0) 是剛才勾起來的那個
+  if ((await enabled.count()) < 2) {
+    check('找得到同一個 Space 的第二則可勾項目', false,
+      '這個資料庫目前沒有兩則同 Space 的待處理項目')
+  }
+  await second.click()
   await page.waitForTimeout(400)
   check('合併列顯示 2 則', (await page.getByText(/已選 2 則/).count()) > 0)
   const mergeBtn = page.getByRole('button', { name: /合併產生草稿（2 則）/ })
