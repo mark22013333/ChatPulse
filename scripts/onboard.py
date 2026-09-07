@@ -313,7 +313,66 @@ def step_python() -> bool:
         explain(f"原始錯誤：{(probe.stderr or '').strip()[:200]}")
         return False
     ok("必要套件都在")
+
+    # 潤稿規則屬於「安裝完整性」而不是「這台電腦裝了什麼」，所以跟套件檢查
+    # 放在同一步：它跟著 repo 版控，會缺就是 clone／解壓不完整。
+    report_polish_state()
     return True
+
+
+_POLISH_PROBE = (
+    "import sys\n"
+    "sys.path.insert(0, sys.argv[1])\n"
+    "from core.polishers.sepia import rules_available, rules_version\n"
+    "avail, reason = rules_available()\n"
+    "info = rules_version()\n"
+    "print('%s|%s|%s' % ('OK' if avail else 'NG', info.get('version') or '', reason))\n"
+)
+
+
+def polish_state() -> tuple:
+    """回傳 (狀態, 版本, 原因)。狀態為 'ok' / 'missing' / 'unknown'。
+
+    **這裡檢查的不是「有沒有裝 Sepia 這個 Claude Code skill」。** Sepia 的規則是
+    以純文字 vendored 進本 repo 的（`core/polishers/sepia_rules/`），使用者不需要
+    安裝任何東西——理由見 ADR-0007：要讓 CLI 去載入 skill 就得拆掉本專案的成本
+    控制旗標，還會讓草稿偷偷受各人本機的 CLAUDE.md 影響。
+
+    所以這一項會失敗的唯一原因是「檔案沒跟著專案一起下來」（zip 解壓不完整、
+    產物被清掉）。訊息要照這個事實寫，不要叫使用者去裝一個不存在的東西。
+    """
+    if not os.path.exists(VENV_PYTHON):
+        return "unknown", "", "還沒有 Python 環境"
+    probe = subprocess.run(
+        [VENV_PYTHON, "-c", _POLISH_PROBE, BASE_DIR], capture_output=True, text=True
+    )
+    out = (probe.stdout or "").strip().splitlines()
+    if not out or "|" not in out[-1]:
+        err = (probe.stderr or "").strip().splitlines()
+        return "unknown", "", (err[-1] if err else "潤稿規則檢查沒有回應")
+    status, _, rest = out[-1].partition("|")
+    version, _, reason = rest.partition("|")
+    return ("ok" if status == "OK" else "missing"), version, reason
+
+
+def report_polish_state() -> str:
+    """印出潤稿規則的檢查結果，回傳狀態字串給呼叫端計數。
+
+    兩個入口（引導的步驟 1 與 check 子指令）共用同一份判斷與同一段文字——
+    分開寫的話遲早會出現「引導說沒問題、check 說缺檔」這種自相矛盾。
+    """
+    state, version, reason = polish_state()
+    if state == "ok":
+        ok(f"Sepia 潤稿規則已就位{f'（v{version}）' if version else ''}")
+    elif state == "missing":
+        warn("找不到 Sepia 潤稿規則——只有〈建議回話〉的「潤稿」選項會不能用")
+        arrow("這份規則隨專案版控，在專案目錄執行：git restore core/polishers/sepia_rules")
+        if reason:
+            explain(f"原始原因：{reason}")
+    else:
+        warn(f"潤稿規則檢查不了：{reason}")
+        arrow("先把上面的 Python 環境問題解決，再跑一次")
+    return state
 
 
 def step_credentials() -> bool:
@@ -704,6 +763,11 @@ def cmd_check() -> int:
                 "最省事：裝好並登入 Claude Code，它用你現有的訂閱，不需要 API key",
             )
             problems += 1
+
+        # 潤稿規則。只影響〈建議回話〉的「潤稿」選項（預設關閉），
+        # 所以缺檔是 warning 不是 problem——不該讓沒在用潤稿的人看到紅字。
+        if report_polish_state() != "ok":
+            warnings += 1
 
     # 儀表板畫面。只影響 Web 入口，所以再糟也只是 warning——
     # 只用 Claude Code 的人不該因為這一項看到紅字。

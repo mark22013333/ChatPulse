@@ -30,11 +30,15 @@
 `mcp`（重新註冊 MCP 入口）。裝好之後直接下子命令即可，不必再跑完整引導——
 引導本身也會跳過已完成的步驟。
 
+`check` 逐項報告：Python 環境與套件、`client_secret.json`、Google 授權範圍、
+可用的 AI 供應商、**Sepia 潤稿規則**、儀表板畫面。每一項不通過都會印出下一步該做什麼，
+只印失敗不印修法等於沒檢查。
+
 引導流程的邏輯在 `scripts/onboard.py`，**兩個平台共用同一份**——
 `.sh` 與 `.bat` 只負責找到 Python。各寫一份腳本必然漂移，
 而 Windows 那份的坑，用 macOS 的維護者永遠踩不到。
 
-維護者自己在 macOS 上也可以用既有的：
+維護者自己在 macOS 上也可以用既有的（比 `check` 多查 MCP 註冊狀態與 npm）：
 
 ```bash
 ./scripts/doctor.sh
@@ -147,6 +151,12 @@ ChatPulse 把它的最小規則子集 **vendored 進本 repo**（`core/polishers
 偷偷受你本機 CLAUDE.md 影響。潤稿用的是你這次選的同一個供應商，token 用量與草稿本身
 分開記帳。它只做最小幅度修訂，改壞事實會被擋下並退回未潤稿的版本。
 
+**所以你不必安裝任何東西**：不用去裝 Sepia 的 Agent Skill、不用設定、不用 API key。
+規則跟著專案版控，clone 下來就有。它唯一會失效的形態是「檔案沒跟著專案下來」
+（zip 解壓不完整、產物被清掉），`./chatpulse.sh check` 與 `./scripts/doctor.sh` 都會
+單獨檢查這一項，並印出還原指令 `git restore core/polishers/sepia_rules`。缺檔只影響
+「潤稿」這個勾選框，其餘功能照常，所以檢查結果是提醒不是紅字。
+
 規格權威在 [`SPECIFICATION.md`](SPECIFICATION.md) 7.4，端點契約在
 [`docs/api-contract.md`](docs/api-contract.md)。
 
@@ -175,13 +185,20 @@ E2E 測試會對**真實的 Google Chat 與 Gemini API** 發請求，不使用 m
 # 先啟動服務，再跑
 .venv/bin/python tests/e2e/run_all.py
 
+# 後端單元測試（不打任何 API、不需要服務在跑，秒級跑完）
+.venv/bin/python -m unittest discover -s tests/unit
+
 # 前端單元測試
 npm --prefix dashboard/frontend run test
 ```
 
-七套測試分別涵蓋：**落地證據重查**（不呼叫 AI）、**AI 供應商切換**、Phase 1 功能、
+E2E 的七套測試分別涵蓋：**落地證據重查**（不呼叫 AI）、**AI 供應商切換**、Phase 1 功能、
 Phase 2 Mention 與 Draft Reply、缺陷 D-3 的截斷正負對照、6.1 判定條件（含真實
 ADD annotation 樣本）、靜態托管與路徑穿越防護。
+
+後端單元測試則涵蓋 Draft Reply 的 prompt 組裝、回覆設定的解析順序、參考專案的程式碼
+擷取，以及潤稿的**錨點完整性比對**——潤稿最典型的壞法是「把數字順順地改掉」
+（`timeout 是 30 秒` → `大約半分鐘`），那種錯讀起來比原文更可信，只能靠機械比對擋。
 
 ```bash
 # 只想確認「已產生的東西是對的」而不想消耗 Gemini 配額，跑這支就好
@@ -196,6 +213,8 @@ ADD annotation 樣本）、靜態托管與路徑穿越防護。
 
 ```
 core/        共用封裝，不含任何入口（Google Chat／Gemini／SQLite／加密／名錄／採集器）
+  polishers/   潤稿層；sepia_rules/ 是 vendored 的第三方規則（MIT，LICENSE 與
+               VERSION.json 同目錄，不要就地改內容——要更新請重新 vendored 並記錄 commit）
 mcp_app/     MCP 入口——發給團隊安裝（四個 MCP 工具、CLI 摘要、OAuth 授權精靈）
 dashboard/   儀表板——內部使用（FastAPI 後端 ＋ React 前端）
 config/      憑證（不進版控）

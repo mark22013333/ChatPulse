@@ -107,8 +107,41 @@ for d in providers.describe_all():
     fi
 fi
 
-# ── 4. MCP 註冊狀態 ────────────────────────────────
-echo -e "\n【4】MCP 入口"
+# ── 4. 潤稿規則（Sepia） ───────────────────────────
+# 這一項檢查的**不是**「這台電腦有沒有裝 Sepia 這個 Claude Code skill」。
+# 規則是以純文字 vendored 進本 repo 的（core/polishers/sepia_rules/），
+# 使用者不必安裝任何東西——理由見 docs/adr/0007-sanitized-text-over-skill-runtime.md。
+# 所以會失敗的唯一原因是「檔案沒跟著專案下來」，修法是還原檔案而不是去裝什麼。
+echo -e "\n【4】潤稿規則（Draft Reply 的「潤稿」選項需要）"
+if [ -x "$VENV_PYTHON" ]; then
+    POLISH_OUT=$("$VENV_PYTHON" -c "
+import sys; sys.path.insert(0, '$PROJECT_DIR')
+from core.polishers.sepia import rules_available, rules_version
+avail, reason = rules_available()
+info = rules_version()
+print('%s|%s|%s' % ('OK' if avail else 'NG', info.get('version') or '', reason))
+" 2>/dev/null)
+    if [ -z "$POLISH_OUT" ]; then
+        warn "潤稿規則檢查失敗（套件可能沒裝好）" "先解決上面第 1 項"
+    else
+        IFS='|' read -r P_STATUS P_VERSION P_REASON <<< "$POLISH_OUT"
+        if [ "$P_STATUS" = "OK" ]; then
+            # 變數一定要用 ${} 括起來：macOS 內建的 bash 3.2 會把緊接在後面的
+            # 全形「）」位元組當成變數名的一部分，於是版本號整個消失、只剩半截
+            # 亂碼（實測 2026-09-07：印出「已就位（v??」）。純 ASCII 的括號看不出
+            # 這個問題，中文訊息才會踩到。
+            ok "Sepia 潤稿規則已就位${P_VERSION:+（v${P_VERSION}）}"
+        else
+            # 直接用 rules_available() 回的那句話，不要再加自己的前綴——
+            # 它本身就是完整句子（含預期路徑），加前綴會變成同一句講兩次。
+            warn "${P_REASON:-找不到 Sepia 潤稿規則}" \
+                 "這份規則隨專案版控：git restore core/polishers/sepia_rules"
+        fi
+    fi
+fi
+
+# ── 5. MCP 註冊狀態 ────────────────────────────────
+echo -e "\n【5】MCP 入口"
 if command -v claude >/dev/null 2>&1; then
     ok "找得到 claude 指令（$(command -v claude)）"
     if claude mcp list 2>/dev/null | grep -q "google-chat"; then
@@ -120,10 +153,10 @@ else
     warn "PATH 中找不到 claude 指令" "只用 Web 儀表板的話可以忽略；要用 MCP 入口就得先裝 Claude Code"
 fi
 
-# ── 5. Web 儀表板 ──────────────────────────────────
+# ── 6. Web 儀表板 ──────────────────────────────────
 # 判斷順序是「先看有沒有畫面」而不是「先看有沒有 npm」——建置產物已進版控，
 # npm 只有在要重建時才需要。反過來問會得到「沒 npm 就不能用儀表板」的錯誤結論。
-echo -e "\n【5】Web 儀表板入口"
+echo -e "\n【6】Web 儀表板入口"
 if [ -f "$PROJECT_DIR/dashboard/frontend/dist/index.html" ]; then
     ok "儀表板畫面已備妥"
 elif command -v npm >/dev/null 2>&1; then
