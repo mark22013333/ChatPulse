@@ -1580,6 +1580,9 @@ def draft_stream(
                 thread_name=mention.get("thread_name"),
                 resolve=resolve,
                 on_retrieved=_learn_then_resolve,
+                # 有了自己的 id，「要回哪幾則」才判得出來——判準是
+                # 「從我上次發言到現在，對方講了什麼我還沒回」
+                self_user_id=viewer.get("google_user_id"),
             )
             resolve = name_resolver_for(viewer)
 

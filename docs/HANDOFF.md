@@ -52,7 +52,7 @@ export CHATPULSE_BOOTSTRAP_USER_ID=users/109827265019732088641
 .venv/bin/python tests/e2e/test_static.py             # 靜態托管、授權迴歸
 .venv/bin/python tests/e2e/test_add_annotation.py     # Mention 判定條件
 npm --prefix dashboard/frontend run test              # 前端 72 項
-.venv/bin/python -m unittest discover -s tests/unit   # 單元 88 項（零 API、零配額、0.01 秒）
+.venv/bin/python -m unittest discover -s tests/unit   # 單元 111 項（零 API、零配額、0.02 秒）
 node tests/e2e/test_merge_reply.cjs                   # 收件匣多選合併 11 項
 node tests/e2e/test_message_preview.cjs               # 最近訊息預覽 16 項（唯讀、零 AI）
 ```
@@ -78,6 +78,7 @@ node tests/e2e/test_message_preview.cjs               # 最近訊息預覽 16 �
 | 項目 | 狀態 | 下一步 |
 | :--- | :--- | :--- |
 | **看一眼 Space 裡在講什麼，要先跑一次摘要** | **2026-09-07 已實作**：摘要工作台點 Space 就顯示最近 10／20／30 則（可選），討論串標同色左邊框＋徽章，可按「展開整串」補齊被切掉的部分（按了才打 API）。順手修掉 `/api/v1/messages` 會丟掉純圖片訊息的問題 | 若覺得每次點 Space 都打一次 API 太積極，改成按鈕觸發即可（`store/preview.ts` 的 `load`） |
+| **對方連問兩件事，草稿只回其中一件** | **2026-09-07 已修**：「要回哪幾則」的判準從「間隔 < 5 分鐘」改成「從我上次發言到現在，對方講了什麼我還沒回」。實測那個案例（相隔 59 分鐘）現在 `anchor_count` 從 1 變 2、兩題都被完整回覆 | 若覺得一次回三件事太長，把 `DRAFT_ANCHOR_MAX_CLUSTERS` 調成 2 |
 | **同一個人連問兩件事只能分兩次回** | **2026-09-07 已實作**：收件匣可多選（限同一個 Space；分串聊天室還要同一串），合併成一份草稿、送出一則、一次結掉全部。prompt 加了〈逐則確認〉欄位，漏回一題會被看見 | 觀察合併後的回話會不會太長。真的太長就把 `server.MERGE_MAX`（5）調小 |
 | **Draft Reply 的脈絡只有 1 則（私訊）** | **2026-09-06 已實作**（`core/draft_context.py` ＋ 47 項單元測試）。同一個私訊實測：脈絡 1 則→7 則、圖片 1 張→3 張；群組長串驗證與改動前逐則相同 | 觀察一段時間。若「隔很久重問同一件事」常被 48h 上界切掉，把 `DRAFT_WINDOW_HOURS` 調成 168（不要拿掉）；若群組薄串開始張冠李戴，設 `CHATPULSE_DRAFT_CROSS_THREAD=0` |
 | **程式碼佐證的前端 UI** | 後端已完成（CRUD 端點 + draft_stream 串接 + `code_meta` SSE 事件），**前端沒有設定頁**，目前只能用 curl 操作 | 做專案設定頁 + 草稿工作區的專案選擇器 + 顯示 `code_meta` |
@@ -226,8 +227,35 @@ node tests/e2e/test_message_preview.cjs               # 最近訊息預覽 16 �
   commit message 裡提到危險指令的字樣也會被擋。push 要由人執行
 - 測試報告寫**兩份**（帶時間戳的那份不會被覆蓋），落在 `tests/e2e/reports/`（已 gitignore）
 
+### Draft Reply 的「要回哪幾則」
+
+- **判準是「我回了沒」，不是「隔多久」**（2026-09-07 修）。原本用「同一人 ＋
+  間隔 < 5 分鐘」收攏，理由是私訊常把一個問題拆三則發。但實測踩到反例：
+  對方 11:33 問白名單、12:32 問 LINE 推播，相隔 **59 分鐘**，於是只有後面那則
+  被標成要回的，前面那則掉進背景脈絡——草稿把 LINE 推播答得很完整，
+  白名單那題只寫「我另外看，確認完再回你」。
+  現在的規則：從錨點往前後收攏**同一發話者**的訊息，碰到別人講話（包含我自己）
+  就停；受 48h 上界與 `DRAFT_ANCHOR_MAX_CLUSTERS`（3 件）限制。
+  `DRAFT_ANCHOR_RUN_GAP_MINUTES` 現在**只用來分群**（判斷這是 1 件事還是 N 件事），
+  不再決定要回哪幾則。
+- **prompt 要明講「不可以只寫我再看看」**。多錨點時模型很容易把其中一題寫成
+  「我另外看」就算交差——那等於沒回。現在要求寫出缺什麼／要去確認什麼。
+
 ### 驗證方法本身的坑
 
+- **跑「把程式碼改壞看測試會不會紅」的正對照時，要關掉 `.pyc` 快取**
+  （2026-09-07 踩到）。`.pyc` 的失效判斷是 `(來源 mtime 秒數, 來源大小)`。
+  兩個變異若剛好刪掉**同樣長度**的字元、又在同一秒內接連寫入，第二次會沿用
+  第一次的位元碼——測試跑的是上一個變異版，於是回報「改壞了卻全綠」的假結果。
+  當時 M6 與 M6b 各刪 24 個字元，M6b 因此被誤判成「沒有測試守著」。
+  修法：`python -B` ＋ `PYTHONDONTWRITEBYTECODE=1`，並在每次變異後清掉
+  `__pycache__`。**把關工具本身也要有正對照**——那次是因為手動重跑同一條指令
+  得到相反結果才發現的。
+- **只測 core、不測接線，等於沒守住功能**。同一次正對照發現：把 server 那行
+  `self_user_id=viewer.get(...)` 改成 `None`，整條新判準等於沒開，**105 個測試
+  照樣全綠**——因為所有測試都直接呼叫 `draft_context.build()`。
+  已補 `tests/unit/test_draft_stream_wiring.py`，用 mock 把 `build()` 的呼叫參數
+  攔下來驗。凡是「core 有測、但參數要從 server 傳進去」的功能都該有這種測試。
 - **截斷輸出會製造假的「實測發現」**。這個 session 踩過：探針印 attachment JSON 時
   截斷在 1200 字元，而 `source` 欄位排在很長的 `downloadUri` 之後被切掉，
   於是誤判成「`source` 不一定回傳」並寫進設計文件與程式碼註解。
