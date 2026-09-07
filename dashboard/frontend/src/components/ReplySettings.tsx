@@ -7,6 +7,7 @@ import {
   Loader2Icon,
   RefreshCwIcon,
   SettingsIcon,
+  SlidersHorizontalIcon,
   SparklesIcon,
   Trash2Icon,
 } from 'lucide-react'
@@ -60,7 +61,14 @@ interface ReplySettingsProps {
  * 四組控件了。收合時標題列顯示當前設定摘要（見 `settingsSummary`）。
  */
 export function ReplySettings({ disabled }: ReplySettingsProps) {
-  const [open, setOpen] = useState(false)
+  // **預設展開。** 這裡原本是預設收合（理由是側欄已經有四組控件），
+  // 但實測的結果是使用者根本找不到它——在 280px 寬的側欄裡，一行
+  // text-xs 標題加一行灰色小字基本上是隱形的，而找不到的功能等於沒做。
+  //
+  // 展開是安全的：側欄的 SpaceList 是 flex-1 overflow-y-auto，會吸收
+  // 剩餘空間並自己捲動，所以這一區變高只會讓 Space 清單矮一點，
+  // 不會把版面推爆。
+  const [open, setOpen] = useState(true)
   const [personaDialog, setPersonaDialog] = useState(false)
   const [promptDialog, setPromptDialog] = useState(false)
   const [savingDefaults, setSavingDefaults] = useState(false)
@@ -144,10 +152,14 @@ export function ReplySettings({ disabled }: ReplySettingsProps) {
         ) : (
           <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
         )}
+        <SlidersHorizontalIcon className="size-3.5 shrink-0" aria-hidden />
         <span className="text-xs font-semibold">回覆設定</span>
-        <span className="ml-auto truncate text-[10px] text-muted-foreground" title={summary}>
-          {summary}
-        </span>
+        {/* 收合時才顯示摘要——展開時每個選項本來就看得到，再顯示一次是重複 */}
+        {!open ? (
+          <span className="ml-auto truncate text-[10px] text-muted-foreground" title={summary}>
+            {summary}
+          </span>
+        ) : null}
       </button>
 
       {open ? (
