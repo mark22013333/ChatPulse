@@ -78,8 +78,11 @@ const check = (label, ok, detail = '') => {
 
   console.log('\n【1】切到 Mention 收件匣')
   await page.getByRole('button', { name: /Mention 收件匣/ }).first().click()
-  await page.waitForTimeout(1500)
   const boxes = page.locator('[role="checkbox"]')
+  // **不可以用固定 waitForTimeout 之後直接數**：收件匣是非同步載入的，
+  // 慢一點就數到 0，而後面的 click 有自動等待所以會恢復——表現成
+  // 「只有第一條斷言偶爾紅」，看起來像功能壞掉。2026-09-07 實際踩到。
+  await boxes.first().waitFor({ state: 'visible', timeout: 20000 }).catch(() => {})
   check('待處理清單有 checkbox', (await boxes.count()) > 0, `${await boxes.count()} 個`)
 
   console.log('\n【2】勾第一則')

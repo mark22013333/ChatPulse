@@ -692,6 +692,9 @@ class PreferencesRequest(BaseModel):
     default_limit: Optional[int] = None
     default_style: Optional[str] = None
     default_provider: Optional[str] = None
+    #: 草稿預設要查哪個參考專案的哪個環境（ADR-0006）
+    default_code_project_id: Optional[int] = None
+    default_code_environment: Optional[str] = None
 
 
 # ==========================================================================
@@ -725,15 +728,73 @@ class CodeProjectPatch(BaseModel):
     enabled: Optional[bool] = None
 
 
+def _env(value: Optional[str]) -> str:
+    """把 code_search 的 ValueError 轉成 API 的 InvalidParameter。
+
+    封閉字彙的判斷屬於 core（那裡才是單一事實來源），但 core 不該知道 HTTP。
+    轉換集中在這裡一次，避免每個呼叫點各自 try/except——漏一個就是 500。
+    """
+    try:
+        return code_search.validate_environment(value)
+    except ValueError as exc:
+        raise InvalidParameter(str(exc)) from exc
+
+
 def _validate_branches(branches: Dict[str, str]) -> Dict[str, str]:
     """環境名稱是封閉字彙，擋掉 uat/UAT/staging 這種同義混寫。"""
     if not branches:
         raise InvalidParameter("至少要指定一個環境對應的分支，例如 production")
     out: Dict[str, str] = {}
     for env, branch in branches.items():
-        out[code_search.validate_environment(env)] = (branch or "").strip()
-        if not out[code_search.validate_environment(env)]:
+        key = _env(env)
+        out[key] = (branch or "").strip()
+        if not out[key]:
             raise InvalidParameter(f"環境 {env} 的分支名稱不可空白")
+    return out
+
+
+def _validate_repo_path(repo_path: Optional[str]) -> None:
+    """路徑必須是絕對路徑，而且不含 NUL。
+
+    相對路徑會相對於**伺服器的工作目錄**去解，那跟使用者心裡想的不是同一個地方；
+    等到產草稿才發現「查不到這個 repo」就太晚了。
+    """
+    if repo_path is None:
+        return
+    rp = repo_path.strip()
+    if not rp:
+        raise InvalidParameter("專案路徑不可空白")
+    if "\x00" in rp:
+        raise InvalidParameter("專案路徑含非法字元")
+    if not os.path.isabs(rp):
+        raise InvalidParameter("專案路徑必須是絕對路徑")
+
+
+def _verify_and_record(viewer_id: int, project: Dict[str, Any]) -> Dict[str, Any]:
+    """驗證專案並把結果寫回，回傳帶 verification 的專案 dict。
+
+    登錄的當下就驗，讓設定頁能顯示「這個分支已經不在了」。等到產草稿時
+    才發現，代價是一份使用者以為有依據的草稿。
+    """
+    verification = code_search.verify_project(
+        project["repo_path"], project.get("branches") or {}
+    )
+    error: Optional[str] = verification.get("error")
+    if not error:
+        missing = [
+            f"{env}={info['branch']}"
+            for env, info in (verification.get("branches") or {}).items()
+            if not info.get("exists")
+        ]
+        if missing:
+            error = "分支不存在：" + "、".join(missing)
+    try:
+        repo.record_project_verification(viewer_id, project["id"], error)
+    except Exception:
+        log.exception("寫入專案驗證結果失敗（不影響回應）")
+    out = dict(project)
+    out["verification"] = verification
+    out["last_verify_error"] = error
     return out
 
 
@@ -762,16 +823,33 @@ def verify_code_project(req: CodeProjectRequest, viewer: Dict[str, Any] = Viewer
 @app.post("/api/v1/code-projects")
 def post_code_project(req: CodeProjectRequest, viewer: Dict[str, Any] = ViewerDep):
     branches = _validate_branches(req.branches)
+    _validate_repo_path(req.repo_path)
+    default_env = _env(req.default_env)
+    if default_env not in branches:
+        raise InvalidParameter(
+            f"預設環境 {default_env} 沒有對應的分支，請先指定該環境的分支"
+        )
     project_id = repo.create_code_project(
         viewer["id"],
         name=req.name.strip(),
         repo_path=req.repo_path.strip(),
         branches=branches,
-        default_env=code_search.validate_environment(req.default_env),
+        default_env=default_env,
         include_globs=req.include_globs,
         exclude_globs=req.exclude_globs,
     )
-    return repo.get_code_project(viewer["id"], project_id)
+    project = repo.get_code_project(viewer["id"], project_id)
+    assert project is not None
+    # 分支不存在仍然建立成功（分支可能之後才開），但把錯誤記下來讓設定頁標警告
+    return _verify_and_record(viewer["id"], project)
+
+
+@app.get("/api/v1/code-projects/{project_id}")
+def get_code_project(project_id: int, viewer: Dict[str, Any] = ViewerDep):
+    project = repo.get_code_project(viewer["id"], project_id)
+    if project is None:
+        raise CodeProjectNotFound(f"找不到參考專案 {project_id}")
+    return project
 
 
 @app.patch("/api/v1/code-projects/{project_id}")
@@ -781,27 +859,41 @@ def patch_code_project(
     if not repo.get_code_project(viewer["id"], project_id):
         raise CodeProjectNotFound(f"找不到參考專案 {project_id}")
     branches = _validate_branches(req.branches) if req.branches is not None else None
+    _validate_repo_path(req.repo_path)
     repo.update_code_project(
         viewer["id"],
         project_id,
         name=req.name.strip() if req.name else None,
         repo_path=req.repo_path.strip() if req.repo_path else None,
         branches=branches,
-        default_env=(
-            code_search.validate_environment(req.default_env) if req.default_env else None
-        ),
+        default_env=_env(req.default_env) if req.default_env else None,
         include_globs=req.include_globs,
         exclude_globs=req.exclude_globs,
         enabled=req.enabled,
     )
-    return repo.get_code_project(viewer["id"], project_id)
+    project = repo.get_code_project(viewer["id"], project_id)
+    assert project is not None
+    return _verify_and_record(viewer["id"], project)
+
+
+@app.post("/api/v1/code-projects/{project_id}/verify")
+def reverify_code_project(project_id: int, viewer: Dict[str, Any] = ViewerDep):
+    """重新確認已登錄的專案：路徑還在嗎、分支還在嗎。
+
+    與上面那個「建立前先驗」的端點不同——那個吃 repo_path＋branches（還沒存），
+    這個吃 id（已經存了）。設定頁的「重新檢查」按鈕用這個。
+    """
+    project = repo.get_code_project(viewer["id"], project_id)
+    if project is None:
+        raise CodeProjectNotFound(f"找不到參考專案 {project_id}")
+    return _verify_and_record(viewer["id"], project)
 
 
 @app.delete("/api/v1/code-projects/{project_id}")
 def remove_code_project(project_id: int, viewer: Dict[str, Any] = ViewerDep):
     if not repo.delete_code_project(viewer["id"], project_id):
         raise CodeProjectNotFound(f"找不到參考專案 {project_id}")
-    return {"deleted": project_id}
+    return {"deleted": True}
 
 
 class DraftTargetRequest(BaseModel):
@@ -922,12 +1014,19 @@ def patch_preferences(req: PreferencesRequest, viewer: Dict[str, Any] = ViewerDe
     if provider:
         # 存進偏好前先驗一次，避免存下一個會在每次摘要時才爆的值
         providers.resolve_name(provider)
+    # 同樣先驗一次，避免存下一個會在每次產草稿時才爆的值
+    code_env = _env(req.default_code_environment) if req.default_code_environment else None
+    if req.default_code_project_id is not None:
+        if repo.get_code_project(viewer["id"], req.default_code_project_id) is None:
+            raise CodeProjectNotFound(f"找不到參考專案 {req.default_code_project_id}")
     return repo.update_preferences(
         viewer["id"],
         pinned_space_ids=req.pinned_space_ids,
         default_limit=limit,
         default_style=style,
         default_provider=provider,
+        default_code_project_id=req.default_code_project_id,
+        default_code_environment=code_env,
     )
 
 
@@ -1404,6 +1503,16 @@ def refresh_mentions(viewer: Dict[str, Any] = ViewerDep):
 MERGE_MAX = 5
 
 
+class CodeRefRequest(BaseModel):
+    """要查哪一個專案的哪一個環境。"""
+
+    project_id: int
+    #: 省略時用專案的 default_env
+    environment: Optional[str] = None
+    #: 指定檔案時跳過關鍵字搜尋，直接讀這些檔（零猜測）
+    paths: List[str] = Field(default_factory=list)
+
+
 class DraftRequest(BaseModel):
     # 7.3：不自動選擇 Reference Space，預設空陣列
     reference_space_ids: List[str] = Field(default_factory=list)
@@ -1414,15 +1523,16 @@ class DraftRequest(BaseModel):
     #: 限制見 resolve_merge_targets()：同一個 Space，群組還要同一個討論串。
     merge_mention_ids: List[int] = Field(default_factory=list)
 
-    #: 要拿來當程式碼佐證的參考專案。空陣列＝不查程式碼（預設）
-    code_project_ids: List[int] = Field(default_factory=list)
-    #: 查哪個環境的分支。沒給就用各專案自己的 default_env
-    code_environment: Optional[str] = None
+    #: 要拿來當程式碼佐證的參考專案。空陣列＝不查程式碼（預設，ADR-0006）。
+    #: **環境是綁在每一筆上、不是全域一個**——送同一個 project_id 兩次配不同
+    #: environment，就是「比對正式與 UAT」，那是這個功能最有價值的用法。
+    #: 原本的 `code_project_ids` ＋ 單一 `code_environment` 做不到那件事
+    #: （id 會被去重、環境又只有一個），儘管 CODE_MAX_PROJECTS_PER_DRAFT=2
+    #: 的註解正是為了它而設。
+    code_refs: List["CodeRefRequest"] = Field(default_factory=list)
     #: 覆寫自動抽出的搜尋關鍵字。自動抽詞是刻意做弱的（見 code_search
     #: 的說明），猜錯時使用者可以直接指定
     code_terms: List[str] = Field(default_factory=list)
-    #: 直接指定要看的檔案，跳過搜尋
-    code_paths: List[str] = Field(default_factory=list)
 
 
 def resolve_merge_targets(
@@ -1486,6 +1596,8 @@ def _code_block(ctx: "code_search.CodeContext") -> Dict[str, Any]:
         "commit_date": ctx.commit_date,
         "terms": list(ctx.terms),
         "notes": list(ctx.notes),
+        # 預算吃滿時有片段被丟掉。前端要標出來——不然使用者以為看到的是全部
+        "truncated": ctx.truncated,
         "hits": [
             {
                 "path": h.path,
@@ -1498,10 +1610,44 @@ def _code_block(ctx: "code_search.CodeContext") -> Dict[str, Any]:
     }
 
 
+def resolve_code_refs(
+    viewer_id: int, refs: List[CodeRefRequest]
+) -> List[Tuple[Dict[str, Any], str, str, List[str]]]:
+    """把 `code_refs` 解析成 (專案, 環境, 分支, 指定檔案)，**在 SSE 開始之前**。
+
+    專案不見了、環境沒有對應分支——這些是參數錯誤，要用一般的 4xx 回，
+    不要變成 SSE 的 error 事件。SSE 一旦開始就是 HTTP 200，前端得另外處理
+    一種「串流開了但其實沒開始」的狀態，而使用者也比較不容易注意到。
+    真正會慢的 git grep 留在 generator 裡跑。
+
+    回傳的順序＝請求的順序，**不去重**：同一個 project_id 出現兩次配不同環境
+    正是「比對正式與 UAT」，去重就把這個功能拿掉了。
+    """
+    if not cfg.CODE_ENABLED or not refs:
+        return []
+
+    out: List[Tuple[Dict[str, Any], str, str, List[str]]] = []
+    for ref in refs[: cfg.CODE_MAX_PROJECTS_PER_DRAFT]:
+        project = repo.get_code_project(viewer_id, ref.project_id)
+        if project is None:
+            raise CodeProjectNotFound(f"找不到參考專案 id={ref.project_id}")
+        if not project.get("enabled", True):
+            raise InvalidParameter(f"參考專案「{project['name']}」已停用")
+        env = _env(ref.environment or project["default_env"])
+        branch = (project.get("branches") or {}).get(env)
+        if not branch:
+            raise InvalidParameter(
+                f"專案「{project['name']}」沒有設定 {env} 環境對應的分支，請先到設定頁補上"
+            )
+        out.append((project, env, branch, list(ref.paths)))
+    return out
+
+
 def collect_code_context(
-    viewer_id: int, req: DraftRequest, mention_text: str, thread_text: str
+    resolved: List[Tuple[Dict[str, Any], str, str, List[str]]],
+    terms: List[str],
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
-    """依請求指定的專案去查程式碼。回傳 (code_blocks, skipped)。
+    """對已解析的參考專案跑 git grep。回傳 (code_blocks, skipped)。
 
     沒指定專案就回空的——「沒查」與「查了沒找到」對模型是兩種不同的事實，
     prompts._code_section 會分別講清楚，這裡不要混為一談。
@@ -1510,31 +1656,9 @@ def collect_code_context(
     由呼叫端轉成 SSE error 事件。那是硬失敗而不是降級：使用者要的就是
     有依據的草稿，靜默給一份沒依據的更糟。
     """
-    if not cfg.CODE_ENABLED or not req.code_project_ids:
-        return [], []
-
-    ids = list(dict.fromkeys(req.code_project_ids))[: cfg.CODE_MAX_PROJECTS_PER_DRAFT]
-    terms = [t.strip() for t in req.code_terms if t.strip()] or code_search.extract_search_terms(
-        mention_text, thread_text
-    )
-
     blocks: List[Dict[str, Any]] = []
     skipped: List[str] = []
-    for pid in ids:
-        project = repo.get_code_project(viewer_id, pid)
-        if not project:
-            skipped.append(f"找不到參考專案 {pid}")
-            continue
-        if not project.get("enabled", True):
-            skipped.append(f"參考專案「{project['name']}」已停用")
-            continue
-        env = code_search.validate_environment(req.code_environment or project["default_env"])
-        branch = repo.resolve_branch(viewer_id, pid, env)
-        if not branch:
-            skipped.append(
-                f"參考專案「{project['name']}」沒有設定 {env} 環境的分支"
-            )
-            continue
+    for project, env, branch, paths in resolved:
         ctx, ctx_skipped = code_search.collect(
             repo_path=project["repo_path"],
             project_name=project["name"],
@@ -1543,7 +1667,8 @@ def collect_code_context(
             terms=terms,
             include_globs=project.get("include_globs") or (),
             exclude_globs=project.get("exclude_globs") or (),
-            explicit_paths=req.code_paths,
+            budget_tokens=cfg.CODE_BUDGET_TOKENS_DRAFT,
+            explicit_paths=paths,
         )
         blocks.append(_code_block(ctx))
         skipped.extend(ctx_skipped)
@@ -1575,6 +1700,7 @@ def draft_stream(
     # 在進 generator 之前驗證：SSE 一旦開始就是 HTTP 200，之後的錯誤只能變成
     # error 事件，使用者比較難注意到。參數錯誤要用正常的 4xx 擋在門外。
     targets = resolve_merge_targets(viewer_id, mention, req.merge_mention_ids)
+    resolved_code_refs = resolve_code_refs(viewer_id, req.code_refs)
 
     def generate() -> Generator[str, None, None]:
         # 放在 try 外面：客戶端中途斷線時 yield 會拋 GeneratorExit，
@@ -1673,6 +1799,23 @@ def draft_stream(
                     scan_recent=len(ctx.image_messages),
                 )
 
+            # 參考專案原始碼（ADR-0006）。這一步會跑 git grep，可能要幾秒，
+            # 所以刻意放在 meta **之前**：meta 一送出，前端的檢索結果條就能顯示
+            # 「查了哪個環境／哪個 commit／哪些關鍵字／命中哪些檔案」。
+            # 搜錯環境、搜錯關鍵字，使用者在模型開口之前就看得到——
+            # 那是保住 human-in-the-loop 的機制，不只是資訊展示。
+            # 沒選參考專案時這裡完全不跑，meta 也就不會被拖慢。
+            code_terms = [t.strip() for t in req.code_terms if t.strip()] or (
+                code_search.extract_search_terms(
+                    ctx.anchor_plain_text or mention_text, ctx.search_text
+                )
+                if resolved_code_refs
+                else []
+            )
+            code_blocks, code_skipped = collect_code_context(
+                resolved_code_refs, code_terms
+            )
+
             yield sse(
                 {
                     "type": "meta",
@@ -1701,38 +1844,32 @@ def draft_stream(
                         }
                         for b in ref_blocks
                     ],
+                    # 讓 Viewer 在模型開口**之前**就看到依據對不對。
+                    # hit_count 為 0 代表「查了但沒找到」，與「沒有查」是不同的事——
+                    # 前端與 prompt 都必須分得出來。
+                    "code_refs": [
+                        {
+                            "project_name": b["project_name"],
+                            "environment": b["environment"],
+                            "environment_label": b["environment_label"],
+                            "branch": b["branch"],
+                            "commit_sha": b["commit_sha"],
+                            "commit_date": b["commit_date"],
+                            "terms": b["terms"],
+                            "hit_count": len(b["hits"]),
+                            "files": sorted({h["path"] for h in b["hits"]}),
+                            "truncated": b["truncated"],
+                            "notes": b["notes"],
+                        }
+                        for b in code_blocks
+                    ],
+                    "code_skipped": code_skipped,
                     "provider": resolved_provider,
                     "model": ai.model,
                     "image_count": len(images),
                     "images_skipped": skipped_images,
                 }
             )
-
-            # 程式碼佐證。放在 prompt 組裝之前，因為查失敗要能變成 error 事件——
-            # 使用者指定了專案卻拿到一份沒查程式碼的草稿，比直接報錯更糟。
-            code_blocks, code_skipped = collect_code_context(
-                viewer_id, req, ctx.anchor_plain_text or mention_text, ctx.search_text
-            )
-            if code_blocks or code_skipped:
-                yield sse(
-                    {
-                        "type": "code_meta",
-                        "projects": [
-                            {
-                                "project_name": b["project_name"],
-                                "environment": b["environment"],
-                                "environment_label": b["environment_label"],
-                                "branch": b["branch"],
-                                "commit_sha": b["commit_sha"],
-                                "terms": b["terms"],
-                                "hit_count": len(b["hits"]),
-                                "notes": b["notes"],
-                            }
-                            for b in code_blocks
-                        ],
-                        "skipped": code_skipped,
-                    }
-                )
 
             prompt = prompts.draft_reply_prompt(
                 anchor_text=ctx.anchor_text or mention_text,

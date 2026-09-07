@@ -271,7 +271,8 @@ mentions 表**只存識別資訊**，不存內容）。
 需登入。**SSE**。產生 Draft Reply。body：
 ```json
 { "reference_space_ids": ["spaces/BBB", "spaces/CCC"], "limit": 50, "provider": "claude_cli",
-  "merge_mention_ids": [46] }
+  "merge_mention_ids": [46],
+  "code_refs": [ { "project_id": 3, "environment": "production" } ], "code_terms": [] }
 ```
 `reference_space_ids` **預設空陣列**（7.3：不自動選擇 Reference Space）。
 
@@ -288,6 +289,18 @@ mentions 表**只存識別資訊**，不存內容）。
 | `flat_window` | 私訊、或 `threadingState=UNTHREADED_MESSAGES` 的聊天室 | 錨點前 15 後 10 則，48h 上界＋錨點前保底 6 則 |
 | `thread` | 分串聊天室且該串 ≥ 2 則 | 整串（上限 `DRAFT_THREAD_LIMIT`=60）。**行為與 2026-09-06 之前一致** |
 | `thread_thin` | 分串聊天室但該串只有 1 則（有人 @ 你還沒人回） | 原串 ＋ 一個**獨立且帶警語**的跨串小窗（8 則） |
+
+`code_refs` 也**預設空陣列**（ADR-0006：不自動挑專案），上限 2 筆。
+`environment` 可省略，省略時用專案的 `default_env`；合法值只有
+`production`／`uat`／`dev`。**送同一個 `project_id` 兩次配不同 `environment`，
+就是「比對正式與 UAT」**——「這是不是 bug」這類問題最有價值的用法。
+每筆可另帶 `paths`（明確指定檔案，跳過關鍵字搜尋）。
+`code_terms` 覆寫自動抽詞。
+
+專案不存在回 **404 `CODE_PROJECT_NOT_FOUND`**、環境沒有對應分支回
+**400 `INVALID_PARAMETER`**——**這兩個都在 SSE 開始前就回**，不是 error 事件。
+路徑不是 repo 回 **409 `CODE_PROJECT_UNAVAILABLE`**、分支不存在回
+**409 `CODE_BRANCH_NOT_FOUND`**（訊息會附上現有分支清單）。
 
 圖片：**只取被 @ 的那則與其脈絡，Reference Space 的圖不取**。理由是成本——
 參考群組可能有好幾個、每個 50 則，圖片全抓會吃光預算；而真正需要看到的是
@@ -307,6 +320,12 @@ mentions 表**只存識別資訊**，不存內容）。
   "answering": [ { "mention_id": 45, "sender_display": "李小明", "create_time": "2026-09-06T11:33:28Z" },
                  { "mention_id": 46, "sender_display": "李小明", "create_time": "2026-09-06T12:32:57Z" } ],
   "reference_spaces": [ { "space_id": "spaces/BBB", "space_name": "1.BU2-PG", "message_count": 50 } ],
+  "code_refs": [ { "project_name": "智慧客服後端", "environment": "production",
+                   "environment_label": "正式環境", "branch": "main", "commit_sha": "a3f91c2",
+                   "commit_date": "2026-08-28T11:04:12+08:00", "terms": ["retry_backoff"],
+                   "hit_count": 2, "files": ["app/services/session.py"],
+                   "truncated": false, "notes": [] } ],
+  "code_skipped": [],
   "provider": "claude_cli", "model": "claude-cli:opus",
   "image_count": 1, "images_skipped": [] }
 ```
@@ -321,8 +340,53 @@ mentions 表**只存識別資訊**，不存內容）。
 `thread_message_count` 保留舊名，值是 `context.message_count`（這次送進模型的對話則數）。
 `coverage: "partial"` 代表系統沒能取回錨點周圍的完整對話（那則太舊了），prompt 會據此
 要模型更保守，前端會把則數標成橘色。
+
+`code_refs` 在 `meta` 裡的用途是**讓 Viewer 在模型開口之前就看到依據對不對**：
+查了哪個環境、哪個 commit、用哪些關鍵字、命中哪些檔案。搜錯環境一眼就看得到，
+不必先讀完生成文字。`hit_count` 為 0 代表「查了但沒找到」，與「沒有查」是不同的事，
+前端與 prompt 都必須分得出來。
 `done`：`{"type":"done","draft_id":3}`
 輸出內容為兩段 Markdown：`### 🧭 脈絡分析` 與 `### ✍️ 建議回話`。
+
+### 參考專案（ADR-0006）
+
+全部需登入，且一律限於自己的專案（`viewer_id` 為必填查詢條件，沒有「查全部」的入口）。
+
+| 端點 | 說明 |
+| :--- | :--- |
+| `GET /api/v1/code-projects` | 列出，回 `{"projects":[...]}` |
+| `POST /api/v1/code-projects` | 登錄，同步驗證分支 |
+| `GET /api/v1/code-projects/{id}` | 單筆 |
+| `PATCH /api/v1/code-projects/{id}` | 更新，同步驗證分支 |
+| `DELETE /api/v1/code-projects/{id}` | 刪除 |
+| `POST /api/v1/code-projects/{id}/verify` | 重新確認路徑與分支還在 |
+
+登錄 body：
+```json
+{ "name": "智慧客服後端", "repo_path": "D:\work\cs-backend",
+  "branches": { "production": "main", "uat": "release/uat" },
+  "default_env": "production" }
+```
+
+**至少要指定一個環境的分支**，否則回 400——沒有分支對應的專案正是
+「查問題時找錯環境」本身，而這個功能的存在理由就是防這件事。
+`repo_path` 必須是絕對路徑。`default_env` 必須有對應的分支。
+
+`branches` 在 PATCH 時是**整組取代**，不是逐項合併——否則「刪掉 uat 對應」
+這個動作沒有辦法表達。
+
+POST／PATCH／verify 回傳帶 `verification`：
+```json
+{ "id": 3, "name": "智慧客服後端", "branches": {...},
+  "verification": { "repo_ok": true, "working_tree_dirty": true,
+    "branches": { "production": { "branch": "main", "exists": true, "commit": "a3f91c2",
+                                  "commit_date": "2026-08-28T11:04:12+08:00" },
+                  "uat": { "branch": "release/uat", "exists": false, "error": "分支不存在",
+                           "did_you_mean": ["release/uat-2026q3"] } } },
+  "last_verify_error": "分支不存在：uat=release/uat" }
+```
+**分支不存在仍然建立成功**（分支可能之後才開），但 `last_verify_error` 會被記下來
+讓設定頁標警告。登錄時大聲失敗，遠比產草稿時才發現便宜。
 
 ### `POST /api/v1/mentions/{id}/reply`
 需登入。送出回話（**前端必須先二次確認**）。

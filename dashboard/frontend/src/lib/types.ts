@@ -264,6 +264,59 @@ export interface DraftContextMeta {
   blocks: { kind: string; label: string; count: number }[]
 }
 
+/** 參考專案的環境。與後端 cfg.CODE_ENVIRONMENTS 是同一組封閉字彙。 */
+export type CodeEnvironment = 'production' | 'uat' | 'dev'
+
+export interface CodeProjectBranchInfo {
+  branch: string
+  exists: boolean
+  commit?: string
+  commit_date?: string
+  error?: string
+  did_you_mean?: string[]
+}
+
+export interface CodeProjectVerification {
+  repo_ok: boolean
+  branches: Record<string, CodeProjectBranchInfo>
+  working_tree_dirty: boolean
+  error?: string | null
+}
+
+export interface CodeProject {
+  id: number
+  name: string
+  repo_path: string
+  default_env: CodeEnvironment
+  include_globs: string[]
+  exclude_globs: string[]
+  enabled: boolean
+  /** 環境 → 分支。這是整個功能的重點：查問題時不能查錯環境。 */
+  branches: Partial<Record<CodeEnvironment, string>>
+  last_verified_at?: string | null
+  last_verify_error?: string | null
+  verification?: CodeProjectVerification
+}
+
+/**
+ * `meta` 事件裡的檢索結果：模型開口**之前**就送到前端。
+ * 讓 Viewer 一眼判斷依據對不對（搜錯環境、搜錯關鍵字），
+ * 不必先讀完一整段生成文字。
+ */
+export interface DraftCodeRef {
+  project_name: string
+  environment: CodeEnvironment
+  environment_label: string
+  branch: string
+  commit_sha: string
+  commit_date: string
+  terms: string[]
+  hit_count: number
+  files: string[]
+  truncated: boolean
+  notes: string[]
+}
+
 /** SSE `meta` 事件：摘要與 Draft Reply 共用一個型別，欄位各自可選。 */
 export interface SseMeta {
   type: 'meta'
@@ -285,6 +338,8 @@ export interface SseMeta {
    */
   answering?: DraftAnsweringItem[]
   reference_spaces?: DraftReferenceSpace[]
+  code_refs?: DraftCodeRef[]
+  code_skipped?: string[]
   /**
    * 實際送進模型的圖片張數。後端一直有送這個欄位，但前端沒顯示，
    * 於是使用者看不出附件到底有沒有被讀——只能從草稿內容有沒有提到圖片來猜。
