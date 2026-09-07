@@ -2,6 +2,8 @@ import type {
   AIConfig,
   AuthResult,
   AuthStatus,
+  CodeEnvironment,
+  CodeProject,
   Me,
   Preferences,
   Mention,
@@ -189,6 +191,33 @@ export const api = {
     id: number,
     body: { text: string; draft_id?: number | null; merge_mention_ids?: number[] },
   ) => post<ReplyResponse>(`/mentions/${id}/reply`, body as unknown as Json),
+
+  // ── 參考專案（ADR-0006）────────────────────────────────
+  codeProjects: () => request<{ projects: CodeProject[] }>('/code-projects'),
+  createCodeProject: (body: {
+    name: string
+    repo_path: string
+    branches: Partial<Record<CodeEnvironment, string>>
+    default_env?: CodeEnvironment
+  }) => post<CodeProject>('/code-projects', body as unknown as Json),
+  updateCodeProject: (
+    id: number,
+    body: Partial<{
+      name: string
+      repo_path: string
+      branches: Partial<Record<CodeEnvironment, string>>
+      default_env: CodeEnvironment
+      enabled: boolean
+    }>,
+  ) =>
+    request<CodeProject>(`/code-projects/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  deleteCodeProject: (id: number) =>
+    request<{ deleted: boolean }>(`/code-projects/${id}`, { method: 'DELETE' }),
+  /** 重新確認路徑與分支還在。設定頁的「重新檢查」用。 */
+  verifyCodeProject: (id: number) => post<CodeProject>(`/code-projects/${id}/verify`),
 
   // ── 維運 ────────────────────────────────────────────────
   usage: (days = 14) => request<UsageResponse>(`/usage${query({ days })}`),
