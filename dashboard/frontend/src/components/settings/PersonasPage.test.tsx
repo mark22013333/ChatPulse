@@ -210,6 +210,52 @@ describe('Persona 設定頁：從 repo 根目錄匯入時提醒一句', () => {
   })
 })
 
+describe('Persona 設定頁：空狀態的「填入範例」', () => {
+  /**
+   * 空狀態原本只有一句「還沒有匯入任何 Persona。」，而使用者接下來要填的
+   * 兩個欄位（repository ＋ 目錄名）沒有任何一處告訴他該從哪裡拿。
+   *
+   * 兩條界線：
+   *   * 只**填表單**，不直接匯入——匯入會寫資料庫並打外部網路。
+   *   * 只在**真的空**的時候出現，不在載入中出現（載入中那句話是假的空狀態）。
+   */
+  it('**按了之後表單被填好，但沒有匯入**', async () => {
+    const importPersona = vi.fn()
+    seed([], { loaded: true, importPersona })
+    render(<PersonasPage />)
+
+    await userEvent.click(screen.getByRole('button', { name: /範例/ }))
+
+    expect(screen.getByLabelText(/Repository/)).toHaveValue('fxp/persona-distill-skills')
+    expect(screen.getByLabelText(/目錄名/)).toHaveValue('luozhenyu')
+    // 顯示名稱要一起填：來源檔案的 name 是識別字（luozhenyu-perspective）
+    expect(screen.getByLabelText(/顯示名稱/)).toHaveValue('羅振宇（羅胖）')
+    expect(importPersona).not.toHaveBeenCalled()
+  })
+
+  it('範例用 Repository 模式，不是那個 repo 根目錄的 SKILL.md', async () => {
+    // 根目錄那份是「如何寫 persona」的方法論，拿它當範例會示範錯的東西
+    seed([], { loaded: true })
+    render(<PersonasPage />)
+
+    await userEvent.click(screen.getByRole('button', { name: /範例/ }))
+    expect(screen.getByLabelText(/Repository/)).toBeInTheDocument()
+    expect(screen.queryByLabelText(/檔案網址/)).toBeNull()
+  })
+
+  it('載入中不出現（那時的空清單不代表真的沒有）', () => {
+    seed([], { loaded: false, loading: true })
+    render(<PersonasPage />)
+    expect(screen.queryByRole('button', { name: /範例/ })).toBeNull()
+  })
+
+  it('已經有 Persona 時不出現', () => {
+    seed([persona()])
+    render(<PersonasPage />)
+    expect(screen.queryByRole('button', { name: /範例/ })).toBeNull()
+  })
+})
+
 describe('Persona 設定頁：已匯入清單', () => {
   it('計數與名稱讀得出來', () => {
     seed([persona(), persona({ id: 2, name: '香帥（唐涯）' })])

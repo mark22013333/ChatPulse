@@ -11,6 +11,19 @@ import { personaSourceLine, useReplySettingsStore } from '@/store/replySettings'
 // Persona 管理
 // ==========================================================================
 
+/** 空狀態那顆「填入範例」用的來源。
+ *
+ * 與輸入框的 placeholder 是**同一組**，刻意不另外挑一個：placeholder 只
+ * 看得到、按鈕真的填得進去，兩者講同一件事才不會讓人以為有兩個選擇。
+ * `name` 存在的理由是這個生態的通例——來源檔案裡的 `name` 是識別字
+ * （實測 `luozhenyu-perspective`）而不是人名，所以顯示名稱要自己填。
+ */
+const EXAMPLE_SOURCE = {
+  repository: 'fxp/persona-distill-skills',
+  slug: 'luozhenyu',
+  name: '羅振宇（羅胖）',
+} as const
+
 export function PersonasPage() {
   const personas = useReplySettingsStore((s) => s.personas)
   const busy = useReplySettingsStore((s) => s.busy)
@@ -227,7 +240,32 @@ export function PersonasPage() {
                 正在讀取已匯入的 Persona…
               </p>
             ) : (
-              <p className="text-xs text-muted-foreground">還沒有匯入任何 Persona。</p>
+              // 空狀態給一顆「填入範例」。**只填表單，不直接匯入**——匯入會
+              // 寫進資料庫並打外部網路，那該由使用者自己按下去。
+              // 範例刻意用 Repository 模式的 fxp/persona-distill-skills +
+              // luozhenyu：它是這個表單設計時的參考格式（抽出來的條目最完整，
+              // 思考 6／表達 6／邊界 6），而且**不是**那個 repo 根目錄的
+              // SKILL.md——那份是「如何寫 persona」的方法論，拿它當範例會
+              // 直接示範錯的東西（見後端 `_persona_import_notice`）。
+              <div className="space-y-1">
+                <p className="text-xs text-muted-foreground">還沒有匯入任何 Persona。</p>
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="ghost"
+                  className="h-5 px-1 text-2xs"
+                  onClick={() => {
+                    setMode('github')
+                    setRepository(EXAMPLE_SOURCE.repository)
+                    setSlug(EXAMPLE_SOURCE.slug)
+                    setName(EXAMPLE_SOURCE.name)
+                    setImportError(null)
+                    setImportNotice(null)
+                  }}
+                >
+                  用一個範例來源填好上面的表單
+                </Button>
+              </div>
             )
           ) : (
             <div className="max-h-64 space-y-2 overflow-y-auto">
