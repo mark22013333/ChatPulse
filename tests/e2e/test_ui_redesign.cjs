@@ -33,6 +33,22 @@ const { open, scoreboard, goHash, hashOf } = require('./e2e_browser.cjs')
 /** 設定中心的六個分頁（照畫面上的順序）。 */
 const SETTINGS_TABS = ['Persona', '常用提示詞', '參考專案', 'Space', '資料']
 
+/**
+ * 選擇器一律限縮，理由是**兩個工作台常駐掛載**（規格 §7.2）：看不見的那一半
+ * 仍然在 DOM 裡，而 Playwright 的 `name` 預設是**子字串**比對，所以
+ * `getByRole('button', { name: '設定' })` 會連收件匣裡「內文剛好提到設定」
+ * 的 Mention 卡片一起選中，撞上 strict mode。2026-09-10 實際踩到——而且它
+ * 是**資料相關的偶發**：換一批 Mention 就不會發生，看起來像功能壞掉。
+ *
+ * 兩條規則：
+ *   1. 頂列的按鈕用 `exact: true`，或先限縮到 `header`
+ *   2. 清單用它自己的 aria-label（改版時就是為此加上去的），不要用 `.first()`
+ */
+const SUMMARY_LISTBOX = '[role="listbox"][aria-label="要做摘要的 Space"]'
+
+const topBarButton = (page, name) => page.locator('header').getByRole('button', { name })
+const settingsDialog = (page) => page.getByRole('dialog', { name: '設定' })
+
 ;(async () => {
   const { browser, page, errors, authMode } = await open()
   const { check, finish } = scoreboard()
@@ -49,11 +65,11 @@ const SETTINGS_TABS = ['Persona', '常用提示詞', '參考專案', 'Space', '�
   await goHash(page, '#/summary')
   check(
     '#/summary 落在摘要工作台',
-    (await page.getByRole('button', { name: /摘要工作台/ }).count()) > 0,
+    (await topBarButton(page, /摘要工作台/).count()) > 0,
   )
 
   // 記住一個「原本在哪」的位置，後面要驗關閉設定會回到這裡
-  const firstSpaceRow = page.locator('[role="option"][data-option-index]').first()
+  const firstSpaceRow = page.locator(`${SUMMARY_LISTBOX} [role="option"][data-option-index]`).first()
   let origin = '#/summary'
   if (await firstSpaceRow.count()) {
     await firstSpaceRow.click()
@@ -64,7 +80,7 @@ const SETTINGS_TABS = ['Persona', '常用提示詞', '參考專案', 'Space', '�
 
   // ── 2. 設定頁點 N 個分頁，按一次關閉 ──────────────────────
   console.log('\n【2】點過五個設定分頁之後，按一次「關閉」')
-  await page.getByRole('button', { name: '設定' }).click()
+  await topBarButton(page, '設定').click()
   await page.waitForTimeout(400)
   check('進入設定中心', (await hashOf(page)) === '#/settings/reply')
 
@@ -83,18 +99,18 @@ const SETTINGS_TABS = ['Persona', '常用提示詞', '參考專案', 'Space', '�
     `history.length ${lenBeforeTabs} → ${lenAfterTabs}`,
   )
 
-  await page.getByRole('button', { name: '關閉' }).click()
+  await settingsDialog(page).getByRole('button', { name: '關閉' }).click()
   await page.waitForTimeout(450)
   check(
     '**按一次「關閉」就回到原本的位置**',
     (await hashOf(page)) === origin,
     `期望 ${origin}，實際 ${await hashOf(page)}`,
   )
-  check('設定覆蓋層真的消失了', (await page.getByRole('dialog', { name: '設定' }).count()) === 0)
+  check('設定覆蓋層真的消失了', (await settingsDialog(page).count()) === 0)
 
   // ── 3. 返回鍵一次離開設定 ─────────────────────────────────
   console.log('\n【3】在設定裡按瀏覽器返回鍵')
-  await page.getByRole('button', { name: '設定' }).click()
+  await topBarButton(page, '設定').click()
   await page.waitForTimeout(350)
   await page.getByRole('link', { name: /^Persona/ }).click()
   await page.waitForTimeout(250)
@@ -116,9 +132,9 @@ const SETTINGS_TABS = ['Persona', '常用提示詞', '參考專案', 'Space', '�
   await goHash(page, '#/settings/personas')
   await page.reload({ waitUntil: 'networkidle' })
   await page.waitForTimeout(700)
-  check('直接開得起來', (await page.getByRole('dialog', { name: '設定' }).count()) > 0)
+  check('直接開得起來', (await settingsDialog(page).count()) > 0)
   check('重載後仍停在設定（重新整理停在原地）', (await hashOf(page)) === '#/settings/personas')
-  await page.getByRole('button', { name: '關閉' }).click()
+  await settingsDialog(page).getByRole('button', { name: '關閉' }).click()
   await page.waitForTimeout(450)
   check(
     '關閉落到 #/summary（不是白畫面）',
@@ -128,7 +144,7 @@ const SETTINGS_TABS = ['Persona', '常用提示詞', '參考專案', 'Space', '�
 
   // ── 5. Esc 由內而外 ───────────────────────────────────────
   console.log('\n【5】Esc 由內而外：面板開著時只關面板')
-  await page.getByRole('button', { name: '設定' }).click()
+  await topBarButton(page, '設定').click()
   await page.waitForTimeout(350)
   await page.keyboard.press('Meta+k')
   await page.waitForTimeout(300)
@@ -139,7 +155,7 @@ const SETTINGS_TABS = ['Persona', '常用提示詞', '參考專案', 'Space', '�
   check(
     '**Esc 只關面板，設定還在**',
     (await page.getByRole('dialog', { name: '命令面板' }).count()) === 0 &&
-      (await page.getByRole('dialog', { name: '設定' }).count()) > 0,
+      (await settingsDialog(page).count()) > 0,
   )
 
   // 正對照：面板關掉之後，同一個按鍵確實關得掉設定
@@ -147,7 +163,7 @@ const SETTINGS_TABS = ['Persona', '常用提示詞', '參考專案', 'Space', '�
   await page.waitForTimeout(400)
   check(
     '正對照：再按一次 Esc 關掉設定',
-    (await page.getByRole('dialog', { name: '設定' }).count()) === 0,
+    (await settingsDialog(page).count()) === 0,
   )
 
   // ── 6. 命令面板 ───────────────────────────────────────────
@@ -192,20 +208,20 @@ const SETTINGS_TABS = ['Persona', '常用提示詞', '參考專案', 'Space', '�
   // ── 7. 虛擬清單的 roving tabindex ─────────────────────────
   console.log('\n【7】Space 清單的 roving tabindex')
   await goHash(page, '#/summary')
-  const listbox = page.locator('[role="listbox"]').first()
-  check('Space 清單是有名字的 listbox', (await listbox.count()) > 0, await listbox.getAttribute('aria-label'))
+  const listbox = page.locator(SUMMARY_LISTBOX)
+  check('Space 清單是有名字的 listbox', (await listbox.count()) === 1, await listbox.getAttribute('aria-label'))
 
-  const tabbable = await page.evaluate(() => {
-    const box = document.querySelector('[role="listbox"]')
+  const tabbable = await page.evaluate((sel) => {
+    const box = document.querySelector(sel)
     if (!box) return -1
     return [...box.querySelectorAll('[role="option"]')].filter(
       (el) => el.getAttribute('tabindex') === '0',
     ).length
-  })
+  }, SUMMARY_LISTBOX)
   check('**整份清單只有一個 tabIndex=0**', tabbable === 1, `${tabbable} 個`)
 
-  const moved = await page.evaluate(async () => {
-    const box = document.querySelector('[role="listbox"]')
+  const moved = await page.evaluate(async (sel) => {
+    const box = document.querySelector(sel)
     const first = box?.querySelector('[role="option"][tabindex="0"]')
     if (!(first instanceof HTMLElement)) return null
     first.focus()
@@ -213,15 +229,34 @@ const SETTINGS_TABS = ['Persona', '常用提示詞', '參考專案', 'Space', '�
     first.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
     await new Promise((r) => setTimeout(r, 250))
     return { before, after: document.activeElement?.getAttribute('data-option-index') }
-  })
+  }, SUMMARY_LISTBOX)
   check(
     '↓ 把焦點移到下一列',
     moved !== null && moved.before !== moved.after && moved.after !== null,
     JSON.stringify(moved),
   )
 
-  // ── 8. 沒有 console error ─────────────────────────────────
-  console.log('\n【8】沒有 console error')
+  // ── 8. 串流宣告的 live region ─────────────────────────────
+  console.log('\n【8】串流的 live region 常駐（規格 §10.6）')
+  const regions = await page.evaluate(() => ({
+    status: document.querySelectorAll('[role="status"][aria-live="polite"]').length,
+    alert: document.querySelectorAll('[role="alert"]').length,
+    // 內容層絕對不可以有 aria-live——每個 chunk 都重寫 innerHTML，
+    // 設了等於整段重念
+    markdownLive: document.querySelectorAll('.markdown-body[aria-live]').length,
+  }))
+  // **不觸發串流**（那會燒 AI 配額）。這裡只驗「region 在內容寫進去之前就
+  // 存在」——那是 live region 最常見的壞法，而它在畫面上完全看不出來。
+  check('app 級 role="status" 常駐', regions.status >= 1, `${regions.status} 個`)
+  check('錯誤用的 role="alert" 常駐', regions.alert >= 1, `${regions.alert} 個`)
+  check(
+    '**Markdown 容器沒有 aria-live**',
+    regions.markdownLive === 0,
+    `${regions.markdownLive} 個`,
+  )
+
+  // ── 9. 沒有 console error ─────────────────────────────────
+  console.log('\n【9】沒有 console error')
   check('沒有 console error', errors.length === 0, errors.slice(0, 2).join(' | '))
 
   const code = finish()

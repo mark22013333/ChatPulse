@@ -34,6 +34,11 @@ export function Markdown({ source, className, typing = false, active = true }: M
   return (
     <div
       className={cn('markdown-body', typing && active && 'typing-cursor', className)}
+      // **這裡絕對不可以加 aria-live**（設計規格 §10.6）。每個 chunk 都重寫
+      // innerHTML，設了等於整段從頭念一次、念到一半又被下一個 chunk 打斷
+      // ——比完全不宣告更糟。狀態層的里程碑宣告在 AppShell 的 role="status"，
+      // 這裡只負責說「這塊正在被寫」。
+      aria-busy={typing && active ? true : undefined}
       // 內容來自自家後端的 Gemini 輸出，renderMarkdown 已移除 script/事件屬性
       dangerouslySetInnerHTML={{ __html: html }}
     />

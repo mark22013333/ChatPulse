@@ -30,6 +30,18 @@ export function splitDraft(raw: string): DraftSections {
   return { context: stripContextHeading(head), reply: tail.replace(/^\n+/, ''), replyStarted: true }
 }
 
+/**
+ * 「建議回話」的標題已經串流出來了嗎。
+ *
+ * 與 `splitDraft()` 的差別是**只做一次 regex test、不切字串**。給那些每個
+ * chunk 都會被求值的地方用（app 級的串流宣告 selector），那裡不需要內容、
+ * 只需要這個布林。REPLY_HEADING 沒有 `g` 旗標，所以 `.test()` 不會推進
+ * lastIndex，可以安全重複呼叫。
+ */
+export function hasReplyHeading(raw: string): boolean {
+  return REPLY_HEADING.test(raw)
+}
+
 function stripContextHeading(text: string): string {
   const match = CONTEXT_HEADING.exec(text)
   if (!match) return text.trim()

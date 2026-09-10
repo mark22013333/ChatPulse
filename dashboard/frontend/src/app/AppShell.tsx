@@ -3,6 +3,7 @@ import { Loader2Icon } from 'lucide-react'
 import { SmallScreenNotice } from '@/app/SmallScreenNotice'
 import { TopBar } from '@/app/TopBar'
 import { useBootstrap } from '@/app/useBootstrap'
+import { useStreamAnnouncer } from '@/hooks/useStreamAnnouncer'
 import { CommandPalette } from '@/components/CommandPalette'
 import { EvidenceColumn } from '@/components/evidence/EvidenceColumn'
 import { EvidenceDrawer } from '@/components/evidence/EvidenceDrawer'
@@ -43,6 +44,9 @@ export function AppShell() {
 
   // 全域快捷鍵。送出類動作刻意沒有快捷鍵（設計規格 §11.1）
   useGlobalHotkeys({ onToggleEvidence: () => toggleDrawer(breakpoint) })
+
+  // 串流的螢幕閱讀器宣告（設計規格 §10.6）。只訂閱布林值，不會被 chunk 帶著重繪
+  const { polite: announcement, alert: alertAnnouncement } = useStreamAnnouncer()
 
   const spaces = useSpacesStore((state) => state.items)
   const selectedSpaceId = useSpacesStore((state) => state.selectedId)
@@ -87,6 +91,24 @@ export function AppShell() {
       >
         跳到主要內容
       </a>
+
+      {/*
+        串流的狀態層宣告（設計規格 §10.6）。
+
+        **這兩個容器一定要常駐**：live region 必須在內容寫進去**之前**就存在
+        於無障礙樹裡，否則多數螢幕閱讀器不會念——「有訊息才渲染」是這個
+        機制最常見的壞法。所以這裡永遠掛著，只是內容多半是空字串。
+
+        內容層（`Markdown`）刻意**沒有** aria-live，只有 aria-busy：
+        每個 chunk 都重寫 innerHTML，設了 aria-live 等於整段重念。
+      */}
+      <div role="status" aria-live="polite" className="sr-only">
+        {announcement}
+      </div>
+      {/* 錯誤走 role="alert"（隱含 assertive，會打斷）——只有它值得打斷 */}
+      <div role="alert" className="sr-only">
+        {alertAnnouncement}
+      </div>
 
       <TopBar />
 
