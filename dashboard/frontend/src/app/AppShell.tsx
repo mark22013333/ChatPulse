@@ -87,7 +87,7 @@ export function AppShell() {
 
   if (booting) {
     return (
-      <div className="flex min-h-dvh items-center justify-center gap-2 text-sm text-muted-foreground">
+      <div className="flex h-full items-center justify-center gap-2 overflow-y-auto text-sm text-muted-foreground">
         <Loader2Icon className="size-4 animate-spin" />
         正在確認登入狀態…
       </div>
@@ -106,7 +106,7 @@ export function AppShell() {
     // <768 先給一個誠實的說明頁（含逃生門）。Draft Reply 送出不可撤回，
     // 而它的證據在手機寬度下讀不了——讀不了就等於在不知情的狀況下送出。
     <SmallScreenNotice>
-    <div className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
+    <div className="flex h-full flex-col overflow-hidden bg-background text-foreground">
       {/* 「主要內容」會變：主從切換顯示清單那一半時 `<main>` 是 inert 的，
           那時清單本身就是主要內容 */}
       <SkipLink href={mainHidden ? '#rail' : '#main'} />

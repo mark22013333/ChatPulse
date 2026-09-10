@@ -244,6 +244,40 @@
     * {
         @apply border-line;
     }
+    /*
+       **document 永遠不捲。** 捲動一律發生在版面內部的欄位裡。
+
+       這是三欄工作台的前提，但在此之前完全沒有東西在保證它——只靠 `AppShell`
+       的 `h-dvh` 剛好等於視窗高度來成立，而那有兩個破法：
+
+       1. `100dvh` **不保證等於 `innerHeight`**。某些瀏覽器（自訂 chrome、
+          工具列自動隱藏、分割視窗）解析出來比可視高度大，於是 shell 比視窗高、
+          整頁就捲得動了。
+       2. **`#root` 底下、shell 之後還有別的節點**，而且是 `position: static`：
+          sonner 的 `<section>` 與 base-ui 的 portal 容器。它們平常高度是 0，
+          但任何一個拿到高度就會把 document 撐開。
+
+       2026-09-11 使用者實機回報：勾選參考專案後「畫面整個往上移動」，
+       ChatPulse 的頂列被捲出畫面、下方多出一塊空白。實驗證明了機制——在
+       `#root` 裡塞一個 250px 的 static 兄弟節點，document 從 900 變 1150、
+       頁面變得可捲、捲下去頂列就不見了；加上這裡的鎖之後，同一個兄弟節點
+       還在，document 卻回到 900。
+
+       **鎖了之後，每一個「整頁」視圖都要自己 `h-full overflow-y-auto`**
+       ——診斷頁與小螢幕說明頁的內容本來就會超過一個螢幕，少了那一行就會
+       被裁掉而且捲不動。目前有四個：`AppShell` 的載入中、`LoginScreen`、
+       `SmallScreenNotice`、`DiagnosticsPage`。
+    */
+    html,
+    body {
+        height: 100%;
+        overflow: hidden;
+        /* 觸控板的橡皮筋回彈在鎖住的版面上只會讓整個 app 晃一下 */
+        overscroll-behavior: none;
+    }
+    #root {
+        height: 100%;
+    }
     html {
         @apply font-sans;
         -webkit-text-size-adjust: 100%;

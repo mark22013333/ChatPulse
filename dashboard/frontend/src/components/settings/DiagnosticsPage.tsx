@@ -109,7 +109,7 @@ export function DiagnosticsPage() {
   }, [])
 
   return (
-    <div className="flex min-h-dvh flex-col bg-background text-foreground">
+    <div className="flex h-full flex-col overflow-y-auto bg-background text-foreground">
       <header className="flex h-12 shrink-0 items-center gap-3 border-b border-line px-gutter">
         <span className="flex size-6 items-center justify-center rounded-md bg-signal-wash text-signal ring-1 ring-signal-line">
           <PulseMark className="size-3.5" />

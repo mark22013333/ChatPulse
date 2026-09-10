@@ -45,7 +45,7 @@ export function SmallScreenNotice({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="bg-background text-foreground flex min-h-dvh flex-col px-gutter py-10">
+    <div className="bg-background text-foreground flex h-full flex-col overflow-y-auto px-gutter py-10">
       <div className="mx-auto w-full max-w-sm space-y-5">
         <div className="flex items-center gap-2">
           <span className="bg-signal-wash text-signal ring-signal-line flex size-7 items-center justify-center rounded-md ring-1">

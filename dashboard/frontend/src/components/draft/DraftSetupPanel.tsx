@@ -37,8 +37,9 @@ export function DraftSetupPanel({ mention }: { mention: Mention }) {
         251px 沒有人捲得到，被 `AppShell` 的 `overflow-hidden` 直接裁掉
         ——排在最後的產生鈕整顆落在裁切線外，**功能等於不能用**。
 
-        **外層不能救**：`AppShell` 是 `h-dvh` ＋ `overflow-hidden`，刻意沒有
-        頁面級捲動（那是三欄工作台的前提）。所以捲軸必須在這一層。
+        **外層不能救**：`AppShell` 是 `h-full` ＋ `overflow-hidden`，而 `index.css`
+        把 `html`／`body` 鎖成不可捲——document 永遠不捲是三欄工作台的前提。
+        所以捲軸必須在這一層。
       */}
       <div className="min-h-0 flex-1 overflow-y-auto">
         <ReferenceSpacePicker />

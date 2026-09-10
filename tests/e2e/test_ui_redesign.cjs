@@ -668,8 +668,96 @@ const blur = (page) =>
     check('收件匣有 Mention 可以開（否則這一節測不出東西）', false, '0 則')
   }
 
-  // ── 15. 沒有 console error ────────────────────────────────
-  console.log('\n【15】沒有 console error')
+  // ── 15. document 永遠不捲（版面的前提） ──────────────────
+  console.log('\n【15】document 永遠不捲，捲動只發生在內部欄位')
+  // 2026-09-11 使用者實機回報：勾選參考專案後「畫面整個往上移動」，頂列被捲
+  // 出畫面、下方多一塊空白。前提在此之前沒有任何東西保證——只靠 AppShell 的
+  // `h-dvh` 剛好等於視窗高度，而 `#root` 底下、shell 之後還有兩個
+  // `position: static` 的節點（sonner 的 section、base-ui 的 portal），
+  // 任一個拿到高度就會把 document 撐開。
+  const docScroll = () =>
+    page.evaluate(() => ({
+      vh: window.innerHeight,
+      doc: document.documentElement.scrollHeight,
+      canScroll: document.documentElement.scrollHeight > window.innerHeight + 1,
+    }))
+
+  for (const size of [
+    { width: 1680, height: 900 },
+    { width: 1280, height: 700 },
+    { width: 1024, height: 560 },
+  ]) {
+    await page.setViewportSize(size)
+    await goHash(page, '#/mentions')
+    await page.waitForTimeout(500)
+    const firstCard = page.locator('[data-mention-index="0"]')
+    if (await firstCard.count()) {
+      await firstCard.click()
+      await page.waitForTimeout(700)
+      // 勾滿參考專案的環境 chip——這正是使用者回報的操作。
+      // chip 是 <label> 包 sr-only 的 checkbox（CodeRefPicker.tsx），不是按鈕
+      await page.evaluate(() => {
+        const panel = [...document.querySelectorAll('main#main div')].find(
+          (d) => d.className.includes('xl:border-r') && d.className.includes('min-h-0'),
+        )
+        const boxes = [...(panel?.querySelectorAll('input[type="checkbox"].sr-only') ?? [])]
+        boxes.slice(0, 4).forEach((b) => b.click())
+      })
+      await page.waitForTimeout(600)
+    }
+    const m = await docScroll()
+    check(
+      `**${size.width}×${size.height}：勾完參考專案 document 仍不可捲**`,
+      m.canScroll === false,
+      `doc=${m.doc} vh=${m.vh}`,
+    )
+  }
+
+  // 正對照：這個守衛真的有咬嗎？在 #root 裡塞一個 250px 的 static 兄弟
+  // ——那正是實驗證明過會撐開 document 的形態（未鎖時 900 → 1150）。
+  // 鎖上之後它必須撐不開；否則上面那三條「不可捲」只是「剛好沒有東西太高」。
+  await page.setViewportSize({ width: 1680, height: 900 })
+  await goHash(page, '#/mentions')
+  await page.waitForTimeout(500)
+  const injected = await page.evaluate(() => {
+    const probe = document.createElement('div')
+    probe.id = '__doc_lock_probe'
+    probe.style.height = '250px'
+    document.getElementById('root').appendChild(probe)
+    const grew = document.documentElement.scrollHeight > window.innerHeight + 1
+    probe.remove()
+    return { grew, vh: window.innerHeight, doc: document.documentElement.scrollHeight }
+  })
+  check(
+    '**正對照：塞一個 250px 的 static 兄弟也撐不開 document**',
+    injected.grew === false,
+    JSON.stringify(injected),
+  )
+
+  // 鎖住 document 的代價是「整頁視圖要自己捲」。診斷頁最長，用它驗。
+  await page.setViewportSize({ width: 1000, height: 420 })
+  await goHash(page, '#/settings/diagnostics')
+  await page.waitForTimeout(1500)
+  const diag = await page.evaluate(() => {
+    const el = document.querySelector('#root > div')
+    if (!el) return null
+    return {
+      overflowY: getComputedStyle(el).overflowY,
+      canScroll: el.scrollHeight > el.clientHeight + 1,
+      client: el.clientHeight,
+      scroll: el.scrollHeight,
+    }
+  })
+  check(
+    '**診斷頁在矮視窗裡自己捲得動**（鎖了 body 之後這一條才是必要的）',
+    diag !== null && diag.overflowY === 'auto' && diag.canScroll,
+    JSON.stringify(diag),
+  )
+  check('診斷頁捲得動、但 document 仍不可捲', (await docScroll()).canScroll === false)
+  await page.setViewportSize({ width: 1440, height: 900 })
+
+  // ── 16. 沒有 console error ────────────────────────────────
+  console.log('\n【16】沒有 console error')
   check('沒有 console error', errors.length === 0, errors.slice(0, 2).join(' | '))
 
   const code = finish()

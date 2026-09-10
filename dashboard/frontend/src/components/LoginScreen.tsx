@@ -18,7 +18,7 @@ export function LoginScreen() {
   const busy = loginPending || bootstrapPending
 
   return (
-    <div className="flex min-h-dvh items-center justify-center bg-background p-6">
+    <div className="flex h-full items-center justify-center overflow-y-auto bg-background p-6">
       <Card className="w-full max-w-md">
         <CardHeader>
           <div className="mb-2 flex items-center gap-2.5">
