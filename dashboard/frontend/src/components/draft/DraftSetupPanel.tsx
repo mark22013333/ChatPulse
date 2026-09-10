@@ -29,23 +29,56 @@ export function DraftSetupPanel({ mention }: { mention: Mention }) {
 
   return (
     <div className="flex min-h-0 flex-col border-b border-border xl:border-r xl:border-b-0">
-      <ReferenceSpacePicker />
+      {/*
+        設定堆疊自己要有捲軸（2026-09-10 使用者實機回報的 bug）。
 
-      {/* 回覆設定（ADR-0007）。放在供應商之後、資料來源之前，
-          維持「模型與生成設定在上、資料來源在下」的既有分組。 */}
-      <QuickReplySettings disabled={streaming} />
+        在此之前這一欄是「固定高度 ＋ 一堆 shrink-0 的塊」，沒有任何一層可捲：
+        1440×900 實測四塊固定內容共 **989px**，而欄高只有 **748px**。溢出的
+        251px 沒有人捲得到，被 `AppShell` 的 `overflow-hidden` 直接裁掉
+        ——排在最後的產生鈕整顆落在裁切線外，**功能等於不能用**。
 
-      <SpaceList
-        spaces={candidates}
-        label="一起當作參考的 Space"
-        checkedIds={referenceSpaceIds}
-        onToggle={(space) => toggleReference(space.id)}
-        emptyHint="查無符合的 Space"
-        className="max-h-64 xl:max-h-none"
-      />
+        **外層不能救**：`AppShell` 是 `h-dvh` ＋ `overflow-hidden`，刻意沒有
+        頁面級捲動（那是三欄工作台的前提）。所以捲軸必須在這一層。
+      */}
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <ReferenceSpacePicker />
 
-      <CodeRefPicker />
+        {/* 回覆設定（ADR-0007）。放在供應商之後、資料來源之前，
+            維持「模型與生成設定在上、資料來源在下」的既有分組。 */}
+        <QuickReplySettings disabled={streaming} />
 
+        <SpaceList
+          spaces={candidates}
+          label="一起當作參考的 Space"
+          checkedIds={referenceSpaceIds}
+          onToggle={(space) => toggleReference(space.id)}
+          emptyHint="查無符合的 Space"
+          /*
+            **一定要給確定的高度，不能留 `flex-1`。** `SpaceList` 內建
+            `flex-1 overflow-y-auto`（`SpaceList.tsx:124`）——那是為 `SpacesRail`
+            設計的「吃掉剩餘空間」。搬到這個捲動容器裡就成立不了：`basis-0`
+            仍然對容器高度解析，上面兩塊固定內容一多，它就被壓到剩下一條縫。
+            實測**只有 8px、而內容是 22708px**，使用者因此完全看不到 Reference
+            Space 清單，也不會意識到自己漏勾了什麼。
+
+            舊寫法 `max-h-64 xl:max-h-none` 修不了這件事：`max-height` 只設上限，
+            被壓扁時它一點作用也沒有；而 `xl:max-h-none` 更是把 ≥1280 唯一的
+            高度線索也拿掉。`cn` 是 tailwind-merge 的替代品，所以 `flex-none`
+            覆寫得掉元件內建的 `flex-1`。
+          */
+          className="h-64 flex-none"
+        />
+
+        <CodeRefPicker />
+      </div>
+
+      {/*
+        **產生鈕刻意留在捲動區外面**，永遠釘在欄底。
+
+        它是這一欄唯一的主要動作，而且是「開始燒 AI 配額」的那一步；放進捲動
+        區的話，使用者每次都要先捲到底才找得到它——那正是這次 bug 的使用者
+        體感（「我根本按不到產生草稿」）。釘住之後，設定捲到哪裡它都在。
+      */}
       <GenerateButton mention={mention} />
     </div>
   )

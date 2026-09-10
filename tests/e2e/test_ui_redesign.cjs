@@ -564,8 +564,112 @@ const blur = (page) =>
     (await page.getByRole('navigation', { name: '麵包屑' }).count()) === 0,
   )
 
-  // ── 14. 沒有 console error ────────────────────────────────
-  console.log('\n【14】沒有 console error')
+  // ── 14. 草稿工作區的設定堆疊捲得動、產生鈕按得到 ─────────
+  console.log('\n【14】草稿設定堆疊可捲動、產生鈕永遠按得到')
+  // **只有真瀏覽器測得出來**：jsdom 沒有佈局，`clientHeight` 恆為 0，
+  // 「內容比容器高」這件事在那裡量不到。2026-09-10 使用者實機回報：設定堆疊
+  // 捲不動、最底下的「產生 Draft Reply」永遠按不到（實測四塊固定內容共 989px、
+  // 欄高只有 748px，溢出的部分被 AppShell 的 overflow-hidden 裁掉）。
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await goHash(page, '#/mentions')
+  await page.waitForTimeout(600)
+  const firstMention = page.locator('[data-mention-index="0"]')
+  if (await firstMention.count()) {
+    await firstMention.click()
+    await page.waitForTimeout(900)
+
+    const draft = await page.evaluate(() => {
+      // 設定欄：草稿左欄那一整條
+      const panel = [...document.querySelectorAll('main#main div')].find(
+        (d) => d.className.includes('xl:border-r') && d.className.includes('min-h-0'),
+      )
+      const gen = [...document.querySelectorAll('main#main button')].find((b) =>
+        /產生 Draft Reply|重新產生 Draft Reply|停止串流/.test(b.textContent || ''),
+      )
+      const rect = gen?.getBoundingClientRect()
+      // 設定堆疊裡真正在捲的那一層（panel 自己或它的某個子層）
+      const scroller = panel
+        ? [panel, ...panel.querySelectorAll('div')].find(
+            (el) =>
+              getComputedStyle(el).overflowY === 'auto' &&
+              el.scrollHeight - el.clientHeight > 4 &&
+              // 排除 Space 清單自己的捲軸（它是巢狀在裡面的虛擬清單）
+              !el.querySelector(':scope > [role="listbox"]'),
+          )
+        : null
+      const listbox = panel?.querySelector('[role="listbox"]')
+      return {
+        hasPanel: Boolean(panel),
+        genFound: Boolean(gen),
+        genInViewport: rect ? rect.top >= 0 && rect.bottom <= window.innerHeight : null,
+        genBottom: rect ? Math.round(rect.bottom) : null,
+        viewportH: window.innerHeight,
+        stackScrollable: Boolean(scroller),
+        stackOverflow: scroller ? getComputedStyle(scroller).overflowY : null,
+        // Space 清單被壓扁的話等於看不見（實測曾經是 8px）
+        listboxScrollerH: listbox ? listbox.parentElement.clientHeight : null,
+      }
+    })
+
+    check('草稿工作區有設定欄與產生鈕', draft.hasPanel && draft.genFound, JSON.stringify(draft))
+    check(
+      '**產生 Draft Reply 在可視範圍內**（迴歸：它曾經被裁到 viewport 外）',
+      draft.genInViewport === true,
+      `bottom=${draft.genBottom} viewportH=${draft.viewportH}`,
+    )
+    check(
+      '**設定堆疊自己有捲軸**（不是靠外層，外層是 overflow-hidden）',
+      draft.stackScrollable && draft.stackOverflow === 'auto',
+      `overflowY=${draft.stackOverflow}`,
+    )
+    check(
+      '**Reference Space 清單沒有被壓扁**（實測曾經只有 8px）',
+      (draft.listboxScrollerH ?? 0) > 100,
+      `${draft.listboxScrollerH}px`,
+    )
+
+    // 產生鈕是釘住的，所以把設定堆疊捲到底之後它還是看得到
+    const afterScroll = await page.evaluate(() => {
+      const panel = [...document.querySelectorAll('main#main div')].find(
+        (d) => d.className.includes('xl:border-r') && d.className.includes('min-h-0'),
+      )
+      const scroller = panel
+        ? [panel, ...panel.querySelectorAll('div')].find(
+            (el) =>
+              getComputedStyle(el).overflowY === 'auto' &&
+              el.scrollHeight - el.clientHeight > 4 &&
+              !el.querySelector(':scope > [role="listbox"]'),
+          )
+        : null
+      if (!scroller) return null
+      const before = scroller.scrollTop
+      scroller.scrollTop = scroller.scrollHeight
+      const gen = [...document.querySelectorAll('main#main button')].find((b) =>
+        /產生 Draft Reply|重新產生 Draft Reply|停止串流/.test(b.textContent || ''),
+      )
+      const rect = gen?.getBoundingClientRect()
+      return {
+        moved: scroller.scrollTop > before,
+        scrolledTo: Math.round(scroller.scrollTop),
+        genInViewport: rect ? rect.top >= 0 && rect.bottom <= window.innerHeight : null,
+      }
+    })
+    check(
+      '正對照：設定堆疊真的捲得動（scrollTop 動了）',
+      afterScroll !== null && afterScroll.moved,
+      JSON.stringify(afterScroll),
+    )
+    check(
+      '**捲到底之後產生鈕仍在可視範圍**（它釘在捲動區外面，不會跟著捲走）',
+      afterScroll !== null && afterScroll.genInViewport === true,
+      JSON.stringify(afterScroll),
+    )
+  } else {
+    check('收件匣有 Mention 可以開（否則這一節測不出東西）', false, '0 則')
+  }
+
+  // ── 15. 沒有 console error ────────────────────────────────
+  console.log('\n【15】沒有 console error')
   check('沒有 console error', errors.length === 0, errors.slice(0, 2).join(' | '))
 
   const code = finish()
