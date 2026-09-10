@@ -393,6 +393,12 @@ ChatPulse 給工程團隊用。Viewer 以自己的 Google 帳號登入，查閱�
 /* ── 基線 ──────────────────────────────────────────────────── */
 @layer base {
   * { @apply border-line; }
+
+  /* **document 永遠不捲**（2026-09-11 新增，理由見下方修訂框）。
+     一定要 `clip` 不是 `hidden`——hidden 仍建立捲動容器，只是藏起捲軸。 */
+  html, body { height: 100%; overflow: clip; overscroll-behavior: none; }
+  #root { height: 100%; }
+
   html { @apply font-sans; -webkit-text-size-adjust: 100%; }
   body { @apply bg-background text-foreground text-sm; font-optical-sizing: auto; }
 
@@ -887,6 +893,34 @@ export function toEvidence(input: {
 ├─ <CommandPalette/>
 └─ <SmallScreenNotice/>           <768
 ```
+
+> **不變量：app 外框永遠不是捲動容器**（2026-09-11 補上）。
+>
+> 上面這個結構的每一層都假設「document 與外框都不捲，捲動只發生在內部欄位」
+> ——但在此之前那個假設沒有任何東西在保證。外框原本是 `h-dvh overflow-hidden`，
+> 而 **`overflow: hidden` 仍然建立捲動容器**，只是把捲軸藏起來：程式化捲動與
+> 「瀏覽器把焦點元素捲進畫面」照樣有效，於是整個 app 連頂列一起被捲上去，
+> 使用者連捲回來的捲軸都沒有。
+>
+> 實際發生過：參考專案的環境 chip 是 `<label>` 包一個 `sr-only` 的 checkbox，
+> 點 label 把焦點交給那個看不見的 input，瀏覽器為了讓它可見就捲了外框
+> ——實測 `scrollTop` 457、頂列跑到 −457（1280×800 是 557）。
+>
+> 現在的寫法：
+>
+> - `html`／`body`／`#root` 都 `height: 100%`，`html`／`body` **`overflow: clip`**
+> - 外框改成 `h-full overflow-clip`（`h-full` 一路上溯到 `html`，不再依賴
+>   `100dvh` 是否等於 `innerHeight`——那在自訂 chrome／工具列自動隱藏／分割
+>   視窗下不保證成立）
+>
+> **代價：每一個「整頁視圖」都要自己 `overflow-y-auto`**，否則內容超過一個
+> 螢幕就會被裁掉而且捲不動。目前四個：`AppShell` 的載入中、`LoginScreen`、
+> `SmallScreenNotice`、`DiagnosticsPage`。
+>
+> 而且 **`items-center` 不可以與 `overflow-y-auto` 放在同一層**：內容比容器高時
+> 居中會把溢出平分到上下，而 `scrollTop` 不能為負，上緣就永遠捲不到。居中要
+> 放進一個 `min-h-full` 的內層。實測 `LoginScreen` 在 1000×320 時卡片上緣在
+> −32px、怎麼捲都上不去。
 
 ### 7.2 保留掛載：用 `inert`，不用 `display:none`
 

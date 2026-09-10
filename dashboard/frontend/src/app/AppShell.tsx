@@ -87,7 +87,9 @@ export function AppShell() {
 
   if (booting) {
     return (
-      <div className="flex h-full items-center justify-center gap-2 overflow-y-auto text-sm text-muted-foreground">
+      // 單行內容，永遠不會溢出，所以不掛 overflow——掛了反而會與 `items-center`
+      // 湊成「上緣捲不到」那個地雷（見 LoginScreen 的註解）
+      <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
         <Loader2Icon className="size-4 animate-spin" />
         正在確認登入狀態…
       </div>
@@ -106,7 +108,22 @@ export function AppShell() {
     // <768 先給一個誠實的說明頁（含逃生門）。Draft Reply 送出不可撤回，
     // 而它的證據在手機寬度下讀不了——讀不了就等於在不知情的狀況下送出。
     <SmallScreenNotice>
-    <div className="flex h-full flex-col overflow-hidden bg-background text-foreground">
+    {/*
+      **`overflow-clip` 不是 `overflow-hidden`。** hidden 仍然建立捲動容器，
+      只是把捲軸藏起來——程式化捲動與「瀏覽器把焦點元素捲進畫面」照樣有效，
+      於是整個 app（含頂列）會被捲上去，而使用者連捲回來的捲軸都沒有。
+
+      2026-09-11 實測（這就是使用者回報的「畫面整個往上移動」）：點參考專案的
+      環境 chip 會把焦點交給 `<label>` 裡那個 `sr-only` 的 checkbox
+      （`CodeRefPicker.tsx`），瀏覽器為了讓焦點元素可見就捲了這一層
+      ——`scrollTop` 變成 457、頂列跑到 −457。改成 `clip` 之後這一層根本不是
+      捲動容器，焦點捲動會落到它該落的地方（設定欄自己的捲動區）。
+
+      **註解一定要用 `{...}` 包**：這裡是 JSX 的 children 位置，`//` 不是註解
+      而是**文字節點**。2026-09-11 就這樣把整段中文渲染到畫面上、把 shell
+      往下推了 45px（`shellTop` 從 0 變 45），是自己的探針量出來才發現的。
+    */}
+    <div className="flex h-full flex-col overflow-clip bg-background text-foreground">
       {/* 「主要內容」會變：主從切換顯示清單那一半時 `<main>` 是 inert 的，
           那時清單本身就是主要內容 */}
       <SkipLink href={mainHidden ? '#rail' : '#main'} />

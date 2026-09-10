@@ -258,10 +258,21 @@
           但任何一個拿到高度就會把 document 撐開。
 
        2026-09-11 使用者實機回報：勾選參考專案後「畫面整個往上移動」，
-       ChatPulse 的頂列被捲出畫面、下方多出一塊空白。實驗證明了機制——在
-       `#root` 裡塞一個 250px 的 static 兄弟節點，document 從 900 變 1150、
-       頁面變得可捲、捲下去頂列就不見了；加上這裡的鎖之後，同一個兄弟節點
-       還在，document 卻回到 900。
+       ChatPulse 的頂列被捲出畫面、下方多出一塊空白。
+
+       **完整的成因鏈**（第二輪 code review 之後才問出來的）：
+       (1) 上面兩個破法之一讓 body／viewport 變成可捲；
+       (2) 參考專案的環境 chip 是 `<label>` 包一個 **`sr-only` 的 checkbox**
+           （`CodeRefPicker.tsx`）——點 label 會把焦點交給那個看不見的 input；
+       (3) **瀏覽器會把焦點元素捲進畫面**，於是連帶把整個 app 捲上去。
+           實測：注入一個 250px 的 static 兄弟之後真的用滑鼠點 chip，
+           頂列從 0 被推到 **−457px**。
+
+       **所以這裡一定要用 `clip` 而不是 `hidden`。** `overflow: hidden` 仍然
+       建立捲動容器，只是把捲軸藏起來——程式化捲動與上面那條「焦點自動捲入」
+       照樣有效，而使用者連捲回來的捲軸都沒有，比原本更糟。實測 `hidden` 下
+       `body.scrollTop = 500` 仍然生效（頂列 −250）。`clip` 根本不建立捲動
+       容器，那條路才真的關掉。
 
        **鎖了之後，每一個「整頁」視圖都要自己 `h-full overflow-y-auto`**
        ——診斷頁與小螢幕說明頁的內容本來就會超過一個螢幕，少了那一行就會
@@ -271,7 +282,8 @@
     html,
     body {
         height: 100%;
-        overflow: hidden;
+        /* clip 不是 hidden——見上面的說明，這個差別是這次 bug 的一半 */
+        overflow: clip;
         /* 觸控板的橡皮筋回彈在鎖住的版面上只會讓整個 app 晃一下 */
         overscroll-behavior: none;
     }

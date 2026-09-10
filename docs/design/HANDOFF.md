@@ -44,7 +44,7 @@ P4 的門檻本身在 2026-09-10 修訂成「元件與 hook < 250 行，store �
   新測試寫完做一次反向對照（把修復還原，確認測試真的會紅）。
 - 動到既有元件時照第四節的做法：**先寫特徵測試、先拿它跑改動前的程式碼
   確認會過**，再跑改動後。只跑改動後的版本證明不了任何事。
-- HANDOFF 第三節那十二條約束是踩過坑寫出來的，動到相關程式碼前先看一眼。
+- HANDOFF 第三節那十三條約束是踩過坑寫出來的，動到相關程式碼前先看一眼。
 ````
 
 
@@ -66,7 +66,7 @@ P4 的門檻本身在 2026-09-10 修訂成「元件與 hook < 250 行，store �
   ＋ §11.1 ＋ §12 ＋ §14 P4 全部完成。
 - **測試**：
   - 單元／元件：**517 項 / 36 檔**全綠（`npm --prefix dashboard/frontend run test`）
-  - 瀏覽器 E2E：`tests/e2e/test_ui_redesign.cjs` **67 項**全綠（真 Chromium）
+  - 瀏覽器 E2E：`tests/e2e/test_ui_redesign.cjs` **81 項**全綠（真 Chromium）
   - **改版前那四支全是紅的，但基準就是紅的**（見第七節）：
     `test_message_preview.cjs`、`test_draft_from_summary.cjs`、
     `test_tab_switch_streaming.cjs`、`test_merge_reply.cjs`。
@@ -84,7 +84,7 @@ npm --prefix dashboard/frontend run test             # 應為 517 passed / 36 fi
 
 # 瀏覽器 E2E（先設 CHATPULSE_SESSION，那條路零資料庫寫入，說明見
 # tests/e2e/e2e_browser.cjs 開頭）
-node tests/e2e/test_ui_redesign.cjs                  # 應為 67/67
+node tests/e2e/test_ui_redesign.cjs                  # 應為 81/81
 ```
 
 ### 這一輪最值得記住的一件事
@@ -497,7 +497,19 @@ lib 另計」，但當時**沒有實測**——八個超標檔裡有三個是元
     （`h-64 flex-none`），不然 `basis-0` 仍會對容器高度解析、被壓成一條縫
     （實測只有 8px、內容 22708px，使用者因此完全看不到 Reference Space 清單）。
     `max-h-*` 修不了這件事——`max-height` 只設上限。
-12. **裸 ⌘C／Ctrl+C 絕對不可以攔。** `resolveHotkey` 的 `copy` 分支一定要
+12. **app 外框永遠不是捲動容器，而且一定要用 `overflow-clip` 不是
+    `overflow-hidden`。** hidden 仍然建立捲動容器、只是藏起捲軸——程式化捲動
+    與「瀏覽器把焦點元素捲進畫面」照樣有效，於是整個 app 連頂列一起被捲上去，
+    而使用者連捲回來的捲軸都沒有。2026-09-11 使用者實機回報：點參考專案的
+    環境 chip（`<label>` 包一個 `sr-only` 的 checkbox）就會觸發，實測
+    `scrollTop` 457、頂列 −457。現在 `html`／`body`／`#root` 都
+    `height: 100%`、`html`／`body` 是 `overflow: clip`，外框是
+    `h-full overflow-clip`（不再依賴 `100dvh` 等於 `innerHeight`）。
+    **代價**：每個「整頁視圖」要自己 `overflow-y-auto`（載入中、LoginScreen、
+    SmallScreenNotice、DiagnosticsPage 四個），而且 **`items-center` 不可以與
+    `overflow-y-auto` 同層**——居中會把溢出平分到上下、`scrollTop` 不能為負，
+    上緣就捲不到（LoginScreen 在 1000×320 實測卡片上緣 −32px）。
+13. **裸 ⌘C／Ctrl+C 絕對不可以攔。** `resolveHotkey` 的 `copy` 分支一定要
     帶 `event.shiftKey === true`。攔掉裸 ⌘C 的後果是使用者選了一段文字按
     複製、剪貼簿裡卻是別的東西——那是靜默的資料錯誤。`hotkeys.test.ts` 與
     `useGlobalHotkeys.test.tsx` 各有一條正對照守著。
@@ -506,7 +518,7 @@ lib 另計」，但當時**沒有實測**——八個超標檔裡有三個是元
 
 ## 四、驗證方法與已知的探針陷阱
 
-改版期間用瀏覽器探針驗證時踩到七個坑，都值得記住：
+改版期間用瀏覽器探針驗證時踩到九個坑，都值得記住：
 
 1. **「0 次」必須有正對照。** 量「切頁籤沒有多打 API」時，`fetch` 攔截器回報 0 —— 但那也可能是攔截器根本沒生效。補上「按強制刷新應該記到 1 次」的正對照之後，那個 0 才有意義。
 2. **DOM 探針要限縮範圍。** 兩個工作台**常駐掛載**、設定是**覆蓋層**，所以 `document.querySelector` 會選到背景那一份。要先取「沒有 `inert` 屬性的那個 pane」再往下找。我曾因此誤判釘選功能壞掉，實際上是選到了背景的 SummaryHistory。
@@ -524,7 +536,17 @@ lib 另計」，但當時**沒有實測**——八個超標檔裡有三個是元
 6. **jsdom 量不到「內容比容器高」。** `clientHeight`／`scrollHeight` 在那裡
    恆為 0，所有捲動、溢出、可視範圍的斷言在 jsdom 都是假的綠燈。那一類迴歸
    守衛只能寫在瀏覽器 E2E（`test_ui_redesign.cjs` 第 14 節就是為此存在的）。
-7. **改動既有元件時先寫特徵測試，並拿它跑改動前的程式碼。** 這一輪五次重構
+7. **量位移要量「看得見的東西動了沒」，不是量 `documentElement.scrollHeight`。**
+   2026-09-11 我為了查「畫面整個往上移動」，量的是 `document.scrollHeight` 與
+   `window.scrollY`——兩者從頭到尾都正常，於是我在六種組合下都判定「無法重現」。
+   實際上畫面一直在動，只是動的是 **app 外框自己的 `scrollTop`**（`overflow:
+   hidden` 讓它是捲動容器）。**正確的量法是斷言 `header.getBoundingClientRect()
+   .top === 0`**，那個數字不管是哪一層在捲都抓得到。同族教訓：量錯對象時
+   「沒重現」與「沒問題」長得一模一樣。
+8. **要測「焦點造成的捲動」，一定要用真實點擊。** `page.evaluate` 裡的
+   `element.click()` 不移動焦點，走不到那條路。這一輪的 bug 成因正是「點 label
+   → 聚焦 `sr-only` checkbox → 瀏覽器捲動」，用 JS click 測完全測不到。
+9. **改動既有元件時先寫特徵測試，並拿它跑改動前的程式碼。** 這一輪五次重構
    都這樣做，其中一次順便證明了「那 15 條真的是特徵測試」——把程式碼還原之後
    只有新加的那一條變紅，其餘全綠。只跑改動後的版本證明不了任何事。
 

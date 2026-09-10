@@ -668,73 +668,127 @@ const blur = (page) =>
     check('收件匣有 Mention 可以開（否則這一節測不出東西）', false, '0 則')
   }
 
-  // ── 15. document 永遠不捲（版面的前提） ──────────────────
-  console.log('\n【15】document 永遠不捲，捲動只發生在內部欄位')
-  // 2026-09-11 使用者實機回報：勾選參考專案後「畫面整個往上移動」，頂列被捲
-  // 出畫面、下方多一塊空白。前提在此之前沒有任何東西保證——只靠 AppShell 的
-  // `h-dvh` 剛好等於視窗高度，而 `#root` 底下、shell 之後還有兩個
-  // `position: static` 的節點（sonner 的 section、base-ui 的 portal），
-  // 任一個拿到高度就會把 document 撐開。
-  const docScroll = () =>
-    page.evaluate(() => ({
-      vh: window.innerHeight,
-      doc: document.documentElement.scrollHeight,
-      canScroll: document.documentElement.scrollHeight > window.innerHeight + 1,
-    }))
+  // ── 15. app 外框永遠不捲（版面的前提） ───────────────────
+  console.log('\n【15】app 外框永遠不捲，捲動只發生在內部欄位')
+  // 2026-09-11 使用者實機回報：勾選參考專案後「畫面整個往上移動」，ChatPulse
+  // 的頂列被捲出畫面。**成因鏈**：外框是 `overflow-hidden`（＝捲動容器，只是
+  // 藏起捲軸）；參考專案的環境 chip 是 `<label>` 包一個 `sr-only` 的 checkbox；
+  // 點 label 會把焦點交給那個看不見的 input，瀏覽器為了讓焦點可見就捲了外框
+  // ——實測 `scrollTop` 457、頂列 −457，而使用者連捲回來的捲軸都沒有。
+  //
+  // **一定要用真實點擊。** `page.evaluate` 裡的 `element.click()` 不移動焦點，
+  // 走不到焦點捲動那條路，測不到成因（HANDOFF 第四節第 5 條的同族陷阱）。
+  const framePos = () =>
+    page.evaluate(() => {
+      const shell = document.querySelector('#root > div')
+      const header = document.querySelector('header')
+      return {
+        shellScrollTop: shell ? Math.round(shell.scrollTop) : null,
+        shellOverflow: shell ? getComputedStyle(shell).overflowY : null,
+        headerTop: header ? Math.round(header.getBoundingClientRect().top) : null,
+        docScrollTop: Math.round(document.documentElement.scrollTop),
+        bodyOverflow: getComputedStyle(document.body).overflowY,
+      }
+    })
 
   for (const size of [
     { width: 1680, height: 900 },
-    { width: 1280, height: 700 },
-    { width: 1024, height: 560 },
+    { width: 1440, height: 900 },
+    { width: 1280, height: 800 },
   ]) {
     await page.setViewportSize(size)
     await goHash(page, '#/mentions')
-    await page.waitForTimeout(500)
+    await page.waitForTimeout(600)
     const firstCard = page.locator('[data-mention-index="0"]')
-    if (await firstCard.count()) {
-      await firstCard.click()
-      await page.waitForTimeout(700)
-      // 勾滿參考專案的環境 chip——這正是使用者回報的操作。
-      // chip 是 <label> 包 sr-only 的 checkbox（CodeRefPicker.tsx），不是按鈕
-      await page.evaluate(() => {
-        const panel = [...document.querySelectorAll('main#main div')].find(
-          (d) => d.className.includes('xl:border-r') && d.className.includes('min-h-0'),
-        )
-        const boxes = [...(panel?.querySelectorAll('input[type="checkbox"].sr-only') ?? [])]
-        boxes.slice(0, 4).forEach((b) => b.click())
-      })
-      await page.waitForTimeout(600)
+    if (!(await firstCard.count())) {
+      check(`${size.width}×${size.height}：收件匣要有 Mention 才測得到`, false, '0 則')
+      continue
     }
-    const m = await docScroll()
+    await firstCard.click()
+    await page.waitForTimeout(900)
+
+    const before = await framePos()
+    // 環境 chip 是 label（CodeRefPicker.tsx），真實點擊才會聚焦裡面的 sr-only checkbox
+    const chip = page
+      .locator('main#main label')
+      .filter({ hasText: /正式環境|UAT 環境|開發環境/ })
+      .first()
+    const chipCount = await chip.count()
+    // 正對照：沒點到任何東西的話，下面「沒位移」是廢的
     check(
-      `**${size.width}×${size.height}：勾完參考專案 document 仍不可捲**`,
-      m.canScroll === false,
-      `doc=${m.doc} vh=${m.vh}`,
+      `${size.width}×${size.height}：找得到參考專案的環境 chip（沒有的話下一條無意義）`,
+      chipCount > 0,
+      `${chipCount} 個`,
+    )
+    if (!chipCount) continue
+    await chip.click()
+    await page.waitForTimeout(900)
+    const after = await framePos()
+    check(
+      `**${size.width}×${size.height}：點了 chip 之後頂列沒有位移**`,
+      after.headerTop === before.headerTop && after.headerTop === 0 && after.shellScrollTop === 0,
+      `headerTop ${before.headerTop} → ${after.headerTop}，shellScrollTop=${after.shellScrollTop}`,
+    )
+    // 點了之後焦點應該真的在那個 sr-only checkbox 上——證明我們走的是成因那條路
+    check(
+      `${size.width}×${size.height}：焦點確實落在 chip 的 checkbox（證明走到成因路徑）`,
+      await page.evaluate(() => {
+        const a = document.activeElement
+        return a?.tagName === 'INPUT' && a.getAttribute('type') === 'checkbox'
+      }),
     )
   }
 
-  // 正對照：這個守衛真的有咬嗎？在 #root 裡塞一個 250px 的 static 兄弟
-  // ——那正是實驗證明過會撐開 document 的形態（未鎖時 900 → 1150）。
-  // 鎖上之後它必須撐不開；否則上面那三條「不可捲」只是「剛好沒有東西太高」。
+  // 正對照：外框與 body 都必須是 `clip` 而不是 `hidden`。
+  // hidden 仍是捲動容器——程式化捲動照樣生效，這一條直接把它試出來。
   await page.setViewportSize({ width: 1680, height: 900 })
   await goHash(page, '#/mentions')
-  await page.waitForTimeout(500)
-  const injected = await page.evaluate(() => {
+  await page.waitForTimeout(600)
+  const lock = await page.evaluate(() => {
+    const shell = document.querySelector('#root > div')
+    const header = document.querySelector('header')
+    // 塞一個 250px 的 static 兄弟，再硬捲外框與 body——都不該有任何效果
     const probe = document.createElement('div')
-    probe.id = '__doc_lock_probe'
     probe.style.height = '250px'
     document.getElementById('root').appendChild(probe)
-    const grew = document.documentElement.scrollHeight > window.innerHeight + 1
+    shell.scrollTop = 500
+    document.body.scrollTop = 500
+    document.documentElement.scrollTop = 500
+    const moved = Math.round(header.getBoundingClientRect().top)
+    const out = {
+      shellOverflow: getComputedStyle(shell).overflowY,
+      bodyOverflow: getComputedStyle(document.body).overflowY,
+      shellScrollTop: Math.round(shell.scrollTop),
+      headerTop: moved,
+    }
     probe.remove()
-    return { grew, vh: window.innerHeight, doc: document.documentElement.scrollHeight }
+    return out
   })
   check(
-    '**正對照：塞一個 250px 的 static 兄弟也撐不開 document**',
-    injected.grew === false,
-    JSON.stringify(injected),
+    '**外框與 body 都是 clip（不是 hidden）**——hidden 只是藏捲軸，仍捲得動',
+    lock.shellOverflow === 'clip' && lock.bodyOverflow === 'clip',
+    JSON.stringify(lock),
+  )
+  check(
+    '**正對照：塞兄弟 ＋ 硬捲三層，頂列一動也不動**',
+    lock.shellScrollTop === 0 && lock.headerTop === 0,
+    JSON.stringify(lock),
   )
 
-  // 鎖住 document 的代價是「整頁視圖要自己捲」。診斷頁最長，用它驗。
+  // 版面裡不該出現被當成文字渲染的註解。2026-09-11 踩過：JSX children 位置
+  // 寫 `//` 不是註解而是文字節點，整段中文被畫到畫面上、把外框往下推 45px。
+  const stray = await page.evaluate(() => {
+    const found = []
+    const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
+    for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+      const t = (n.textContent || '').trim()
+      if (/^(\/\/|\/\*)/.test(t)) found.push(t.slice(0, 40))
+    }
+    return found
+  })
+  check('**沒有把 JSX 註解當文字渲染出來**', stray.length === 0, JSON.stringify(stray))
+
+  // 鎖住外框的代價是「整頁視圖要自己捲」。診斷頁最長，用它驗。
   await page.setViewportSize({ width: 1000, height: 420 })
   await goHash(page, '#/settings/diagnostics')
   await page.waitForTimeout(1500)
@@ -743,17 +797,25 @@ const blur = (page) =>
     if (!el) return null
     return {
       overflowY: getComputedStyle(el).overflowY,
+      alignItems: getComputedStyle(el).alignItems,
       canScroll: el.scrollHeight > el.clientHeight + 1,
       client: el.clientHeight,
       scroll: el.scrollHeight,
     }
   })
   check(
-    '**診斷頁在矮視窗裡自己捲得動**（鎖了 body 之後這一條才是必要的）',
+    '**診斷頁在矮視窗裡自己捲得動**（鎖了外框之後這一條才是必要的）',
     diag !== null && diag.overflowY === 'auto' && diag.canScroll,
     JSON.stringify(diag),
   )
-  check('診斷頁捲得動、但 document 仍不可捲', (await docScroll()).canScroll === false)
+  // `items-center` 不可以與 `overflow-y-auto` 同層：內容比容器高時居中會把
+  // 溢出平分到上下，而 scrollTop 不能為負，上緣就永遠捲不到。
+  // 2026-09-11 在 LoginScreen 踩過（1000×320 時卡片上緣在 −32px）。
+  check(
+    '**捲動的整頁視圖沒有同時居中**（否則上緣捲不到）',
+    diag !== null && diag.alignItems !== 'center',
+    `alignItems=${diag?.alignItems}`,
+  )
   await page.setViewportSize({ width: 1440, height: 900 })
 
   // ── 16. 沒有 console error ────────────────────────────────

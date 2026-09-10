@@ -18,7 +18,12 @@ export function LoginScreen() {
   const busy = loginPending || bootstrapPending
 
   return (
-    <div className="flex h-full items-center justify-center overflow-y-auto bg-background p-6">
+    // 外層只負責捲、不居中；居中放在 min-h-full 的內層。
+    // **`items-center` 不可以與 `overflow-y-auto` 放在同一層**：內容比容器高時
+    // 居中會把溢出平分到上下，而 `scrollTop` 不能為負，卡片上緣就永遠捲不到。
+    // 2026-09-11 實測：1000×320 時卡片上緣在 −32px、怎麼捲都上不去。
+    <div className="h-full overflow-y-auto bg-background">
+      <div className="flex min-h-full items-center justify-center p-6">
       <Card className="w-full max-w-md">
         <CardHeader>
           <div className="mb-2 flex items-center gap-2.5">
@@ -89,6 +94,7 @@ export function LoginScreen() {
           ) : null}
         </CardContent>
       </Card>
+      </div>
     </div>
   )
 }
