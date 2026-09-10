@@ -2,13 +2,13 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { ShortcutHelp } from './ShortcutHelp'
-import { SHORTCUT_HELP } from '@/lib/hotkeys'
+import { SHORTCUT_HELP } from '@/lib/shortcutHelp'
 import { useUiStore } from '@/store/ui'
 
 /**
  * 快捷鍵說明面板（`?`，設計規格 §11.1）。
  *
- * 「表上寫的鍵真的解析得出動作」由 `lib/hotkeys.test.ts` 守著；這一份只驗
+ * 「表上寫的鍵真的解析得出動作」由 `lib/shortcutHelp.test.ts` 守著；這一份只驗
  * 渲染與關閉行為——特別是 **Esc 要 preventDefault**，因為設定中心那個掛在
  * window 上的 Esc 監聽器就是靠 `defaultPrevented` 判斷「內層已經處理掉了」。
  * 少了它，設定開著時按一次 Esc 會把說明與設定一起關掉（2026-09-10 由真

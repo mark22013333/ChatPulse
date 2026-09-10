@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { XIcon } from 'lucide-react'
-import { SHORTCUT_HELP } from '@/lib/hotkeys'
+import { SHORTCUT_HELP } from '@/lib/shortcutHelp'
 import { useUiStore } from '@/store/ui'
 
 /**
@@ -10,8 +10,8 @@ import { useUiStore } from '@/store/ui'
  * 其中 `g s` 這種兩鍵序列沒有任何畫面線索。沒有一張讀得到的表，那些鍵等於
  * 只有寫的人會用——而 `?` 是這類介面的通用約定，使用者會去按它。
  *
- * 內容直接來自 `lib/hotkeys.ts` 的 `SHORTCUT_HELP`，與解析器同一個檔，
- * 那裡的測試會逐條證明「表上寫的鍵真的解析得出動作」。
+ * 內容直接來自 `lib/shortcutHelp.ts` 的 `SHORTCUT_HELP`。那個檔的測試會拿
+ * 每一列的 probe 逐條證明「表上寫的鍵真的解析得出動作」。
  *
  * ### Esc 的處理刻意與命令面板一致
  *
