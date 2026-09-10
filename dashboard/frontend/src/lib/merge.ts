@@ -24,11 +24,21 @@ export function isFlatSpace(space: Space | undefined): boolean {
 /** 不能一起回的原因。回 null 代表可以合併。 */
 export type MergeBlockReason = 'other-space' | 'other-thread' | 'too-many'
 
-export const MERGE_BLOCK_LABEL: Record<MergeBlockReason, string> = {
-  'other-space': '不同的聊天室，沒辦法用一則回話回完',
-  'other-thread': '同一個聊天室但不同討論串——回話只會送到其中一串，另一串看不到',
-  'too-many': `一次最多合併 ${MERGE_MAX} 則`,
-}
+/**
+ * 文案住在 `lib/mergeCopy.ts`（規格 §15.1）。
+ *
+ * 分家的理由：**規則有前後端兩份實作，文案沒有。** 改 `mergeBlockReason()`
+ * 要同步後端的 `resolve_merge_targets`，改說法不必——兩件事放在同一個檔，
+ * review 時分不出這個 diff 屬於哪一種。
+ *
+ * **這裡刻意不做 re-export**（規格原文寫「`merge.ts` 只保留 re-export」）：
+ * `mergeCopy.ts` 要用這個檔的 `MERGE_MAX` 組「一次最多合併 N 則」，
+ * 再從這裡 re-export 就形成循環 import——`MERGE_MAX` 會落在 TDZ 裡，
+ * 而它是否炸掉取決於 bundler 有沒有把那個 const 提前。那種「在 vitest 裡好、
+ * 在某個建置設定下壞」的東西不值得留。當時 MERGE_BLOCK_LABEL 只有一個
+ * 呼叫端（`components/inbox/MentionCard.tsx`），直接讓它改 import 更乾淨：
+ * 「拿文案」與「拿規則」變成兩行看得出差別的 import。
+ */
 
 /**
  * `candidate` 能不能加進目前已勾選的這一組？

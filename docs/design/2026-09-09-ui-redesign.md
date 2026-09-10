@@ -15,12 +15,14 @@
 | P0 設計 token 地基 | 完成 | `bb385d4` | 無。另補了 §3.5 的相容層與 §3.6 的既有 CSS 處置，規格已回填 |
 | P1 hash 路由 | 完成 | `757ad07` ＋ `796be65` | **落差已補完**：`?merge=` 的 URL 同步接上了（含反向同步；網址刻意不表達「只勾了一則」，`route.test.ts` 有一條守著這個設計決定） |
 | P2 保留掛載 | 完成 | `472f0c7` | 效能量測用「串流中隱藏側內容仍增長」與 API 呼叫計數取代 React DevTools Profiler |
-| P3 設定中心 | 完成 | `7d51444` ＋ `14579bf` ＋ `08c0df5` | **落差已補完**：共用下拉抽成 `settings/replyControls.tsx`（365→200、312→139）；`CodeProjectSettings.tsx` 檔名已消失，內容進 `CodeProjectsPage.tsx`（177）與 `CodeProjectForm.tsx`（141），順手修掉兩層各畫一個「參考專案」h2 的缺陷 |
+| P3 設定中心 | 完成 | `7d51444` ＋ `14579bf` ＋ `08c0df5` | **落差已補完**：共用下拉抽成 `settings/replyControls.tsx`（365→200、312→139）；`CodeProjectSettings.tsx` 檔名已消失，內容進 `CodeProjectsPage.tsx`（177）與 `CodeProjectForm.tsx`（144），順手修掉兩層各畫一個「參考專案」h2 的缺陷 |
 | P4 證據欄 | 完成 | `e3cbed3` ＋ 後續拆檔 | 行數門檻**已達成**，但門檻本身在 2026-09-10 修訂過（§9.1）：原文的「全域最大檔 < 250」只在元件上站得住，改成「**元件與 hook < 250，`store/` 與 `lib/` 另計**」。元件側逐一拆完：`DraftReplyWorkspace` 478→86（`fa268d8`）、`App.tsx` 428→`AppShell`／`TopBar`／`useBootstrap`（`748f94a`）、`SummaryWorkspace` 383→61 ＋ `summary/` 三檔、`MentionInbox` 337→224 ＋ `inbox/` 兩檔、`SpaceMessagePreview` 287→175 ＋ `preview/` 兩檔、`AppShell` 279→234（抽出 `Pane`／`StreamLiveRegions`／`common/SkipLink`）。實測最大元件 243 |
 | P5 色彩與排版退役 | 完成 | `02ab318` | 無。守門測試 `lib/tokens.test.ts` 已上，含三條正對照 |
 | P7 響應式 | 完成 | `323d691` ＋ `89672fe` | **落差已補完**：768–1024 的主從切換做了，判準直接來自網址（`#/summary` 是清單、`#/summary/:key` 是工作區），收起來的那一半用 §7.2 的手法而不是 `display:none`——後者實測會讓虛擬清單的 `scrollTop` 從 0 跳到 1296 |
 | 無障礙與文案 | 完成 | `e7fecdd` ＋ `26b495c` ＋ `dbfdc11` | **落差已補完**：`title=` 29 → 2（只剩兩處 ConfirmDialog 的 title **prop**，不是 DOM 屬性）；§10.6 的串流宣告三層已做，完成宣告也已改成告知真的存在的快捷鍵（⌘⇧C） |
 | P6 命令面板與鍵盤 | 完成 | `164ddc1` ＋ `880e4ea` ＋ `b9e55ce` | **落差已補完**：roving tabindex 做了（`880e4ea`）；§11.1 那張表的十個缺鍵也補完了（`b9e55ce`）——`g s`／`g m`／`g ,`／`g h` 兩鍵序列、收件匣清單的 ↑↓、⌘Enter、⌘.、⌘⇧C、`[`／`]`、`?` 說明面板。說明表與解析器之間有漂移守衛 |
+| §15.1 `lib/mergeCopy.ts` | 完成 | `HEAD` | 改版收工時漏掉，2026-09-10 盤點才發現：它只寫在 §15.1 正文與 §9.2 目錄結構裡，沒進這張表。已建立；`merge.ts` **不**做 re-export（會與 mergeCopy 形成循環 import），唯一呼叫端改 import |
+| §16.3 `src/dev/TokenSheet.tsx` | **未做** | — | 那是**驗證工具**不是產品功能（§16.3 是「怎麼驗」的章節）。token 的正確性最後是由 `lib/tokens.test.ts` 的五條守門規則 ＋ 三條正對照機械化守住的，比一頁人工比對的 sheet 更可靠、也不會過期。要做的話它是獨立的一件事，不阻擋合併 |
 
 ### 收工數字（只算 `.tsx`，排除守門測試自己的正對照樣本）
 
@@ -39,9 +41,9 @@
 > 上表的「改版後」數字更新至 2026-09-10 收尾（第四輪）。`title=`、測試數與
 > 最大元件檔三列在收工當下分別是 12／239／477，後面三輪逐一補完。
 
-### 尚未做的（2026-09-10 全部補完）
+### 尚未做的（2026-09-10 收尾：只剩一項刻意不做）
 
-原本這一段列了五項。**五項都做完了**，另外還補了改版收工時沒列進來的三塊：
+原本這一段列了五項。**五項都做完了**，另外還補了改版收工時沒列進來的四塊：
 
 | 原本列的 | 現況 |
 | :--- | :--- |
@@ -54,7 +56,14 @@
 另外補完的三塊：**§10.6 串流的螢幕閱讀器宣告**（`dbfdc11`）、**§11.1 快捷鍵表的
 十個缺鍵**（`b9e55ce`）、**§12 的 768–1024 主從切換**（`89672fe`）。
 
-規格現在沒有已知的未實作項。往後的落差請寫回上面那張進度表，不要新開清單。
+**還剩一項，而且是刻意不做的**：§16.3 的 `src/dev/TokenSheet.tsx`（開發路由
+`#/dev/tokens`，把每個 token × 每種狀態 × 兩主題印在一頁）。理由寫在上面那張
+進度表——它是驗證工具不是產品功能，而 token 的正確性最後由
+`lib/tokens.test.ts` 的守門規則機械化守住了。
+
+**這一段的教訓**：`lib/mergeCopy.ts`（§15.1）漏了三輪才被發現，因為它只寫在
+正文裡、沒進進度表。往後的落差請一律寫回上面那張表，**不要只寫在正文、也不要
+新開清單**——兩個地方各記一份必然漂移。
 
 **驗證方式的一則教訓**（值得寫進 §16.3）：用瀏覽器探針量「某件事發生了幾次」時，
 **「0 次」必須有正對照才可信**。實測時 `fetch` 攔截器一度回報「切頁籤 0 次 API 呼叫」，
@@ -478,7 +487,7 @@ Tailwind 的 `@theme` 只產生 utility class。有幾處程式碼**繞過 utili
 | 細捲軸（`:135-150`） | **保留**。thumb 的 `color-mix(… var(--muted-foreground) …)` 改成 `var(--fg-subtle)`，語意更準（那是「次要前景」不是「靜音文字」） |
 | `.markdown-body`（`:153-251`） | **保留結構**，三處改動：① 內文 `font-size: 0.8125rem` → `var(--text-base)`（15px）與 `line-height: var(--leading-read)`；② `h3`／連結／行內 `code` 的 `var(--color-sky-500, #0ea5e9)`（`:182, 206, 212`）→ `var(--signal)`，**不留 hex fallback**；③ `code` 與 `table` 的 `0.78rem` → `var(--text-xs)` |
 | `.typing-cursor`（`:253-260`）＋ `@keyframes chatpulse-blink`（`:261-269`） | **保留**。`:257` 的 `var(--color-sky-500, #0ea5e9)` → `var(--signal)`。注意 §3.3 的 reduced-motion 區塊也提到 `.typing-cursor::after`，那是**降級覆寫**，與這裡的常態定義並存不衝突 |
-| `.live-dot` / `.live-mark` | **新增**。§3.3 的 reduced-motion 區塊只寫了它們的降級態，常態定義還沒有：`.live-dot` 是頂列頁籤的脈動點（沿用現在 `App.tsx:252-260` 的雙層 ping 結構，抽成 class），`.live-mark` 是證據欄的 `⟳`（`animation: spin var(--motion-slow) linear infinite` 之類）。**兩者都要先有常態，降級覆寫才有東西可覆寫** |
+| `.live-dot` / `.live-mark` | **新增**（**已完成**：常態定義在 `index.css:234` 與 `:266`，降級覆寫在 `:293` 起）。§3.3 的 reduced-motion 區塊當時只寫了降級態：`.live-dot` 是頂列頁籤的脈動點（沿用現在 `App.tsx:252-260` 的雙層 ping 結構，抽成 class），`.live-mark` 是證據欄的 `⟳`（`animation: spin var(--motion-slow) linear infinite` 之類）。**兩者都要先有常態，降級覆寫才有東西可覆寫** |
 
 ---
 
@@ -897,9 +906,10 @@ export function toEvidence(input: {
 > （判準是責任數量，不是行數）。`lib/types.ts` 因此不再需要當成「例外」——它是
 > 純型別、鏡射後端契約，本來就在另計的範圍裡。
 >
-> 目前 `store/` 與 `lib/` 超過 250 行的五個檔（`store/replySettings.ts` 413、
-> `store/draft.ts` 370、`lib/evidence.ts` 360、`lib/api.ts` 321、
-> `store/mentions.ts` 251）依此判準保持原狀。
+> 目前 `store/` 與 `lib/` 超過 250 行的六個檔（`lib/types.ts` 560、
+> `store/replySettings.ts` 413、`store/draft.ts` 370、`lib/evidence.ts` 360、
+> `lib/api.ts` 321、`store/mentions.ts` 251）依此判準保持原狀。
+> `lib/types.ts` 也在這一列裡——它不再是「例外」，而是本來就在另計的範圍。
 
 兩個大檔的去向不同，措辭要分清楚：
 
@@ -1365,6 +1375,19 @@ src/store/
 | 改寫 `MERGE_BLOCK_LABEL` 文案 | `merge.test.ts` 有斷言，要同步 |
 
 第三項的防護：把 `MERGE_BLOCK_LABEL` 搬到 `lib/mergeCopy.ts`，讓「改文案」與「改規則」變成兩個檔案的 diff，review 一眼分得出來。（這是**新增檔案**，`merge.ts` 只保留 re-export，淨改動仍在允許範圍。）
+
+> **2026-09-10：已完成，但有一處與原文不同。** `lib/mergeCopy.ts` 建好了，
+> 而 `merge.ts` **沒有**保留 re-export：`mergeCopy.ts` 要用 `merge.ts` 的
+> `MERGE_MAX` 組「一次最多合併 N 則」，再從 `merge.ts` re-export 回去就形成
+> 循環 import——`MERGE_MAX` 會落在 TDZ 裡，而它會不會炸取決於 bundler 有沒有
+> 把那個 const 提前。那種「在 vitest 裡好、在某個建置設定下壞」的東西不值得留。
+> 當時 `MERGE_BLOCK_LABEL` 只有一個呼叫端（`components/inbox/MentionCard.tsx`），
+> 直接讓它改 import 更乾淨：「拿文案」與「拿規則」變成兩行看得出差別的 import，
+> 而這正是這一項想達到的效果。
+>
+> 這一項是收尾盤點時才發現漏掉的——它只出現在 §15.1 與 §9.2 的目錄結構裡，
+> 沒有進「實作進度」表，所以前三輪收尾都沒有人核對到。
+> **規格裡的待辦不要只寫在正文，要同時進進度表。**
 
 另外提醒：**合併回覆的規則有前後端兩份實作**（後端 `resolve_merge_targets`、前端 `lib/merge.ts`），改一邊要改兩邊。本次改版不動規則，只動文案。
 
