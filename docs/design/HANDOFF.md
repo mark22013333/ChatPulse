@@ -17,21 +17,21 @@
 不要破壞的東西、驗證陷阱）。設計決策的單一事實來源是
 docs/design/2026-09-09-ui-redesign.md，需要時再查對應章節，不必全讀。
 
-現況：分支 feature/ui-redesign-evidence-first，18 個 commit，main 未動，
-工作區乾淨。八個 Phase 實作完成，兩個回報的 bug 已修，291 項測試全綠
-（其中 31 項是元件測試）。
+現況：分支 feature/ui-redesign-evidence-first，25 個 commit，main 未動，
+工作區乾淨。八個 Phase 實作完成，兩個回報的 bug 已修，五項未完成工項全部
+完成。單元／元件測試 354 項全綠（含 74 項元件測試），瀏覽器 E2E 26 項全綠。
 
 這次要做的，依序：
 
-1. 元件測試還缺規格 §15.4 的前兩條（HANDOFF 未完成工項第 4 項）：
-   送出流程的確認框，以及 Sepia 三態。這兩條的價值最高——「送出了不可
-   撤回的訊息」與「以為 Sepia 生效其實沒有」是這個產品最貴的兩個錯誤。
+1. 3b 剩下的檔案大小帳（見那一節的表）。規格 §9.1 只為
+   `CodeProjectSettings.tsx` 留了拆檔計畫，其餘九個超標檔沒有規格依據，
+   動之前請先看那一節的建議。
 
-2. 在真瀏覽器上覆驗 Bug 2（HANDOFF 第七節第 1 點）。上一輪只有 jsdom
-   的證據，沒有真瀏覽器實測。
+2. 規格 §10.6 的 app 級 live region 還沒做（目前全 app 只有
+   `EvidenceColumn` 有一個 `role="status"`）。串流的螢幕閱讀器宣告
+   三層都缺，`lib/streamAnnouncements.ts` 也還不存在。
 
-3. 有餘力再看未完成工項 5（code_terms）與「其他小項」，或動 3b 的
-   檔案大小帳（拆 DraftReplyWorkspace 要照規格 §9.2 的清單）。
+3. 「其他小項」：`title=` 還剩 12 處、768–1024 的主從切換。
 
 工作方式：
 - 每一項獨立 commit，Conventional Commits、繁體中文。
@@ -48,24 +48,40 @@ docs/design/2026-09-09-ui-redesign.md，需要時再查對應章節，不必全�
 
 ## 30 秒現況
 
-> **2026-09-10 更新（第二個 session）**：下面第一節的兩個 bug **都已修掉**，
-> 未完成工項 1～4 也做完了。這一段與各節的狀態標記都是那一輪之後的現況。
+> **2026-09-10 更新（第二、三輪）**：下面第一節的兩個 bug **都已修掉**，
+> 未完成工項 **1～5 全部完成**，規格 §15.4 的四條元件測試也補齊，另外新增了
+> 瀏覽器 E2E。剩下的只有 3b 的部分檔案大小帳（見那一節）。
 
-- **分支**：`feature/ui-redesign-evidence-first`，**18 個 commit**，**`main` 未動**。
-- **狀態**：規格書的八個 Phase 全部實作完成。兩個已回報的 bug 已修，有元件測試蓋住。
-- **測試**：**291 項 / 22 檔**全綠。`npm --prefix dashboard/frontend run test`
-  - 其中 **31 項是元件測試**（jsdom project，`*.test.tsx`），其餘仍是純函式（node）。
+- **分支**：`feature/ui-redesign-evidence-first`，**25 個 commit**，**`main` 未動**。
+- **狀態**：八個 Phase 實作完成、兩個回報的 bug 已修、五項未完成工項全部完成。
+- **測試**：
+  - 單元／元件：**354 項 / 26 檔**全綠（`npm --prefix dashboard/frontend run test`）
+    其中 **74 項是元件測試**（jsdom project，8 個 `*.test.tsx`），其餘純函式（node）。
+  - 瀏覽器 E2E：`tests/e2e/test_ui_redesign.cjs` **26 項**全綠（真 Chromium）。
+    五支 `.cjs` 一起跑用 `.venv/bin/python tests/e2e/run_browser.py`。
 - **啟動**：`./chatpulse.sh web`。注意 **`chatpulse.sh` 不吃 `--port`**，一律起在 8000
-  （前一版交接寫的 `--port 8010` 是錯的，那個參數會被忽略）。
-- **待辦**：未完成工項只剩第 5 項與「其他小項」，另有 3b 的檔案大小帳。
+  （第一版交接寫的 `--port 8010` 是錯的，那個參數會被忽略）。
 
 ```bash
-# 接手後先跑這三個確認基準
+# 接手後先跑這幾個確認基準
 npm --prefix dashboard/frontend run typecheck        # 應為零錯誤
-npm --prefix dashboard/frontend run test             # 應為 291 passed / 22 files
+npm --prefix dashboard/frontend run test             # 應為 354 passed / 26 files
 .venv/bin/python -c "import sys; sys.path.insert(0,'scripts'); import webapp; print(webapp.frontend_state())"
 # 期望輸出：ready
+
+# 瀏覽器 E2E（先設 CHATPULSE_SESSION，那條路零資料庫寫入，說明見
+# tests/e2e/e2e_browser.cjs 開頭）
+node tests/e2e/test_ui_redesign.cjs                  # 應為 26/26
 ```
+
+### 這一輪最值得記住的一件事
+
+**jsdom 的綠燈證明不了瀏覽器行為。** 我修「Esc 同時關掉命令面板與設定」時
+用 `paletteOpen` 當守衛，元件測試是綠的——但那個測試只 `setState` 了旗標、
+沒有掛真正的面板，等於在測「守衛讀不讀 store」。真瀏覽器 E2E 第一次跑就
+證明修法無效：面板的 `close()` 是同步的 zustand set，事件冒泡到設定的 window
+監聽器時 `paletteOpen` 已經變回 false。**寫元件測試時，凡是涉及事件冒泡順序、
+瀏覽器歷史、真實焦點的行為，要嘛掛上真正的相關元件，要嘛就交給 E2E。**
 
 ---
 
@@ -154,9 +170,12 @@ export function isOutstanding(state: MentionStateValue): boolean {
 > `expected '#/settings/spaces' to be '#/mentions/65'`（按一次只退一個分頁）。
 >
 > **下面「陷阱」段講的那件事是真的**：設定開著又開命令面板時，按一次 Esc
-> 會同時關掉面板與設定（面板的 Esc 是 React 合成事件，處理完原生事件仍會冒泡
-> 到設定掛在 window 上的監聽器）。同一個 commit 一併修掉，守衛與
-> `useGlobalHotkeys` 同一條規則：面板開著時設定不接鍵盤。
+> 會同時關掉面板與設定。但**第一次的修法是錯的**——commit `8e71ab9` 只用
+> `paletteOpen` 當守衛，元件測試綠燈，真瀏覽器 E2E 卻證明無效：面板的
+> `close()` 是同步的 zustand set，事件冒泡到設定的 window 監聽器時
+> `paletteOpen` 已經變回 false。commit `adf7c84` 補上 `event.defaultPrevented`
+> 才真的修好。**兩道守衛都要**：`defaultPrevented` 管「內層已經處理掉這個
+> 按鍵」，`paletteOpen` 管「面板開著但按鍵不是它處理的（焦點在輸入框外）」。
 
 **現象**（使用者回報）：在設定中心切換多個分頁後，每按一次「關閉」只退回上一個分頁。
 
@@ -297,34 +316,46 @@ jsdom 沒有佈局、真虛擬清單一列都掛不出來，所以測試裡把 v
 再跑重構後。** `replyControls.test.tsx` 的 6 項在前後兩版都全過——這才是
 「外部行為沒變」的證據，只跑重構後的版本證明不了任何事。
 
-### 3b. 檔案大小門檻沒達成（規格 P4 的驗收條件，前一個 session 漏了沒檢）
-規格 §14 的 P4 有一條「**全域最大檔 < 250 行**」（`lib/types.ts` 是認可的例外），但沒有實際跑過那條檢查就結案了。現況：
+### 3b. 檔案大小門檻（規格 P4）— **兩個大檔已拆，剩九個**
 
-```bash
-find dashboard/frontend/src -name '*.tsx' -o -name '*.ts' | grep -v test | xargs wc -l | sort -rn | head
-```
+規格 §14 的 P4 有一條「**全域最大檔 < 250 行**」（`lib/types.ts` 是認可的例外）。
+這一輪拆掉了規格**有給拆檔計畫**的那兩個：
 
-| 檔案 | 行數（2026-09-10 更新） |
-| :--- | ---: |
-| `lib/types.ts` | 560（純型別，規格認可的例外） |
-| `components/DraftReplyWorkspace.tsx` | **478** |
-| `App.tsx` | 428 |
-| `store/replySettings.ts` | 413（store，本次未動） |
-| `components/SummaryWorkspace.tsx` | 371 |
-| `lib/evidence.ts` | 360 |
-| `store/draft.ts` | 341 |
-| `lib/api.ts` | 321 |
-| `components/MentionInbox.tsx` | 304（本輪 +40：合併寫回網址與註解） |
-| …另有 2 個介於 256–281 之間 | |
+| 檔案 | 拆前 | 拆後 | commit |
+| :--- | ---: | :--- | :--- |
+| `components/DraftReplyWorkspace.tsx` | 478 | 搬到 `components/draft/`，**86** ＋ 八個兄弟檔（46–106） | `fa268d8` |
+| `App.tsx` | 428 | `app/AppShell.tsx` **200** ＋ `app/TopBar.tsx` 178 ＋ `app/useBootstrap.ts` 105 | `748f94a` |
+| `components/draft/QuickReplySettings.tsx` | 365 | **200**（抽出共用下拉） | `14579bf` |
+| `components/settings/ReplyDefaultsPage.tsx` | 312 | **139**（同上） | `14579bf` |
 
-`QuickReplySettings`（365 → 200）與 `ReplyDefaultsPage`（312 → 139）已經因為
-工項 3 掉到門檻以下。仍超標的還有 8 個（不含 `types.ts`）。
+**還超標的九個（2026-09-10 實測）**：
 
-**這不是急件**——477 行的 `DraftReplyWorkspace` 已經比改版前的 656 行好很多，也不影響功能。但規格說要拆而沒拆，該記在帳上。真要動的話，規格 §9.2 有完整的拆檔清單（`MentionSourceCard`／`ReferenceSpacePicker`／`CodeRefPicker`／`DraftSetupPanel`／`DraftOutputPane`／`DraftReplyEditor`／`SendReplyConfirm`）。
+| 檔案 | 行數 | 規格有給拆法嗎 |
+| :--- | ---: | :--- |
+| `lib/types.ts` | 560 | — 認可的例外（純型別、鏡射後端契約） |
+| `store/replySettings.ts` | 413 | ❌ 沒有 |
+| `components/SummaryWorkspace.tsx` | 371 | ❌ 沒有 |
+| `lib/evidence.ts` | 360 | ⚠ §9.2 標 ~240，但沒說怎麼拆 |
+| `store/draft.ts` | 358 | ❌ 沒有 |
+| `lib/api.ts` | 321 | ❌ 沒有 |
+| `components/MentionInbox.tsx` | 304 | ❌ 沒有 |
+| `components/SpaceMessagePreview.tsx` | 281 | ❌ 沒有 |
+| `components/CodeProjectSettings.tsx` | 256 | ✅ §9.1：檔名應消失，內容進 `settings/CodeProjectsPage.tsx` ＋ `CodeProjectForm.tsx` |
+| `store/mentions.ts` | 251 | ❌ 沒有 |
 
-順序建議：**先修兩個 bug、先補元件測試，再談拆檔**。沒有元件測試的情況下拆 477 行是在沒有安全網的高處走。
+**建議（下一輪動之前先想一次）**：
 
-### 4. 元件層測試（規格 §15.4）— **環境已建好**（commit `64d6733`），還有兩條沒寫
+1. **`CodeProjectSettings.tsx` 可以照規格拆**（§9.1 有計畫，而 `CodeProjectsPage.tsx`
+   目前只是包著它的薄殼）。只超標 6 行，價值不高但有依據。
+2. **其餘八個沒有規格依據，我建議不要為了行數而拆。** 三個是 store、兩個是純
+   函式 lib——把 zustand store 或 `api.ts` 拆開，換到的是「每個檔都在 250 行以下」
+   這個數字，付出的是多一層 import 間接與「這個 action 在哪一半」的認知成本。
+   §9.1 訂這條門檻的理由是「兩個 913／650 行的元件難維護」，那個問題已經解掉了。
+3. 真要收掉這條驗收條件，建議**改規格**而不是改程式碼：把門檻寫成「**元件**檔
+   < 250 行，store 與 lib 另計」，並在 §14 P4 註明理由。那才是誠實的收尾——
+   現在的狀態是「規格要求沒達成」，硬拆成達成但更難維護沒有比較好。
+
+### 4. 元件層測試（規格 §15.4）— **已完成**（commit `64d6733`、`4db3303`）
 
 工具決策照規格：`@testing-library/react` ＋ `jsdom`，用 `test.projects` 讓
 `*.test.tsx` 走 jsdom、`*.test.ts` 維持 node。**既有純函式測試的執行環境完全沒變。**
@@ -332,15 +363,15 @@ find dashboard/frontend/src -name '*.tsx' -o -name '*.ts' | grep -v test | xargs
 目前 31 項元件測試，分佈：`MentionInbox` 10、`SettingsOverlay` 8、`SpaceList` 10、
 `useRouteSync` 6、`replyControls` 6（跨兩個 project 合計 291 項 / 22 檔）。
 
-規格 §15.4 列的四條裡，**還沒寫的是第 1 與第 2 條**：
+**§15.4 的四條全部寫完了**（commit `4db3303`）：
 
-1. **送出流程**：`meta.answering` 有 3 則時確認框要列出那 3 則的寄件人與時間；
-   空白／串流中送出鈕 disabled；`send` 拋錯不關對話框。
-2. **Sepia 三態**：`polished === false` 時 `fallback_reason` 必須用 `getByText`
-   找得到（**不是** `toHaveAttribute('title')`）。
+1. **送出流程** → `components/draft/DraftReplyWorkspace.test.tsx`（29 項）
+2. **Sepia 三態** → `components/evidence/EvidenceList.test.tsx`（8 項）
+3. **EvidenceList 逐項可讀** → 同上，含「渲染結果裡 `[title]` 選得到 0 個」
+4. **命令面板** → `components/CommandPalette.test.tsx`（13 項）
 
-這兩條的價值比已寫的還高——「送出了不可撤回的訊息」與「以為 Sepia 生效其實
-沒有」是這個產品最貴的兩個錯誤。下一輪優先做它們。
+前一版交接把這件事寫錯了，說「還沒寫的是第 1 與第 2 條」——其實第 3、4 條
+現有的也只是純函式測試（`evidence.test.ts`／`commands.test.ts`），驗不到渲染。
 
 **寫元件測試時記住兩件本輪學到的事**：
 
@@ -349,8 +380,15 @@ find dashboard/frontend/src -name '*.tsx' -o -name '*.ts' | grep -v test | xargs
 - **新測試寫完要做反向對照**：把被測的修復還原，確認測試真的會紅。本輪四次都做了，
   其中兩次抓到「斷言其實沒在咬」的問題。
 
-### 5. `code_terms` 手動指定檢索關鍵字
-規格 §1.4 說明了為何刻意不做：它要動 `store/draft.ts` 的 `generate()` 請求組裝，而那是既有測試覆蓋最密集的一段，收益（一個次要輸入框）與風險不成比例。要做的話請一併補 store 測試。
+### 5. `code_terms` 手動指定檢索關鍵字 — **已完成**（commit `ff601f3`）
+
+規格 §1.4 要求的「自帶 store 測試更新」做到了：`lib/codeTerms.test.ts` 7 項
+純函式 ＋ `draft.test.ts` 新增 4 項（含把 `INITIAL` 補上 `codeTerms` 避免測試
+互相污染）＋ 元件測試 4 項。
+
+實作上最值得記的一點：**全角逗號與頓號也要當分隔符**。中文輸入法下最容易
+打出來的就是它們，而「打了全角逗號結果整串被當成一個詞」是完全看不出來的
+失敗——只會得到「什麼都沒命中」。
 
 ### 其他小項
 - `title=` 還剩 12 處（規格 §10.3 逐條列了改法）。守門測試 `lib/tokens.test.ts` 已鎖住**不得增加**，所以不會惡化。
@@ -443,6 +481,12 @@ dashboard/frontend/src/
 | `880e4ea` | feat：虛擬清單 roving tabindex（工項 1） |
 | `796be65` | feat：`?merge=` URL 同步（工項 2） |
 | `14579bf` | refactor：兩處回覆設定共用下拉元件（工項 3） |
+| `c5a3889` | 交接文件回填第二輪進度 |
+| `4db3303` | test：補完規格 §15.4 的四條元件測試（＋修 CommandPalette 缺 role="combobox"） |
+| `fa268d8` | refactor：拆分 DraftReplyWorkspace（478 → 86） |
+| `ff601f3` | feat：`code_terms` 手動指定檢索關鍵字（工項 5） |
+| `748f94a` | refactor：拆分 App.tsx（→ AppShell／TopBar／useBootstrap） |
+| `adf7c84` | test：瀏覽器 E2E（26 項）＋ 修掉它抓到的 Esc 真 bug |
 
 分支尚未推送，`main` 未動。要合併時照專案慣例 `git merge --no-ff`。
 
@@ -450,12 +494,19 @@ dashboard/frontend/src/
 
 ## 七、下一輪接手的人請注意
 
-1. **Bug 2 沒有在真瀏覽器上驗過。** 那一輪的 Playwright 是全新 profile、停在登入頁，
-   claude-in-chrome 擴充又沒連上，所以證據全部來自 jsdom 的元件測試。jsdom 的
-   history 實作與真瀏覽器不完全相同——**點五個分頁按一次關閉**這件事，值得你在
-   自己已登入的瀏覽器上再點一次確認。其餘幾項（Bug 1、roving tabindex、`?merge=`、
-   共用元件）也都只有測試證據。
+1. **Bug 2 已經在真瀏覽器上驗過了**（`tests/e2e/test_ui_redesign.cjs`，26/26）。
+   `history.length` 在點過五個設定分頁前後都是 6，按一次「關閉」精確回到
+   `#/summary/AAQATjybbSY`，返回鍵一次離開設定。第一輪之所以只有 jsdom 證據，
+   是因為 Playwright 用全新 profile 會停在登入頁——現在 `e2e_browser.cjs` 用
+   `CHATPULSE_SESSION` 重用既有 session 解決了（而且零資料庫寫入）。
 2. **`chatpulse.sh` 不吃 `--port`。** 前一版交接寫的 `--port 8010` 會被忽略，一律起
    在 8000。
 3. **zsh 預設 `noclobber`**：腳本裡用 `>` 覆寫已存在的檔案會失敗（訊息是
-   `file exists`）。要覆寫用 `>|`。這個坑在本輪的暫存檔操作上踩到一次。
+   `file exists`）。要覆寫用 `>|`。這個坑在第二輪的暫存檔操作上踩到一次。
+4. **`tokens.test.ts` 的規則③（`title=` 預算）用的是檔案路徑當 key。** 搬動
+   檔案時記得把那一筆一起搬（例：`components/DraftReplyWorkspace.tsx` →
+   `components/draft/SendReplyConfirm.tsx`），不然新路徑的預算是 0、直接紅。
+5. **規格 §10.6 的 app 級 live region 還沒做。** 全 app 只有 `EvidenceColumn`
+   有一個 `role="status"`；§10.6 要求的三層（內容層 `aria-busy`、狀態層
+   `role="status"` 里程碑、10 秒節流層）與 `lib/streamAnnouncements.ts` 都不存在。
+   這是目前最大的一塊未實作規格。

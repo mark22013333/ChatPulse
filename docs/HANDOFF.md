@@ -57,11 +57,26 @@ export CHATPULSE_BOOTSTRAP_USER_ID=users/109827265019732088641
 .venv/bin/python tests/e2e/test_attachments.py        # 圖片附件與視覺
 .venv/bin/python tests/e2e/test_static.py             # 靜態托管、授權迴歸
 .venv/bin/python tests/e2e/test_add_annotation.py     # Mention 判定條件
-npm --prefix dashboard/frontend run test              # 前端 77 項
+npm --prefix dashboard/frontend run test              # 前端 354 項（含 74 項元件測試）
+npm --prefix dashboard/frontend run typecheck         # 應為零錯誤
 .venv/bin/python -m unittest discover -s tests/unit   # 單元 134 項（零 API、零配額、0.03 秒）
+
+# 瀏覽器 E2E（五支）。**先設 CHATPULSE_SESSION，那條路零資料庫寫入**
+export CHATPULSE_SESSION=$(.venv/bin/python -c "
+import sqlite3, sys; sys.path.insert(0, '.')
+from core import config as cfg
+con = sqlite3.connect(cfg.DB_PATH)
+row = con.execute(\"select token from sessions where expires_at > datetime('now') order by created_at desc limit 1\").fetchone()
+print(row[0] if row else '')")
+.venv/bin/python tests/e2e/run_browser.py             # 五支一起跑
+node tests/e2e/test_ui_redesign.cjs                   # 介面改版 26 項（唯讀、零 AI）
 node tests/e2e/test_merge_reply.cjs                   # 收件匣多選合併 11 項
 node tests/e2e/test_message_preview.cjs               # 最近訊息預覽 21 項（唯讀、零 AI）
 ```
+
+**`CHATPULSE_SESSION` 沒設會怎樣**：`.cjs` 會退回去點畫面上的「匯入既有憑證」，
+那會在 `sessions` 表 INSERT 一筆。設了就是重用一個既有的 session，零寫入、
+而且快得多。取得那個 token 的查詢是唯讀的，不會改動任何東西。
 
 **跑 e2e 之前先確認 8000 埠上是誰的服務**：那幾支 `.cjs` 會走 `/api/v1/auth/bootstrap`，
 而 bootstrap 需要啟動服務時就帶著 `CHATPULSE_BOOTSTRAP_USER_ID`（舊的三 scope token
