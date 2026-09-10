@@ -17,9 +17,9 @@
 不要破壞的東西、驗證陷阱）。設計決策的單一事實來源是
 docs/design/2026-09-09-ui-redesign.md，需要時再查對應章節，不必全讀。
 
-現況：分支 feature/ui-redesign-evidence-first，29 個 commit，main 未動，
-工作區乾淨。八個 Phase 實作完成，兩個回報的 bug 已修，五項未完成工項全部
-完成，§10.6 的串流無障礙宣告與 §10.3 的 title 清理也做完了。
+現況：分支 feature/ui-redesign-evidence-first，main 未動，工作區乾淨。
+八個 Phase 實作完成，兩個回報的 bug 已修，五項未完成工項全部完成，
+§10.6 的串流無障礙宣告與 §10.3 的 title 清理也做完了。
 測試 389 項全綠：node 285 項（19 檔純函式）＋ jsdom 104 項（9 檔元件）。
 瀏覽器 E2E 29 項全綠。
 
@@ -56,7 +56,9 @@ docs/design/2026-09-09-ui-redesign.md，需要時再查對應章節，不必全�
 > 未完成工項 **1～5 全部完成**，規格 §15.4 的四條元件測試也補齊，另外新增了
 > 瀏覽器 E2E。剩下的只有 3b 的部分檔案大小帳（見那一節）。
 
-- **分支**：`feature/ui-redesign-evidence-first`，**29 個 commit**，**`main` 未動**。
+- **分支**：`feature/ui-redesign-evidence-first`，**`main` 未動**。
+  commit 數用 `git rev-list --count main..HEAD` 查——寫死在這裡的話，
+  下一個「更新這份文件」的 commit 自己就會讓它過期。
 - **狀態**：八個 Phase 實作完成、兩個回報的 bug 已修、五項未完成工項全部完成、
   §10.6 串流宣告與 §10.3 的 title 清理完成。
 - **測試**：
