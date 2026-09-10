@@ -1,8 +1,17 @@
 import { useEffect, useMemo, type ReactNode } from 'react'
-import { InboxIcon, Loader2Icon, LogOutIcon, SettingsIcon, SparklesIcon } from 'lucide-react'
+import {
+  InboxIcon,
+  Loader2Icon,
+  LogOutIcon,
+  PanelRightIcon,
+  SettingsIcon,
+  SparklesIcon,
+} from 'lucide-react'
 import { PulseMark } from '@/app/PulseMark'
+import { SmallScreenNotice } from '@/app/SmallScreenNotice'
 import { Button } from '@/components/ui/button'
-import { EvidenceColumn } from '@/components/evidence/EvidenceColumn'
+import { EvidenceColumn, useEvidenceBundle } from '@/components/evidence/EvidenceColumn'
+import { EvidenceDrawer } from '@/components/evidence/EvidenceDrawer'
 import { DiagnosticsPage } from '@/components/settings/DiagnosticsPage'
 import { SettingsOverlay } from '@/components/settings/SettingsOverlay'
 import { DraftReplyWorkspace } from '@/components/DraftReplyWorkspace'
@@ -14,6 +23,7 @@ import { SummaryWorkspace } from '@/components/SummaryWorkspace'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { hashForMentions, hashForSettings, hashForSummary } from '@/lib/route'
 import { cn } from '@/lib/utils'
+import { useBreakpoint } from '@/hooks/useBreakpoint'
 import { useRouter } from '@/router/useRouter'
 import { useRouteSync } from '@/router/useRouteSync'
 import { useAuthStore } from '@/store/auth'
@@ -22,6 +32,7 @@ import { useProviderStore } from '@/store/providers'
 import { useReplySettingsStore } from '@/store/replySettings'
 import { findSpace, useSpacesStore } from '@/store/spaces'
 import { useSummaryStore } from '@/store/summary'
+import { useUiStore } from '@/store/ui'
 import { useDraftStore } from '@/store/draft'
 
 export default function App() {
@@ -35,6 +46,16 @@ export default function App() {
   // URL 是「在看哪一個 Space／哪一則 Mention」的唯一真相（設計規格 §6.6）
   useRouteSync()
   const view = route.section === 'mentions' ? 'mentions' : 'summary'
+
+  // 版面斷點：≥1280 證據欄常駐，以下改成抽屜（設計規格 §12）
+  const breakpoint = useBreakpoint()
+  const evidenceInline = breakpoint === 'wide'
+  const drawerOpen = useUiStore((state) => state.drawer[breakpoint] === true)
+  const toggleDrawer = useUiStore((state) => state.toggleDrawer)
+  const closeDrawer = useUiStore((state) => state.closeDrawer)
+  // 抽屜關著時，頂列的證據鈕要讓人知道「值得打開看一眼」
+  const { bundle: evidence } = useEvidenceBundle(view === 'mentions' ? 'draft' : 'summary')
+  const attentionCount = evidence.attentionCount
 
   // 讓頁籤能顯示「另一邊還在生成」。訂閱的是布林值，只有開始／結束時才變，
   // 不會每個 chunk 都讓整個 App 重繪。
@@ -157,6 +178,9 @@ export default function App() {
   if (!authenticated) return <LoginScreen />
 
   return (
+    // <768 先給一個誠實的說明頁（含逃生門）。Draft Reply 送出不可撤回，
+    // 而它的證據在手機寬度下讀不了——讀不了就等於在不知情的狀況下送出。
+    <SmallScreenNotice>
     <div className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
       {/* 頂列 */}
       <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border px-4">
@@ -190,6 +214,25 @@ export default function App() {
             <span className="hidden text-xs text-muted-foreground sm:inline">
               {me.viewer.display_name || me.viewer.email}
             </span>
+          ) : null}
+          {!evidenceInline ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => toggleDrawer(breakpoint)}
+              aria-expanded={drawerOpen}
+              aria-label={drawerOpen ? '關閉證據欄' : '開啟證據欄'}
+            >
+              <PanelRightIcon />
+              證據
+              {/* 有降級項目時亮一個點，讓人知道值得打開看一眼 */}
+              {attentionCount > 0 ? (
+                <span className="bg-caution size-1.5 rounded-full" aria-hidden />
+              ) : null}
+              {attentionCount > 0 ? (
+                <span className="sr-only">（有 {attentionCount} 項需要看一眼）</span>
+              ) : null}
+            </Button>
           ) : null}
           <Button
             size="sm"
@@ -255,9 +298,12 @@ export default function App() {
           問題——「這份產出建立在什麼之上」。設定類的東西進了設定中心，
           採集器狀態進了診斷頁，用量進了設定的資料頁。
         */}
+        {/* ≥1280 常駐；以下改成抽屜（設計規格 §12）。在此之前這裡是
+            `hidden lg:flex`，1024px 以下整欄消失且沒有替代入口——那正是
+            這次改版要修的功能性破洞之一。 */}
         <aside
           aria-label="證據"
-          className="relative hidden w-rail shrink-0 flex-col border-l border-border lg:flex"
+          className="relative hidden w-rail shrink-0 flex-col border-l border-border xl:flex"
         >
           <Pane active={view === 'summary'}>
             <EvidenceColumn origin="summary" />
@@ -271,9 +317,16 @@ export default function App() {
         </aside>
       </div>
 
+      <EvidenceDrawer
+        open={!evidenceInline && drawerOpen}
+        origin={view === 'mentions' ? 'draft' : 'summary'}
+        onClose={() => closeDrawer(breakpoint)}
+      />
+
       {/* 設定中心是覆蓋層：工作台仍掛在後面，串流不中斷、狀態不掉 */}
       {route.section === 'settings' ? <SettingsOverlay /> : null}
     </div>
+    </SmallScreenNotice>
   )
 }
 

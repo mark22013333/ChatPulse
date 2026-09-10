@@ -10,6 +10,41 @@ interface EvidenceColumnProps {
 }
 
 /**
+ * 證據清單與「有幾項需要看一眼」。
+ *
+ * 抽成 hook 是因為頂列的證據鈕也要 `attentionCount`（抽屜關著時得讓人知道
+ * 值得打開），而重算一次 `toEvidence` 會讓兩邊有機會不一致。
+ */
+export function useEvidenceBundle(origin: 'summary' | 'draft') {
+  const providers = useProviderStore((state) => state.providers)
+
+  const draftMeta = useDraftStore((state) => state.meta)
+  const draftPolish = useDraftStore((state) => state.polish)
+  const draftStreaming = useDraftStore((state) => state.streaming)
+
+  const summaryMeta = useSummaryStore((state) => state.meta)
+  const summaryStreaming = useSummaryStore((state) => state.streaming)
+
+  const isDraft = origin === 'draft'
+  const streaming = isDraft ? draftStreaming : summaryStreaming
+
+  return useMemo(
+    () => ({
+      bundle: toEvidence({
+        origin,
+        meta: isDraft ? draftMeta : summaryMeta,
+        polish: isDraft ? draftPolish : null,
+        streaming,
+        providerLabel: (name: string) => providerLabel(providers, name),
+      }),
+      streaming,
+      isDraft,
+    }),
+    [origin, isDraft, draftMeta, summaryMeta, draftPolish, streaming, providers],
+  )
+}
+
+/**
  * 證據欄（設計規格 §5）。
  *
  * 這一欄回答一個問題：**這份產出建立在什麼之上。**
@@ -23,30 +58,7 @@ interface EvidenceColumnProps {
  * 會淡入的數字是還不能相信的數字。
  */
 export function EvidenceColumn({ origin }: EvidenceColumnProps) {
-  const providers = useProviderStore((state) => state.providers)
-
-  const draftMeta = useDraftStore((state) => state.meta)
-  const draftPolish = useDraftStore((state) => state.polish)
-  const draftStreaming = useDraftStore((state) => state.streaming)
-
-  const summaryMeta = useSummaryStore((state) => state.meta)
-  const summaryStreaming = useSummaryStore((state) => state.streaming)
-
-  const isDraft = origin === 'draft'
-  const streaming = isDraft ? draftStreaming : summaryStreaming
-
-  const bundle = useMemo(
-    () =>
-      toEvidence({
-        origin,
-        meta: isDraft ? draftMeta : summaryMeta,
-        polish: isDraft ? draftPolish : null,
-        streaming,
-        providerLabel: (name) => providerLabel(providers, name),
-      }),
-    [origin, isDraft, draftMeta, summaryMeta, draftPolish, streaming, providers],
-  )
-
+  const { bundle, streaming, isDraft } = useEvidenceBundle(origin)
   const empty = bundle.items.length === 0
 
   return (
