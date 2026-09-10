@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SettingsOverlay } from './SettingsOverlay'
+import { CommandPalette } from '@/components/CommandPalette'
 import { hashForSettings } from '@/lib/route'
 import { RouterProvider, useRouter } from '@/router/useRouter'
 import { useUiStore } from '@/store/ui'
@@ -45,6 +46,17 @@ function mount(initialHash: string) {
   return render(
     <RouterProvider>
       <Harness />
+    </RouterProvider>,
+  )
+}
+
+/** 設定 ＋ 真正的命令面板一起掛，用來測 Esc 的層次。 */
+function mountWithPalette(initialHash: string) {
+  window.history.replaceState(null, '', initialHash)
+  return render(
+    <RouterProvider>
+      <Harness />
+      <CommandPalette />
     </RouterProvider>,
   )
 }
@@ -142,21 +154,39 @@ describe('設定覆蓋層的關閉路徑', () => {
     await waitFor(() => expect(window.location.hash).toBe('#/mentions/65'))
   })
 
-  it('**命令面板開著時，Esc 不關設定**（由內而外，面板自己接管鍵盤）', async () => {
-    mount('#/settings/reply')
-    // 面板的 Esc 是 React 合成事件，處理完原生事件仍會冒泡到 window 上
-    // 設定掛的那個監聽器；不擋的話一次 Esc 會同時關掉面板與設定。
+  it('**命令面板開著時，Esc 只關面板、不關設定**（由內而外）', async () => {
+    // 這一則一定要掛**真正的** CommandPalette。只設 store 旗標的話測的是
+    // 「守衛讀不讀 store」，測不到真實時序：面板的 close() 是同步的 zustand
+    // set，所以事件冒泡到設定的 window 監聽器時 paletteOpen 已經是 false。
+    // 2026-09-10 就是這樣給出假綠燈，由真瀏覽器 E2E 才抓到設定被一起關掉。
+    mountWithPalette('#/settings/reply')
     act(() => useUiStore.setState({ paletteOpen: true }))
+    expect(screen.getByRole('dialog', { name: '命令面板' })).toBeInTheDocument()
 
     await userEvent.keyboard('{Escape}')
+
+    expect(screen.queryByRole('dialog', { name: '命令面板' })).toBeNull()
+    expect(screen.getByRole('dialog', { name: '設定' })).toBeInTheDocument()
+    expect(window.location.hash).toBe('#/settings/reply')
+
+    // 正對照：面板關掉之後同一個按鍵確實關得掉設定
+    await userEvent.keyboard('{Escape}')
+    await waitFor(() => expect(window.location.hash).toBe('#/summary'))
+  })
+
+  it('面板開著但按鍵不是它處理的（焦點在外面）時，設定也不該關', async () => {
+    // 面板的 Esc handler 掛在輸入框上。焦點跑到外面時它不會觸發，
+    // 於是 defaultPrevented 是 false——這時就要靠 paletteOpen 那道守衛。
+    mountWithPalette('#/settings/reply')
+    act(() => useUiStore.setState({ paletteOpen: true }))
+
+    // 直接對 window 派事件，模擬「焦點不在面板輸入框上」
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    })
 
     expect(window.location.hash).toBe('#/settings/reply')
     expect(screen.getByRole('dialog', { name: '設定' })).toBeInTheDocument()
-
-    // 正對照：面板關掉之後同一個按鍵確實關得掉設定
-    act(() => useUiStore.setState({ paletteOpen: false }))
-    await userEvent.keyboard('{Escape}')
-    await waitFor(() => expect(window.location.hash).toBe('#/summary'))
   })
 
   it('⌘＋點擊分頁不攔截，交還瀏覽器原生行為（開新分頁）', () => {

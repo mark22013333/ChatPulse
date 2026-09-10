@@ -69,9 +69,18 @@ export function SettingsOverlay() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
-      // 命令面板開著時它自己接管鍵盤（與 useGlobalHotkeys 同一條規則）。
-      // 面板的 Esc 是 React 合成事件，處理完原生事件仍會冒泡到 window，
-      // 不擋的話一次 Esc 會同時關掉面板與設定——由內而外才是對的。
+      // Esc 要由內而外一層一層關，所以這裡有**兩道**守衛，缺一不可：
+      //
+      // 1. `defaultPrevented`：內層已經處理掉這個按鍵了。命令面板的 Esc 是
+      //    React 合成事件，它 preventDefault 之後原生事件仍會冒泡到 window
+      //    上的這個監聽器。**只檢查 paletteOpen 是不夠的**——面板的 close()
+      //    是同步的 zustand set，事件走到這裡時 paletteOpen 已經變回 false，
+      //    於是設定被一起關掉。2026-09-10 由真瀏覽器 E2E 抓到；元件測試沒
+      //    抓到，因為那個測試只設了 store 旗標、沒有掛真正的面板。
+      // 2. `paletteOpen`：面板開著、但這個按鍵**不是**它處理的（面板的
+      //    handler 掛在輸入框上，焦點跑掉時就不會觸發）。這時設定同樣不該
+      //    反應——上面還蓋著一層東西。
+      if (event.defaultPrevented) return
       if (useUiStore.getState().paletteOpen) return
       event.stopPropagation()
       close()
