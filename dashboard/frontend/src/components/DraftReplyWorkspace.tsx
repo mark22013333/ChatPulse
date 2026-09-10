@@ -32,6 +32,11 @@ import type { DraftContextMeta, Mention } from '@/lib/types'
 
 interface DraftReplyWorkspaceProps {
   mention: Mention | null
+  /**
+   * 這個工作台目前看得見嗎。兩個工作台常駐掛載之後，看不見的那一半仍會收到
+   * 每個串流 chunk；傳下去讓 Markdown 在不可見時暫停重新 parse（§7.3）。
+   */
+  active?: boolean
 }
 
 const CONTEXT_MODE_LABEL: Record<DraftContextMeta['mode'], string> = {
@@ -66,7 +71,7 @@ function contextTitle(context: DraftContextMeta | undefined) {
  * Draft Reply 工作區（規格 7 節）。
  * Reference Space 預設一個都不勾（7.3），送出前一定要二次確認（7.2 步驟 6）。
  */
-export function DraftReplyWorkspace({ mention }: DraftReplyWorkspaceProps) {
+export function DraftReplyWorkspace({ mention, active = true }: DraftReplyWorkspaceProps) {
   const spaces = useSpacesStore((state) => state.items)
   const applyResolved = useMentionsStore((state) => state.applyResolved)
   const applyResolvedMany = useMentionsStore((state) => state.applyResolvedMany)
@@ -579,6 +584,7 @@ export function DraftReplyWorkspace({ mention }: DraftReplyWorkspaceProps) {
                 <Markdown
                   source={sections.context}
                   typing={streaming && !sections.replyStarted}
+                  active={active}
                   className="rounded-xl border border-border bg-card/60 p-4"
                 />
               </section>

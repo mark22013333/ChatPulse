@@ -37,9 +37,14 @@ interface SummaryWorkspaceProps {
   space: Space | null
   /** 草稿目標建立好、已開始生成時呼叫，由外層導航到草稿工作區 */
   onDraftCreated?: (mentionId: number) => void
+  /**
+   * 這個工作台目前看得見嗎。兩個工作台常駐掛載之後，看不見的那一半仍會收到
+   * 每個串流 chunk；傳下去讓 Markdown 在不可見時暫停重新 parse（§7.3）。
+   */
+  active?: boolean
 }
 
-export function SummaryWorkspace({ space, onDraftCreated }: SummaryWorkspaceProps) {
+export function SummaryWorkspace({ space, onDraftCreated, active = true }: SummaryWorkspaceProps) {
   const {
     styles,
     style,
@@ -336,6 +341,7 @@ export function SummaryWorkspace({ space, onDraftCreated }: SummaryWorkspaceProp
             <Markdown
               source={text}
               typing={streaming}
+              active={active}
               className="rounded-xl border border-border bg-card/60 p-5"
             />
 

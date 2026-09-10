@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react'
+import { useMemo } from 'react'
 import {
   AlertCircleIcon,
   CheckCheckIcon,
@@ -21,9 +21,6 @@ import { selectMentionsByState, useMentionsStore } from '@/store/mentions'
 import { useSpacesStore } from '@/store/spaces'
 import type { MentionState } from '@/lib/types'
 
-/** 自動重新拉取間隔（規格 6.3 的輪詢節奏對齊）。 */
-const AUTO_RELOAD_MS = 45_000
-
 interface MentionInboxProps {
   onSelect: (mentionId: number) => void
   /** 合併產生草稿：主要那則 ＋ 一起回的其他幾則 */
@@ -40,19 +37,14 @@ export function MentionInbox({ onSelect, onMergedGenerate }: MentionInboxProps) 
   const selectedId = useMentionsStore((state) => state.selectedId)
   const mergeIds = useMentionsStore((state) => state.mergeIds)
   const setTab = useMentionsStore((state) => state.setTab)
-  const load = useMentionsStore((state) => state.load)
   const checkNow = useMentionsStore((state) => state.checkNow)
   const setMentionState = useMentionsStore((state) => state.setMentionState)
   const toggleMerge = useMentionsStore((state) => state.toggleMerge)
   const clearMerge = useMentionsStore((state) => state.clearMerge)
   const spaces = useSpacesStore((state) => state.items)
 
-  // 首次載入 + 每 45 秒自動重新拉取清單
-  useEffect(() => {
-    void load()
-    const timer = window.setInterval(() => void load({ silent: true }), AUTO_RELOAD_MS)
-    return () => window.clearInterval(timer)
-  }, [load])
+  // 載入與 45 秒輪詢已經搬進 store，由 AppShell 在登入後啟動一次
+  // （設計規格 §7.4）——輪詢屬於這份資料，不屬於這個畫面。
 
   const visible = useMemo(() => selectMentionsByState(items, tab), [items, tab])
 

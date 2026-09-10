@@ -46,7 +46,24 @@ interface MentionsState {
    */
   external: Mention | null
   selectExternal: (mention: Mention) => void
+
+  /**
+   * 開始自動重新拉取（規格 6.3 的輪詢節奏）。重複呼叫是安全的。
+   *
+   * 在此之前這個計時器住在 `MentionInbox` 的 useEffect 裡。輪詢屬於這份資料、
+   * 不屬於那個畫面——住在元件裡的話，人在摘要工作台時頂列的未處理數字就不會
+   * 動，而且元件一卸載重掛就重新開始計時。
+   */
+  startPolling: () => void
+  stopPolling: () => void
 }
+
+/** 自動重新拉取間隔。 */
+export const AUTO_RELOAD_MS = 45_000
+
+// 模組層只存 handle，不在這裡碰 window——vitest 跑在 node 環境，
+// module top-level 取用瀏覽器 API 會讓整個檔案 import 失敗。
+let pollTimer: ReturnType<typeof setInterval> | null = null
 
 export const useMentionsStore = create<MentionsState>((set, get) => ({
   items: [],
@@ -67,6 +84,18 @@ export const useMentionsStore = create<MentionsState>((set, get) => ({
   // 在收件匣點了別則，就不再是「清單外的那則」了，把 external 清掉
   select: (id) => set({ selectedId: id, external: null }),
   selectExternal: (mention) => set({ external: mention, selectedId: mention.id, mergeIds: [] }),
+
+  startPolling: () => {
+    if (pollTimer !== null) return
+    void get().load()
+    pollTimer = setInterval(() => void get().load({ silent: true }), AUTO_RELOAD_MS)
+  },
+
+  stopPolling: () => {
+    if (pollTimer === null) return
+    clearInterval(pollTimer)
+    pollTimer = null
+  },
 
   toggleMerge: (id) =>
     set((current) => {

@@ -80,6 +80,24 @@ export default function App() {
     void loadHistory()
   }, [authenticated, loadStyles, loadHistory])
 
+  /*
+   * 資料層的 bootstrap（設計規格 §7.4）。
+   *
+   * Space 清單與 Mention 輪詢本來各自住在 SpacesRail 與 MentionInbox 的
+   * useEffect 裡，於是「什麼時候載入」由「哪個畫面剛好先掛載」決定：人在摘要
+   * 工作台時頂列的未處理數字不會動，而切一次頁籤就重新開始計時。它們屬於資料，
+   * 不屬於畫面。
+   */
+  useEffect(() => {
+    if (!authenticated) return
+    const spaces = useSpacesStore.getState()
+    if (spaces.items.length === 0) void spaces.load()
+
+    const mentions = useMentionsStore.getState()
+    mentions.startPolling()
+    return () => mentions.stopPolling()
+  }, [authenticated])
+
   // 以 /api/v1/me 的偏好當作抓取則數與風格的初始值
   useEffect(() => {
     if (!me?.preferences) return
@@ -182,12 +200,20 @@ export default function App() {
         </div>
       </header>
 
-      {/* 三欄主體 */}
+      {/*
+        三欄主體。兩個工作台都**常駐掛載**（設計規格 §7.2）。
+
+        在此之前這裡是條件渲染，元件會真的卸載重掛——`SummaryWorkspace.tsx`
+        與 `DraftReplyWorkspace.tsx` 的 reset 註解記錄了它造成的災情：掛載時的
+        reset() 把還在串流的內容清光。現在改成保留掛載，那些條件式 reset 也就
+        退化成第二道防線。
+      */}
       <div className="flex min-h-0 flex-1">
-        <aside className="flex w-72 shrink-0 flex-col border-r border-border">
-          {view === 'summary' ? (
+        <aside className="relative flex w-72 shrink-0 flex-col border-r border-border">
+          <Pane active={view === 'summary'}>
             <SpacesRail />
-          ) : (
+          </Pane>
+          <Pane active={view === 'mentions'}>
             <MentionInbox
               onSelect={(id) => navigate(hashForMentions(id))}
               onMergedGenerate={(primaryId, mergeIds) => {
@@ -195,44 +221,65 @@ export default function App() {
                 void useDraftStore.getState().generate(primaryId, mergeIds)
               }}
             />
-          )}
+          </Pane>
         </aside>
 
-        <main className="flex min-w-0 flex-1 flex-col">
-          {view === 'summary' ? (
+        <main className="relative flex min-w-0 flex-1 flex-col">
+          <Pane active={view === 'summary'}>
             <SummaryWorkspace
               space={selectedSpace}
+              active={view === 'summary'}
               // selectExternal 已經把 selectedId 設好了，useRouteSync 的去重
               // 會跳過 select()，external 才不會被清掉（見 useRouteSync 註解）
               onDraftCreated={(mentionId) => navigate(hashForMentions(mentionId))}
             />
-          ) : (
-            <DraftReplyWorkspace mention={selectedMention} />
-          )}
+          </Pane>
+          <Pane active={view === 'mentions'}>
+            <DraftReplyWorkspace mention={selectedMention} active={view === 'mentions'} />
+          </Pane>
         </main>
 
-        <aside className="hidden w-72 shrink-0 flex-col border-l border-border lg:flex">
-          {view === 'summary' ? (
-            <>
-              <SummaryHistory />
-              <UsagePanel />
-            </>
-          ) : (
-            <>
-              <CollectorPanel />
-              <div className="min-h-0 flex-1 overflow-y-auto">
-                {/* 參考專案設定放這裡：與 Draft Reply 同一個情境，
-                    調整分支對應之後馬上就能在左邊勾選使用。 */}
-                <div className="border-b border-border p-3">
-                  <CodeProjectSettings />
-                </div>
-                <SummaryHistory />
+        <aside className="relative hidden w-72 shrink-0 flex-col border-l border-border lg:flex">
+          <Pane active={view === 'summary'}>
+            <SummaryHistory />
+            <UsagePanel />
+          </Pane>
+          <Pane active={view === 'mentions'}>
+            <CollectorPanel />
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              {/* 參考專案設定放這裡：與 Draft Reply 同一個情境，
+                  調整分支對應之後馬上就能在左邊勾選使用。 */}
+              <div className="border-b border-border p-3">
+                <CodeProjectSettings />
               </div>
-              <UsagePanel />
-            </>
-          )}
+              <SummaryHistory />
+            </div>
+            <UsagePanel />
+          </Pane>
         </aside>
       </div>
+    </div>
+  )
+}
+
+/**
+ * 常駐掛載的其中一半（設計規格 §7.2）。
+ *
+ * **不用 `display:none`**：`SpaceList` 用 `@tanstack/react-virtual`，在
+ * `display:none` 的容器裡量到的高度是 0，切回來會重新 measure——畫面閃一下、
+ * 捲動位置歸零。改成保留尺寸的絕對定位，並用 React 19 原生的 `inert` 讓看不見
+ * 的那一半退出 tab 序與無障礙樹（只靠 `aria-hidden` 擋不住 Tab）。
+ */
+function Pane({ active, children }: { active: boolean; children: ReactNode }) {
+  return (
+    <div
+      className={cn(
+        'flex min-h-0 flex-col',
+        active ? 'flex-1' : 'pointer-events-none absolute inset-0 -z-10 opacity-0',
+      )}
+      inert={!active}
+    >
+      {children}
     </div>
   )
 }

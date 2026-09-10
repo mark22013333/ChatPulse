@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { LayersIcon, Loader2Icon, RefreshCwIcon, SearchIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -42,9 +42,8 @@ export function SpacesRail() {
   const [renaming, setRenaming] = useState<Space | null>(null)
   const [aliasDraft, setAliasDraft] = useState('')
 
-  useEffect(() => {
-    if (items.length === 0) void load()
-  }, [items.length, load])
+  // 首次載入搬到 AppShell 的 bootstrap（設計規格 §7.4）：釘選、命令面板、
+  // Reference Space 三處都要 spaces，不該由「哪個畫面剛好先掛載」決定何時載入。
 
   const visible = useMemo(() => filterSpaces(items, search), [items, search])
 
