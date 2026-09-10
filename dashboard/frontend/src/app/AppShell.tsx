@@ -1,11 +1,13 @@
-import { useMemo, type ReactNode } from 'react'
+import { useMemo } from 'react'
 import { Loader2Icon } from 'lucide-react'
 import { MasterDetailBack } from '@/app/MasterDetailBack'
+import { Pane } from '@/app/Pane'
 import { SmallScreenNotice } from '@/app/SmallScreenNotice'
+import { StreamLiveRegions } from '@/app/StreamLiveRegions'
 import { TopBar } from '@/app/TopBar'
 import { useBootstrap } from '@/app/useBootstrap'
-import { useStreamAnnouncer } from '@/hooks/useStreamAnnouncer'
 import { CommandPalette } from '@/components/CommandPalette'
+import { SkipLink } from '@/components/common/SkipLink'
 import { EvidenceColumn } from '@/components/evidence/EvidenceColumn'
 import { EvidenceDrawer } from '@/components/evidence/EvidenceDrawer'
 import { DiagnosticsPage } from '@/components/settings/DiagnosticsPage'
@@ -69,9 +71,6 @@ export function AppShell() {
   // 全域快捷鍵。送出類動作刻意沒有快捷鍵（設計規格 §11.1）
   useGlobalHotkeys({ onToggleEvidence: () => toggleDrawer(breakpoint) })
 
-  // 串流的螢幕閱讀器宣告（設計規格 §10.6）。只訂閱布林值，不會被 chunk 帶著重繪
-  const { polite: announcement, alert: alertAnnouncement } = useStreamAnnouncer()
-
   const spaces = useSpacesStore((state) => state.items)
   const selectedSpaceId = useSpacesStore((state) => state.selectedId)
   const selectedSpace = useMemo(() => findSpace(spaces, selectedSpaceId), [spaces, selectedSpaceId])
@@ -108,33 +107,11 @@ export function AppShell() {
     // 而它的證據在手機寬度下讀不了——讀不了就等於在不知情的狀況下送出。
     <SmallScreenNotice>
     <div className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
-      {/* 左欄的虛擬清單有 436 筆，鍵盤使用者要 Tab 很久才到得了主要內容。
-          主從切換的清單那一半顯示時 `<main>` 是 inert 的，跳過去等於跳到一個
-          不存在的地方——那時清單本身就是主要內容，改指它。 */}
-      <a
-        href={mainHidden ? '#rail' : '#main'}
-        className="sr-only focus:not-sr-only focus:bg-raised focus:text-foreground focus:shadow-overlay focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:rounded-md focus:px-3 focus:py-2 focus:text-sm"
-      >
-        跳到主要內容
-      </a>
+      {/* 「主要內容」會變：主從切換顯示清單那一半時 `<main>` 是 inert 的，
+          那時清單本身就是主要內容 */}
+      <SkipLink href={mainHidden ? '#rail' : '#main'} />
 
-      {/*
-        串流的狀態層宣告（設計規格 §10.6）。
-
-        **這兩個容器一定要常駐**：live region 必須在內容寫進去**之前**就存在
-        於無障礙樹裡，否則多數螢幕閱讀器不會念——「有訊息才渲染」是這個
-        機制最常見的壞法。所以這裡永遠掛著，只是內容多半是空字串。
-
-        內容層（`Markdown`）刻意**沒有** aria-live，只有 aria-busy：
-        每個 chunk 都重寫 innerHTML，設了 aria-live 等於整段重念。
-      */}
-      <div role="status" aria-live="polite" className="sr-only">
-        {announcement}
-      </div>
-      {/* 錯誤走 role="alert"（隱含 assertive，會打斷）——只有它值得打斷 */}
-      <div role="alert" className="sr-only">
-        {alertAnnouncement}
-      </div>
+      <StreamLiveRegions />
 
       <TopBar />
 
@@ -253,27 +230,5 @@ export function AppShell() {
       {route.section === 'settings' ? <SettingsOverlay /> : null}
     </div>
     </SmallScreenNotice>
-  )
-}
-
-/**
- * 常駐掛載的其中一半（設計規格 §7.2）。
- *
- * **不用 `display:none`**：`SpaceList` 用 `@tanstack/react-virtual`，在
- * `display:none` 的容器裡量到的高度是 0，切回來會重新 measure——畫面閃一下、
- * 捲動位置歸零。改成保留尺寸的絕對定位，並用 React 19 原生的 `inert` 讓看不見
- * 的那一半退出 tab 序與無障礙樹（只靠 `aria-hidden` 擋不住 Tab）。
- */
-function Pane({ active, children }: { active: boolean; children: ReactNode }) {
-  return (
-    <div
-      className={cn(
-        'flex min-h-0 flex-col',
-        active ? 'flex-1' : 'pointer-events-none absolute inset-0 -z-10 opacity-0',
-      )}
-      inert={!active}
-    >
-      {children}
-    </div>
   )
 }

@@ -1,37 +1,8 @@
-import { useEffect, useState } from 'react'
-import {
-  AlertCircleIcon,
-  CopyIcon,
-  Loader2Icon,
-  SendIcon,
-  SparklesIcon,
-  SquareIcon,
-  WandSparklesIcon,
-} from 'lucide-react'
-import { toast } from 'sonner'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
-import { ActionItems } from '@/components/ActionItems'
-import { ConfirmDialog } from '@/components/ConfirmDialog'
-import { Markdown } from '@/components/Markdown'
-import { ProviderSelect } from '@/components/ProviderSelect'
-import { SpaceMessagePreview } from '@/components/SpaceMessagePreview'
-import { api, errorMessage } from '@/lib/api'
-import { cn } from '@/lib/utils'
-import { copyText } from '@/lib/clipboard'
-import { providerLabel, useProviderStore } from '@/store/providers'
+import { useEffect } from 'react'
+import { SummaryOutput } from '@/components/summary/SummaryOutput'
+import { SummaryToolbar } from '@/components/summary/SummaryToolbar'
 import { useSummaryStore } from '@/store/summary'
-import { useDraftStore } from '@/store/draft'
-import { useMentionsStore } from '@/store/mentions'
-import type { Space, SummaryStyleValue } from '@/lib/types'
+import type { Space } from '@/lib/types'
 
 interface SummaryWorkspaceProps {
   space: Space | null
@@ -44,60 +15,16 @@ interface SummaryWorkspaceProps {
   active?: boolean
 }
 
+/**
+ * 摘要工作台。**這個檔只留版面骨架與換 Space 的 reset 契約**（規格 §9.2 給
+ * `DraftReplyWorkspace` 的形狀，這裡照同一套做）：工具列、產出區與推播確認
+ * 各自成檔，自己用細 selector 讀 store（§9.3）。
+ */
 export function SummaryWorkspace({ space, onDraftCreated, active = true }: SummaryWorkspaceProps) {
-  const {
-    styles,
-    style,
-    limit,
-    limitError,
-    streaming,
-    text,
-    meta,
-    error,
-    setStyle,
-    setLimit,
-    start,
-    abort,
-    reset,
-  } = useSummaryStore()
-
-  const providers = useProviderStore((state) => state.providers)
-
-  const [confirmOpen, setConfirmOpen] = useState(false)
-  const [publishing, setPublishing] = useState(false)
-  const [draftingReply, setDraftingReply] = useState(false)
-
-  const selectExternal = useMentionsStore((state) => state.selectExternal)
-  const generateDraft = useDraftStore((state) => state.generate)
-
-  /**
-   * 對這個對話產生回覆草稿。
-   *
-   * 私訊不會出現在 Mention 收件匣（沒人會在私訊裡 @ 你），所以草稿流程本來
-   * 用不到。這裡請後端挑出「對方最後說的那則」並合成一個草稿目標，
-   * 拿到之後就走原本那條草稿串流——不必為私訊另寫一份邏輯。
-   */
-  const handleDraftReply = async () => {
-    if (!space) return
-    setDraftingReply(true)
-    try {
-      const res = await api.createDraftTarget({ space_id: space.id })
-      if (!res.mention) {
-        toast.error('這個對話裡找不到別人發的訊息，沒有東西可以回覆')
-        return
-      }
-      selectExternal(res.mention)
-      void generateDraft(res.mention.id) // 不等它跑完，切過去就看得到串流
-      onDraftCreated?.(res.mention.id)
-    } catch (err) {
-      toast.error(errorMessage(err))
-    } finally {
-      setDraftingReply(false)
-    }
-  }
-
   // store 記著「目前這份摘要是哪個 Space 的」，用它判斷要不要清空
-  const streamedSpaceId = useSummaryStore((state) => state.streamedSpaceId)
+  const streamedSpaceId = useSummaryStore((s) => s.streamedSpaceId)
+  const limitError = useSummaryStore((s) => s.limitError)
+  const reset = useSummaryStore((s) => s.reset)
 
   // 只有**真的換了 Space** 才清空。
   //
@@ -116,268 +43,19 @@ export function SummaryWorkspace({ space, onDraftCreated, active = true }: Summa
   // 切頁籤不該中止已經在燒額度的生成，而且後端要整段跑完才落盤。
   // 要停止請按畫面上的停止鍵。
 
-  const canStart = Boolean(space) && !streaming && !limitError
-
-  const styleItems = Object.fromEntries(styles.map((item) => [item.value, item.label]))
-
-  const handlePublish = async () => {
-    if (!space || !text.trim()) return
-    setPublishing(true)
-    try {
-      await api.publish({ space_id: space.id, text })
-      toast.success(`已以你本人身分推播回「${space.displayName}」`)
-      setConfirmOpen(false)
-    } catch (err) {
-      toast.error(errorMessage(err))
-    } finally {
-      setPublishing(false)
-    }
-  }
-
-  /**
-   * 把目前的抓取則數記成個人預設。
-   *
-   * 失敗只寫 console 不打擾使用者——這是順手記住的便利功能，
-   * 存不進去頂多下次要再改一次，不值得用一個錯誤提示打斷他。
-   */
-  const rememberLimit = async () => {
-    if (limitError || !Number.isInteger(limit)) return
-    try {
-      await api.updatePreferences({ default_limit: limit })
-    } catch (err) {
-      console.warn('抓取則數沒能存成預設：', err)
-    }
-  }
-
-  const handleCopy = async () => {
-    const ok = await copyText(text)
-    if (ok) toast.success('已複製摘要 Markdown')
-    else toast.error('複製失敗，請手動選取內容')
-  }
-
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {/* 工具列：目標 Space、風格、抓取則數、開始摘要 */}
-      <div className="flex shrink-0 flex-wrap items-end gap-3 border-b border-border px-5 py-3">
-        <div className="mr-auto min-w-0">
-          <p className="truncate text-sm font-semibold">
-            {space ? space.displayName : '尚未選擇 Space'}
-          </p>
-          <p className="metric truncate text-xs text-muted-foreground">
-            {space ? space.id : '請從左側清單選一個 Space'}
-          </p>
-        </div>
+      <SummaryToolbar space={space} onDraftCreated={onDraftCreated} />
 
-        <div className="flex flex-col gap-1">
-          <Label htmlFor="summary-style" className="text-xs text-muted-foreground">
-            摘要風格
-          </Label>
-          <Select
-            items={styleItems}
-            value={style}
-            onValueChange={(value) => {
-              // Select 清除選擇時會給 null，那種情況不要動偏好
-              if (!value) return
-              setStyle(value as SummaryStyleValue)
-              // 與抓取則數同理：選了就記住，不必每次重選
-              void api
-                .updatePreferences({ default_style: value })
-                .catch((err) => console.warn('摘要風格沒能存成預設：', err))
-            }}
-          >
-            <SelectTrigger id="summary-style" size="sm" className="w-32">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {styles.map((item) => (
-                <SelectItem key={item.value} value={item.value}>
-                  {item.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-
-        <ProviderSelect id="summary-provider" disabled={streaming} />
-
-        <div className="flex flex-col gap-1">
-          <Label htmlFor="summary-limit" className="text-xs text-muted-foreground">
-            抓取則數（1~1000）
-          </Label>
-          <Input
-            id="summary-limit"
-            type="number"
-            min={1}
-            max={1000}
-            value={Number.isNaN(limit) ? '' : limit}
-            onChange={(event) => setLimit(event.target.value)}
-            // 離開輸入框時把值記成個人預設。以前改了只影響這一次，下次開啟
-            // 又跳回舊值——使用者得每次重打，那不叫「預設」。
-            onBlur={() => void rememberLimit()}
-            className="h-7 w-28"
-            aria-invalid={Boolean(limitError)}
-            aria-describedby="summary-limit-hint"
-          />
-          {/* 「改完會被記住」原本只活在 tooltip 裡。那是這個欄位的**行為**
-              ——使用者不知道的話會以為只影響這一次（規格 §10.3）。 */}
-          <p id="summary-limit-hint" className="text-2xs text-muted-foreground">
-            改完離開欄位就會記住，下次開啟直接用這個值
-          </p>
-        </div>
-
-        {/* 產生回覆草稿放在這裡而不是摘要結果區——私訊的重點常常就是「怎麼回」，
-            不該逼使用者先跑一次摘要才拿得到草稿。選了 Space 就能按。 */}
-        <div className="flex flex-col gap-0.5">
-          <Button
-            variant="outline"
-            onClick={() => void handleDraftReply()}
-            disabled={!space || streaming || draftingReply}
-            aria-describedby="draft-reply-hint"
-          >
-            {draftingReply ? <Loader2Icon className="animate-spin" /> : <WandSparklesIcon />}
-            產生回覆草稿
-          </Button>
-          {/* 這顆按鈕實際做什麼是唯一資訊——「產生回覆草稿」四個字看不出
-              它挑的是「對方最後說的那句」。原本只活在 tooltip 裡（§10.3）。 */}
-          <p id="draft-reply-hint" className="text-2xs text-muted-foreground">
-            針對對方最後說的話
-          </p>
-        </div>
-
-        {streaming ? (
-          <Button variant="outline" onClick={abort}>
-            <SquareIcon />
-            停止串流
-          </Button>
-        ) : (
-          <Button disabled={!canStart} onClick={() => space && void start(space.id)}>
-            <SparklesIcon />
-            {text ? '重新摘要' : '開始摘要'}
-          </Button>
-        )}
-      </div>
-
+      {/* 則數不合法的訊息橫跨整列，所以留在骨架這一層而不是塞進工具列裡
+          ——它是「這個工作台現在不能開始」的狀態，不是某個欄位的裝飾 */}
       {limitError ? (
         <p className="shrink-0 border-b border-destructive/30 bg-destructive/10 px-5 py-1.5 text-xs text-destructive">
           {limitError}
         </p>
       ) : null}
 
-      {/* 輸出區 */}
-      <div className="min-h-0 flex-1 overflow-y-auto p-5">
-        {error ? (
-          <div className="mb-4 flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
-            <AlertCircleIcon className="mt-0.5 size-3.5 shrink-0" />
-            <span className="leading-relaxed">{error}</span>
-          </div>
-        ) : null}
-
-        {/* 訊息預覽。選了 Space 就看得到最近幾則在講什麼，不必先跑一次摘要
-            （也不必為了看一眼就燒 AI 額度）。有摘要時預設收起來讓摘要當主角。 */}
-        {space ? (
-          <div className="mb-4">
-            <SpaceMessagePreview space={space} defaultCollapsed={Boolean(text) || streaming} />
-          </div>
-        ) : null}
-
-        {!text && !streaming && !error ? (
-          <div
-            className={cn(
-              'flex flex-col items-center justify-center gap-3 text-center',
-              space ? 'py-8' : 'h-full',
-            )}
-          >
-            <span className="flex size-12 items-center justify-center rounded-full bg-muted text-signal">
-              <WandSparklesIcon className="size-5" />
-            </span>
-            <div>
-              <p className="text-sm font-medium">
-                {space ? '按「開始摘要」產生一份結構化 Summary' : '選一個 Space，產生一份結構化 Summary'}
-              </p>
-              <p className="mx-auto mt-1 max-w-sm text-xs text-muted-foreground">
-                摘要只屬於你本人，其他 Viewer 看不到。三種風格會產生不同深度的結果：通用、技術細節、只要待辦。
-              </p>
-            </div>
-          </div>
-        ) : null}
-
-        {text || streaming ? (
-          <div className="space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                <span className="rounded border border-signal-line bg-signal-wash px-2 py-0.5 font-medium text-signal">
-                  {styleItems[style] ?? style}
-                </span>
-                {meta ? (
-                  <span className="font-mono">
-                    {meta.space} · 讀取 {meta.message_count} 則
-                    {meta.image_count !== undefined ? ` · 圖片 ${meta.image_count} 張` : ''}
-                  </span>
-                ) : (
-                  <span>正在準備…</span>
-                )}
-                {/* 一律以 meta 回報的供應商為準——伺服器可能因別名解析而用了別的。
-                    「本次實際使用的供應商與模型」這句說明已經是證據欄 model
-                    那一列的可見內容（§5.7），這裡不再掛 tooltip——badge 本身
-                    顯示的就是供應商與模型（§10.3）。 */}
-                {meta?.provider ? (
-                  <span className="rounded border border-line bg-muted px-2 py-0.5 font-medium text-provenance">
-                    {providerLabel(providers, meta.provider)}
-                    {meta.model ? <span className="ml-1 metric">· {meta.model}</span> : null}
-                  </span>
-                ) : null}
-                {streaming ? (
-                  <span className="flex items-center gap-1">
-                    <Loader2Icon className="size-3 animate-spin" />
-                    串流中
-                  </span>
-                ) : null}
-              </div>
-
-              <div className="flex items-center gap-2">
-                <Button size="sm" variant="outline" onClick={() => void handleCopy()} disabled={!text}>
-                  <CopyIcon />
-                  複製 Markdown
-                </Button>
-                <Button
-                  size="sm"
-                  onClick={() => setConfirmOpen(true)}
-                  disabled={!text || streaming || !space}
-                >
-                  <SendIcon />
-                  推播回 Google Chat
-                </Button>
-              </div>
-            </div>
-
-            <Markdown
-              source={text}
-              typing={streaming}
-              active={active}
-              className="rounded-xl border border-border bg-card/60 p-5"
-            />
-
-            {!streaming && text ? <ActionItems markdown={text} /> : null}
-          </div>
-        ) : null}
-      </div>
-
-      <ConfirmDialog
-        open={confirmOpen}
-        onOpenChange={setConfirmOpen}
-        title="推播這份 Summary 回 Google Chat？"
-        description={
-          <>
-            將以<strong className="text-foreground">你本人的身分</strong>（不是機器人）送出到 Space
-            「<strong className="text-foreground">{space?.displayName ?? '—'}</strong>」。
-            送出後無法在 ChatPulse 撤回。
-          </>
-        }
-        preview={text}
-        confirmLabel="確認推播"
-        pending={publishing}
-        onConfirm={() => void handlePublish()}
-      />
+      <SummaryOutput space={space} active={active} />
     </div>
   )
 }

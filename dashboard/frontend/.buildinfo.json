@@ -1,5 +1,5 @@
 {
-  "source_hash": "36bcd6ecaf3d7cf7f1ab234ded515224cc3b4344b0c4c29959da86206055c0b5",
-  "built_at": "2026-09-10T20:17:25+08:00",
+  "source_hash": "ae780f47f0e1ec77dc2b42df187c2acdb73a2271af2157f72fad5acdba733489",
+  "built_at": "2026-09-10T20:39:29+08:00",
   "note": "由 scripts/webapp.py 產生，用來判斷 dist 是否需要重建。"
 }

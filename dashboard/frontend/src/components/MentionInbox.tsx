@@ -1,26 +1,16 @@
 import { useMemo, useRef } from 'react'
-import {
-  AlertCircleIcon,
-  CheckCheckIcon,
-  InboxIcon,
-  Loader2Icon,
-  RefreshCwIcon,
-  SparklesIcon,
-  UndoIcon,
-  XIcon,
-} from 'lucide-react'
+import { AlertCircleIcon, InboxIcon, Loader2Icon, RefreshCwIcon } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
-import { Checkbox } from '@/components/ui/checkbox'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { cn } from '@/lib/utils'
+import { MentionCard } from '@/components/inbox/MentionCard'
+import { MergeBar } from '@/components/inbox/MergeBar'
 import { errorMessage } from '@/lib/api'
-import { relativeTime } from '@/lib/format'
 import { nextListIndex } from '@/lib/listNavigation'
-import { MERGE_BLOCK_LABEL, mergeBlockReason } from '@/lib/merge'
+import { mergeBlockReason } from '@/lib/merge'
 import { hashForMentions } from '@/lib/route'
 import { useRouter } from '@/router/useRouter'
-import { isOutstanding, selectMentionsByState, useMentionsStore } from '@/store/mentions'
+import { selectMentionsByState, useMentionsStore } from '@/store/mentions'
 import { useSpacesStore } from '@/store/spaces'
 import type { MentionState } from '@/lib/types'
 
@@ -172,41 +162,17 @@ export function MentionInbox({ onSelect, onMergedGenerate }: MentionInboxProps) 
         </div>
       ) : null}
 
-      {/* 合併列。只在真的勾了東西時才出現——常駐一條工具列會讓
-          「單則回覆」這個絕大多數的情況每次都要多看一行。 */}
+      {/* 合併列只在真的勾了東西時才出現——常駐一條工具列會讓「單則回覆」
+          這個絕大多數的情況每次都要多看一行 */}
       {merging ? (
-        <div className="shrink-0 space-y-1.5 border-b border-signal-line bg-signal-wash px-3 py-2">
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-medium">已選 {selected.length} 則，一起回成一則</span>
-            <Button
-              size="xs"
-              variant="ghost"
-              className="ml-auto"
-              onClick={() => {
-                clearMerge()
-                syncMergeToUrl()
-              }}
-            >
-              <XIcon />
-              取消
-            </Button>
-          </div>
-          <Button
-            size="xs"
-            className="w-full"
-            disabled={selected.length < 2}
-            onClick={() => onMergedGenerate(mergeIds[0], mergeIds)}
-          >
-            <SparklesIcon />
-            {selected.length < 2
-              ? '再勾一則才需要合併'
-              : `合併產生草稿（${selected.length} 則）`}
-          </Button>
-          {/* 回話只會送到第一則所在的討論串，這件事一定要講在按下去之前 */}
-          <p className="text-2xs leading-relaxed text-muted-foreground">
-            回話會送到「{selected[0]?.space_name}」，送出後這 {selected.length} 則會一起標成已處理。
-          </p>
-        </div>
+        <MergeBar
+          selected={selected}
+          onCancel={() => {
+            clearMerge()
+            syncMergeToUrl()
+          }}
+          onGenerate={() => onMergedGenerate(mergeIds[0], mergeIds)}
+        />
       ) : null}
 
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
@@ -225,108 +191,29 @@ export function MentionInbox({ onSelect, onMergedGenerate }: MentionInboxProps) 
 
         <ul ref={listRef} onKeyDown={onListKeyDown} className="space-y-1.5">
           {visible.map((mention, index) => {
-            const active = selectedId === mention.id
-            const checked = mergeIds.includes(mention.id)
             // 已處理那一頁不提供合併（回過的東西沒有「一起回」可言）
             const blocked =
               tab === 'pending' ? mergeBlockReason(mention, selected, spaces) : 'other-space'
+            const checked = mergeIds.includes(mention.id)
             const selectable = tab === 'pending' && (checked || !blocked)
             return (
               <li key={mention.id}>
-                <div
-                  className={cn(
-                    'rounded-lg border p-2.5 transition-colors',
-                    // 勾選與選中都是 signal 底，靠邊框強弱分辨：勾選用實心 signal，
-                    // 選中用半透明的 signal-line——兩者都換成同一組 token 會讓狀態糊在一起
-                    checked
-                      ? 'border-signal bg-signal-wash'
-                      : active
-                        ? 'border-signal-line bg-signal-wash'
-                        : 'border-border/70 bg-card/50 hover:border-border',
-                    merging && !selectable && 'opacity-45',
-                  )}
-                >
-                  <div className="flex items-start gap-2">
-                    {tab === 'pending' ? (
-                      <Checkbox
-                        checked={checked}
-                        disabled={!selectable}
-                        onCheckedChange={() => {
-                          toggleMerge(mention.id)
-                          syncMergeToUrl()
-                        }}
-                        className="mt-0.5 shrink-0"
-                        aria-label={`選取來自 ${mention.sender_display} 的這則一起回`}
-                        // 不可勾選的原因改成畫面上讀得到的一行（見下方），
-                        // 用 aria-describedby 綁過去。原本它只活在 title 屬性裡，
-                        // 鍵盤與觸控使用者完全拿不到（設計規格 §10.3）。
-                        aria-describedby={!selectable && blocked ? `merge-block-${mention.id}` : undefined}
-                      />
-                    ) : null}
-                    <button
-                      type="button"
-                      // 方向鍵導航的定位點（見 onListKeyDown）。放在這顆按鈕上
-                      // 而不是外層 li：從勾選框按 ↓ 不該跳到下一則
-                      data-mention-index={index}
-                      className="min-w-0 flex-1 text-left"
-                      onClick={() => onSelect(mention.id)}
-                    >
-                      <div className="flex items-baseline justify-between gap-2">
-                        <span className="truncate text-xs font-medium">{mention.space_name}</span>
-                        <span className="shrink-0 text-2xs text-muted-foreground">
-                          {relativeTime(mention.create_time)}
-                        </span>
-                      </div>
-                      <p className="mt-0.5 text-xs text-muted-foreground">
-                        {mention.sender_display} 提到你
-                      </p>
-                      <p className="mt-1 line-clamp-3 text-xs leading-relaxed whitespace-pre-wrap">
-                        {mention.text
-                          ? mention.text
-                          : mention.content_error
-                            ? `（無法取回訊息內容：${mention.content_error}）`
-                            : '（訊息內容取不到）'}
-                      </p>
-                      {/* 不能勾的要說原因。只把它變灰的話，使用者只會覺得壞了。
-                          這行是決定「能不能送」的資訊，字級維持 13px 不縮到 12px。
-
-                          顯示條件從 `merging && !selectable` 放寬成 `!selectable`：
-                          原本只有已經勾了東西時才說原因，但使用者第一次想勾就被擋住
-                          的那一刻，正是最需要知道為什麼的時候。 */}
-                      {!selectable && blocked ? (
-                        <p id={`merge-block-${mention.id}`} className="mt-1 text-xs text-caution">
-                          {MERGE_BLOCK_LABEL[blocked]}
-                        </p>
-                      ) : null}
-                    </button>
-                  </div>
-
-                  <div className="mt-2 flex justify-end">
-                    {/* 判準用 store 的 isOutstanding，不要在這裡另寫一次：
-                        manual（摘要工作台挑的草稿目標）也是待處理，寫成
-                        `=== 'pending'` 會讓它顯示「退回待處理」，而按下去會
-                        把 state 改成 pending、無聲抹掉「自選對話」這個來源標記 */}
-                    {isOutstanding(mention.state) ? (
-                      <Button
-                        size="xs"
-                        variant="ghost"
-                        onClick={() => void handleToggleState(mention.id, 'resolved')}
-                      >
-                        <CheckCheckIcon />
-                        標記已處理
-                      </Button>
-                    ) : (
-                      <Button
-                        size="xs"
-                        variant="ghost"
-                        onClick={() => void handleToggleState(mention.id, 'pending')}
-                      >
-                        <UndoIcon />
-                        退回待處理
-                      </Button>
-                    )}
-                  </div>
-                </div>
+                <MentionCard
+                  mention={mention}
+                  index={index}
+                  active={selectedId === mention.id}
+                  checked={checked}
+                  mergeable={tab === 'pending'}
+                  selectable={selectable}
+                  blocked={blocked}
+                  dimmed={merging && !selectable}
+                  onSelect={() => onSelect(mention.id)}
+                  onToggleMerge={() => {
+                    toggleMerge(mention.id)
+                    syncMergeToUrl()
+                  }}
+                  onToggleState={(next) => void handleToggleState(mention.id, next)}
+                />
               </li>
             )
           })}

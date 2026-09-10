@@ -13,14 +13,14 @@
 | :--- | :--- | :--- | :--- |
 | 規格書本身 | — | `abb5013` | — |
 | P0 設計 token 地基 | 完成 | `bb385d4` | 無。另補了 §3.5 的相容層與 §3.6 的既有 CSS 處置，規格已回填 |
-| P1 hash 路由 | 完成 | `757ad07` | `?merge=` 的 URL 同步未接上（`parseHash` 已支援並有測試，只是收件匣的勾選還沒寫回 URL） |
+| P1 hash 路由 | 完成 | `757ad07` ＋ `796be65` | **落差已補完**：`?merge=` 的 URL 同步接上了（含反向同步；網址刻意不表達「只勾了一則」，`route.test.ts` 有一條守著這個設計決定） |
 | P2 保留掛載 | 完成 | `472f0c7` | 效能量測用「串流中隱藏側內容仍增長」與 API 呼叫計數取代 React DevTools Profiler |
-| P3 設定中心 | 完成 | `7d51444` | `QuickReplySettings` 與 `ReplyDefaultsPage`（收工時 365／312 行）超過 250 目標——兩者渲染同一組 Select 選項，共用元件未抽出；`CodeProjectSettings` 未再拆成清單頁與表單 |
-| P4 證據欄 | 完成 | `e3cbed3` | **驗收條件「全域最大檔 < 250 行」沒有實際跑過就結案了**。現況扣掉認可的 `lib/types.ts` 仍有 12 個檔超標，最大是 `DraftReplyWorkspace.tsx` 477 行（改版前 656）。功能不受影響，但規格說要拆而沒拆 |
+| P3 設定中心 | 完成 | `7d51444` ＋ `14579bf` ＋ `08c0df5` | **落差已補完**：共用下拉抽成 `settings/replyControls.tsx`（365→200、312→139）；`CodeProjectSettings.tsx` 檔名已消失，內容進 `CodeProjectsPage.tsx`（177）與 `CodeProjectForm.tsx`（141），順手修掉兩層各畫一個「參考專案」h2 的缺陷 |
+| P4 證據欄 | 完成 | `e3cbed3` ＋ 後續拆檔 | 行數門檻**已達成**，但門檻本身在 2026-09-10 修訂過（§9.1）：原文的「全域最大檔 < 250」只在元件上站得住，改成「**元件與 hook < 250，`store/` 與 `lib/` 另計**」。元件側逐一拆完：`DraftReplyWorkspace` 478→86（`fa268d8`）、`App.tsx` 428→`AppShell`／`TopBar`／`useBootstrap`（`748f94a`）、`SummaryWorkspace` 383→61 ＋ `summary/` 三檔、`MentionInbox` 337→224 ＋ `inbox/` 兩檔、`SpaceMessagePreview` 287→175 ＋ `preview/` 兩檔、`AppShell` 279→234（抽出 `Pane`／`StreamLiveRegions`／`common/SkipLink`）。實測最大元件 243 |
 | P5 色彩與排版退役 | 完成 | `02ab318` | 無。守門測試 `lib/tokens.test.ts` 已上，含三條正對照 |
-| P7 響應式 | 完成 | `323d691` | 768–1024 沒做成「主從切換」，實測兩欄並存可用、無功能損失 |
-| 無障礙與文案 | 完成 | `e7fecdd` | §10.3 的 `title` 處置做了一半：29 → 12，剩下的由守門測試鎖住不得增加 |
-| P6 命令面板與鍵盤 | 完成 | `164ddc1` | 虛擬清單的 roving tabindex 未做（436 筆的鍵盤導航仍是逐個 Tab）；`g s`／`g m` 兩鍵序列未做 |
+| P7 響應式 | 完成 | `323d691` ＋ `89672fe` | **落差已補完**：768–1024 的主從切換做了，判準直接來自網址（`#/summary` 是清單、`#/summary/:key` 是工作區），收起來的那一半用 §7.2 的手法而不是 `display:none`——後者實測會讓虛擬清單的 `scrollTop` 從 0 跳到 1296 |
+| 無障礙與文案 | 完成 | `e7fecdd` ＋ `26b495c` ＋ `dbfdc11` | **落差已補完**：`title=` 29 → 2（只剩兩處 ConfirmDialog 的 title **prop**，不是 DOM 屬性）；§10.6 的串流宣告三層已做，完成宣告也已改成告知真的存在的快捷鍵（⌘⇧C） |
+| P6 命令面板與鍵盤 | 完成 | `164ddc1` ＋ `880e4ea` ＋ `b9e55ce` | **落差已補完**：roving tabindex 做了（`880e4ea`）；§11.1 那張表的十個缺鍵也補完了（`b9e55ce`）——`g s`／`g m`／`g ,`／`g h` 兩鍵序列、收件匣清單的 ↑↓、⌘Enter、⌘.、⌘⇧C、`[`／`]`、`?` 說明面板。說明表與解析器之間有漂移守衛 |
 
 ### 收工數字（只算 `.tsx`，排除守門測試自己的正對照樣本）
 
@@ -28,20 +28,33 @@
 | :--- | ---: | ---: |
 | 繞過 token 的具名色 | 107 | **0** |
 | 任意像素字級 | 118 | **0** |
-| `title=` 屬性 | 29 | **12**（守門測試鎖住） |
+| `title=` 屬性 | 29 | **2**（兩處 ConfirmDialog 的 title **prop**，不是 DOM 屬性；守門測試鎖住） |
 | `.metric`（tabular-nums） | 0 | **29** |
 | `role=` | 2 | **8** |
 | `sr-only` | 2 | **8** |
-| 前端測試 | 159 | **239** |
-| 最大的元件檔 | 913（`ReplySettings.tsx`） | **477**（`DraftReplyWorkspace.tsx`） |
+| 前端測試 | 159 | **517**（node 純函式 ＋ jsdom 元件兩個 project） |
+| 瀏覽器 E2E | 0 | **61**（`tests/e2e/test_ui_redesign.cjs`，真 Chromium） |
+| 最大的元件檔 | 913（`ReplySettings.tsx`） | **243**（`SpaceList.tsx`） |
 
-### 尚未做的（依價值排序）
+> 上表的「改版後」數字更新至 2026-09-10 收尾（第四輪）。`title=`、測試數與
+> 最大元件檔三列在收工當下分別是 12／239／477，後面三輪逐一補完。
 
-1. **虛擬清單的 roving tabindex**（§10.5）。436 筆目前仍是逐個 Tab，鍵盤使用者要走很久。⌘K 命令面板已經提供了替代路徑，所以不是死路，但這條該補。
-2. **`?merge=` 的 URL 同步**。合併勾選還沒寫回網址，所以「勾了兩則」的狀態不能貼連結分享。
-3. **`QuickReplySettings` 與 `ReplyDefaultsPage` 的共用元件**（365／312 行）。兩邊渲染同一組 Select 選項，改一邊忘了改另一邊會不一致。同一則帳還包含 P4 沒做完的檔案大小門檻——詳見 `docs/design/HANDOFF.md` 未完成工項 3b。
-4. **元件層測試**（§15.4 的四條）。目前 239 項全是純函式，元件行為靠瀏覽器實測，沒有自動化回歸。
-5. **`code_terms` 手動指定檢索關鍵字**（§1.4 已說明為何刻意不做）。
+### 尚未做的（2026-09-10 全部補完）
+
+原本這一段列了五項。**五項都做完了**，另外還補了改版收工時沒列進來的三塊：
+
+| 原本列的 | 現況 |
+| :--- | :--- |
+| 1. 虛擬清單的 roving tabindex（§10.5） | 完成 `880e4ea` |
+| 2. `?merge=` 的 URL 同步 | 完成 `796be65` |
+| 3. `QuickReplySettings` 與 `ReplyDefaultsPage` 的共用元件 | 完成 `14579bf`；同一則帳裡的檔案大小門檻見 §9.1 的 2026-09-10 修訂 |
+| 4. 元件層測試（§15.4 的四條） | 完成 `64d6733`／`4db3303`，並在後續每一項都跟著補 |
+| 5. `code_terms` 手動指定檢索關鍵字 | 完成 `ff601f3` |
+
+另外補完的三塊：**§10.6 串流的螢幕閱讀器宣告**（`dbfdc11`）、**§11.1 快捷鍵表的
+十個缺鍵**（`b9e55ce`）、**§12 的 768–1024 主從切換**（`89672fe`）。
+
+規格現在沒有已知的未實作項。往後的落差請寫回上面那張進度表，不要新開清單。
 
 **驗證方式的一則教訓**（值得寫進 §16.3）：用瀏覽器探針量「某件事發生了幾次」時，
 **「0 次」必須有正對照才可信**。實測時 `fetch` 攔截器一度回報「切頁籤 0 次 API 呼叫」，
@@ -867,7 +880,28 @@ export function toEvidence(input: {
 
 ### 9.1 目標
 
-**最大檔 < 250 行**（唯一例外是 `lib/types.ts`，541 行純型別、鏡射後端契約，肥大屬正常）。兩個大檔的去向不同，措辭要分清楚：
+**元件與 hook 檔 < 250 行**（`.tsx` 與 `hooks/`）。`store/` 與 `lib/` 另計，理由見下方。
+
+> **2026-09-10 修訂**：原文寫的是「最大檔 < 250 行」，唯一例外是 `lib/types.ts`。
+> 實作完成後盤下來，那條門檻只在**元件**上站得住，所以改成分開計算。
+>
+> 這條門檻當初的理由寫得很清楚：**「兩個 913／650 行的元件難維護」**。那是元件
+> 的問題——一個檔同時管版面、狀態、副作用與四五個子區塊，改任何一處都要先讀完
+> 整份。`store/` 與 `lib/` 不是那個形狀：zustand store 是一組扁平的 action，
+> `lib/api.ts` 是一張端點對照表，`lib/evidence.ts` 是一串純函式。把它們拆成
+> 「上半部／下半部」換到的只是「每個檔都在 250 行以下」這個數字，付出的是多一層
+> import 間接與「這個 action 在哪一半」的認知成本——那不是同一個問題的解法。
+>
+> 所以規格改成：**元件與 hook 一律 < 250**（實作後全部達成，最大 243 行的
+> `SpaceList.tsx`）；`store/` 與 `lib/` 不設行數門檻，但**新增第二個責任時要拆**
+> （判準是責任數量，不是行數）。`lib/types.ts` 因此不再需要當成「例外」——它是
+> 純型別、鏡射後端契約，本來就在另計的範圍裡。
+>
+> 目前 `store/` 與 `lib/` 超過 250 行的五個檔（`store/replySettings.ts` 413、
+> `store/draft.ts` 370、`lib/evidence.ts` 360、`lib/api.ts` 321、
+> `store/mentions.ts` 251）依此判準保持原狀。
+
+兩個大檔的去向不同，措辭要分清楚：
 
 - `src/components/ReplySettings.tsx`（913 行）→ **檔名消失**，內容分散到 `components/draft/QuickReplySettings.tsx` 與 `components/settings/` 底下數個檔。
 - `src/components/DraftReplyWorkspace.tsx`（650 行）→ **檔名保留但搬家並瘦身**：移到 `src/components/draft/DraftReplyWorkspace.tsx`，只留下版面骨架與 reset 契約（約 90 行），其餘拆成同目錄的兄弟檔。
@@ -881,6 +915,9 @@ src/app/
   TopBar.tsx                PulseMark、工作台 nav、麵包屑、⌘K、證據鈕、齒輪、主題、登出  ~120
   SmallScreenNotice.tsx     <768 說明頁 ＋ localStorage 逃生門                    ~70
   PulseMark.tsx             脈搏線 inline SVG（頂列與登入畫面共用）               ~20
+  Pane.tsx                  常駐掛載的其中一半（§7.2 的 inert 手法）              ~25
+  StreamLiveRegions.tsx     §10.6 的兩個 sr-only live region                     ~30
+  MasterDetailBack.tsx      768–1024 主從切換的返回麵包屑（§12）                  ~35
 
 src/router/
   useRouter.tsx             Context ＋ hashchange 監聽 ＋ navigate/replace         ~110
@@ -921,8 +958,22 @@ src/components/settings/
 src/components/common/
   EmptyState.tsx / ErrorState.tsx / LoadingSkeleton.tsx / SkipLink.tsx / InlineDetails.tsx
 
+src/components/summary/       ← 2026-09-10 新增（拆 SummaryWorkspace 383 行）
+  SummaryToolbar.tsx        目標 Space／風格／供應商／則數／產生草稿／開始停止    ~195
+  SummaryOutput.tsx         訊息預覽、空狀態、來源標記、複製／推播、Markdown      ~155
+  PublishConfirm.tsx        推播回 Google Chat 的二次確認（**不可撤回**）          ~65
+
+src/components/inbox/        ← 2026-09-10 新增（拆 MentionInbox 337 行）
+  MentionCard.tsx           一則 Mention（勾選、內文、不可合併的原因、狀態鈕）    ~130
+  MergeBar.tsx              合併列（**回話只送到第一則所在的討論串**）             ~40
+
+src/components/preview/      ← 2026-09-10 新增（拆 SpaceMessagePreview 287 行）
+  ThreadRow.tsx             收合起來的一整串                                     ~95
+  MessageRow.tsx            一則訊息（`data-message-name` 是去重的量測點）        ~35
+
 src/components/
   CommandPalette.tsx        ⌘K 面板                                              ~220
+  ShortcutHelp.tsx          `?` 快捷鍵說明覆蓋層（2026-09-10 新增）               ~120
 
 src/lib/
   evidence.ts               SseMeta ＋ polish → EvidenceBundle（純函式）           ~240
@@ -930,7 +981,8 @@ src/lib/
   listNavigation.ts         按鍵 → 下一個 index（純函式）                          ~50
   streamAnnouncements.ts    狀態轉換 → 宣告字串（純函式）                          ~60
   commands.ts               命令清單與過濾（純函式）                               ~150
-  hotkeys.ts                快捷鍵比對與 isTypingTarget（純函式）                  ~120
+  hotkeys.ts                快捷鍵比對與 isTypingTarget（純函式）                  ~135
+  shortcutHelp.ts           `?` 說明表（與 hotkeys.ts 之間有漂移守衛）             ~135
   mergeCopy.ts              MERGE_BLOCK_LABEL 從 merge.ts 搬出來                   ~20
 
 src/hooks/
@@ -1220,7 +1272,16 @@ src/store/
 - [ ] 生成中證據欄第一秒就在，沒有淡入或 stagger
 - [ ] `degraded > 0` 時送出鈕上方有提示，但**不擋送出**
 - [ ] **摘要工作台也有證據欄**（來源 Space／讀取則數／圖片／風格／模型），走同一個 `toEvidence({ origin: 'summary' })`
-- [ ] **全域最大檔 < 250 行**：`find /Users/cheng/google-chat-bot/dashboard/frontend/src -name '*.tsx' -o -name '*.ts' | xargs wc -l | sort -rn | head -5`（`lib/types.ts` 541 行是純型別，屬合理例外，其餘不得超標）
+- [x] **元件與 hook 檔 < 250 行**（門檻於 2026-09-10 修訂，理由見 §9.1）：
+  ```bash
+  find /Users/cheng/google-chat-bot/dashboard/frontend/src -name '*.tsx' \
+    -not -name '*.test.tsx' | xargs wc -l | sort -rn | head -5
+  find /Users/cheng/google-chat-bot/dashboard/frontend/src/hooks -name '*.ts' \
+    -not -name '*.test.ts' | xargs wc -l | sort -rn | head -3
+  ```
+  2026-09-10 實測最大是 `components/SpaceList.tsx` 243 與
+  `hooks/useGlobalHotkeys.ts` 249，全部達成。
+  `store/` 與 `lib/` 另計（§9.1 有理由與現況清單）
 - [ ] 新增 `lib/evidence.test.ts`，四種 status 全覆蓋
 
 ### P5 — 色彩與排版退役

@@ -69,7 +69,7 @@ const TITLE_BUDGET: Record<string, number> = {
   // 它渲染成 DialogTitle 的文字節點，DOM 上不會出現 title 屬性——
   // DraftReplyWorkspace.test.tsx 與 EvidenceList.test.tsx 各有一條
   // 「渲染結果裡 [title] 選得到 0 個」在守著這件事。
-  'components/SummaryWorkspace.tsx': 1,
+  'components/summary/PublishConfirm.tsx': 1,
   'components/draft/SendReplyConfirm.tsx': 1,
 }
 
