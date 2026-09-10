@@ -23,6 +23,7 @@ import type {
   StylesResponse,
   SummariesResponse,
   SummaryStyleValue,
+  HealthResponse,
   UsageResponse,
 } from './types'
 
@@ -295,6 +296,11 @@ export const api = {
 
   // ── 維運 ────────────────────────────────────────────────
   usage: (days = 14) => request<UsageResponse>(`/usage${query({ days })}`),
+  /**
+   * 服務健康狀態。**未登入也能打**——「後端起來了嗎、AI 供應商設好了嗎」
+   * 正是還沒登入時最需要問的事，所以診斷頁排在登入 gate 之前。
+   */
+  health: () => request<HealthResponse>('/health', {}, { skipAuthRedirect: true }),
 }
 
 /** 串流端點的絕對路徑，交給 lib/sse.ts 使用。 */

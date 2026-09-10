@@ -102,7 +102,7 @@ export function DraftReplyWorkspace({ mention }: DraftReplyWorkspaceProps) {
 
   // 參考專案（ADR-0006）。與 Reference Space 一樣預設不勾。
   const codeProjects = useCodeProjectStore((s) => s.projects)
-  const loadCodeProjects = useCodeProjectStore((s) => s.load)
+  const loadCodeProjects = useCodeProjectStore((s) => s.ensureLoaded)
   useEffect(() => {
     void loadCodeProjects()
   }, [loadCodeProjects])

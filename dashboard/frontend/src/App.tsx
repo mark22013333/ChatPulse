@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, type ReactNode } from 'react'
 import { InboxIcon, Loader2Icon, LogOutIcon, SparklesIcon } from 'lucide-react'
 import { PulseMark } from '@/app/PulseMark'
 import { Button } from '@/components/ui/button'
 import { CodeProjectSettings } from '@/components/CodeProjectSettings'
+import { DiagnosticsPage } from '@/components/settings/DiagnosticsPage'
 import { CollectorPanel } from '@/components/CollectorPanel'
 import { DraftReplyWorkspace } from '@/components/DraftReplyWorkspace'
 import { LoginScreen } from '@/components/LoginScreen'
@@ -12,7 +13,10 @@ import { SummaryHistory } from '@/components/SummaryHistory'
 import { SummaryWorkspace } from '@/components/SummaryWorkspace'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { UsagePanel } from '@/components/UsagePanel'
+import { hashForMentions, hashForSummary } from '@/lib/route'
 import { cn } from '@/lib/utils'
+import { useRouter } from '@/router/useRouter'
+import { useRouteSync } from '@/router/useRouteSync'
 import { useAuthStore } from '@/store/auth'
 import { useMentionsStore } from '@/store/mentions'
 import { useProviderStore } from '@/store/providers'
@@ -21,8 +25,6 @@ import { findSpace, useSpacesStore } from '@/store/spaces'
 import { useSummaryStore } from '@/store/summary'
 import { useDraftStore } from '@/store/draft'
 
-type View = 'summary' | 'mentions'
-
 export default function App() {
   const booting = useAuthStore((state) => state.booting)
   const status = useAuthStore((state) => state.status)
@@ -30,7 +32,10 @@ export default function App() {
   const init = useAuthStore((state) => state.init)
   const logout = useAuthStore((state) => state.logout)
 
-  const [view, setView] = useState<View>('summary')
+  const { route, navigate } = useRouter()
+  // URL 是「在看哪一個 Space／哪一則 Mention」的唯一真相（設計規格 §6.6）
+  useRouteSync()
+  const view = route.section === 'mentions' ? 'mentions' : 'summary'
 
   // 讓頁籤能顯示「另一邊還在生成」。訂閱的是布林值，只有開始／結束時才變，
   // 不會每個 chunk 都讓整個 App 重繪。
@@ -43,7 +48,6 @@ export default function App() {
 
   const mentions = useMentionsStore((state) => state.items)
   const selectedMentionId = useMentionsStore((state) => state.selectedId)
-  const selectMention = useMentionsStore((state) => state.select)
   const pendingCount = useMentionsStore((state) => state.counts.pending)
   const seedCounts = useMentionsStore((state) => state.seedCounts)
   // 從摘要工作台建立的草稿目標不在收件匣清單裡（後端刻意過濾），優先用它
@@ -127,6 +131,12 @@ export default function App() {
     )
   }
 
+  // 診斷頁刻意排在登入 gate **之前**：「後端起來了嗎、AI 供應商設好了嗎」
+  // 正是還沒登入時最需要問的事（設計規格 §6.5）
+  if (route.section === 'settings' && route.settingsTab === 'diagnostics') {
+    return <DiagnosticsPage />
+  }
+
   if (!authenticated) return <LoginScreen />
 
   return (
@@ -143,14 +153,14 @@ export default function App() {
         <nav className="ml-2 flex items-center gap-1 rounded-lg bg-muted p-0.5">
           <ViewTab
             active={view === 'summary'}
-            onClick={() => setView('summary')}
+            onClick={() => navigate(hashForSummary(selectedSpaceId))}
             icon={<SparklesIcon className="size-3.5" />}
             label="摘要工作台"
             busy={summaryStreaming}
           />
           <ViewTab
             active={view === 'mentions'}
-            onClick={() => setView('mentions')}
+            onClick={() => navigate(hashForMentions(selectedMentionId))}
             icon={<InboxIcon className="size-3.5" />}
             label="Mention 收件匣"
             badge={pendingCount}
@@ -179,9 +189,9 @@ export default function App() {
             <SpacesRail />
           ) : (
             <MentionInbox
-              onSelect={(id) => selectMention(id)}
+              onSelect={(id) => navigate(hashForMentions(id))}
               onMergedGenerate={(primaryId, mergeIds) => {
-                selectMention(primaryId)
+                navigate(hashForMentions(primaryId))
                 void useDraftStore.getState().generate(primaryId, mergeIds)
               }}
             />
@@ -192,7 +202,9 @@ export default function App() {
           {view === 'summary' ? (
             <SummaryWorkspace
               space={selectedSpace}
-              onDraftCreated={() => setView('mentions')}
+              // selectExternal 已經把 selectedId 設好了，useRouteSync 的去重
+              // 會跳過 select()，external 才不會被清掉（見 useRouteSync 註解）
+              onDraftCreated={(mentionId) => navigate(hashForMentions(mentionId))}
             />
           ) : (
             <DraftReplyWorkspace mention={selectedMention} />

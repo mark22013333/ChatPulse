@@ -539,3 +539,22 @@ export interface SseError {
 }
 
 export type SseEvent = SseMeta | SseChunk | SseDone | SseError
+
+/**
+ * `GET /api/v1/health` 的回應（`dashboard/api/server.py` 的 `health`）。
+ *
+ * 這支端點不需要登入——診斷頁排在登入 gate 之前，因為「後端起來了嗎、
+ * AI 供應商設好了嗎」正是還沒登入時最需要問的事。
+ */
+export interface HealthResponse {
+  status: string
+  /** SQLite 的 journal mode，正常是 `wal` */
+  db: string
+  ai_provider_default: string
+  ai_provider_active: string
+  gemini_configured: boolean
+  collector_running: boolean
+  /** 採集器實作（ADR-0004 目前是 `polling`） */
+  collector_implementation: string
+  viewer_count: number
+}

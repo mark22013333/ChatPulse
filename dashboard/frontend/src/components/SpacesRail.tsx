@@ -14,6 +14,8 @@ import {
 import { SpaceList } from '@/components/SpaceList'
 import { relativeTime } from '@/lib/format'
 import { onEnter } from '@/lib/keyboard'
+import { hashForSummary } from '@/lib/route'
+import { useRouter } from '@/router/useRouter'
 import { filterSpaces, useSpacesStore } from '@/store/spaces'
 import type { Space } from '@/lib/types'
 
@@ -29,9 +31,12 @@ export function SpacesRail() {
   const search = useSpacesStore((state) => state.search)
   const selectedId = useSpacesStore((state) => state.selectedId)
   const setSearch = useSpacesStore((state) => state.setSearch)
-  const select = useSpacesStore((state) => state.select)
   const load = useSpacesStore((state) => state.load)
   const rename = useSpacesStore((state) => state.rename)
+
+  // 點清單走 navigate 而不是直接 select：這樣「點擊」與「貼網址」走同一條
+  // 路徑，只有一種行為要維護（設計規格 §6.6）
+  const { navigate } = useRouter()
 
   // 正在改名的空間；null＝對話框關著
   const [renaming, setRenaming] = useState<Space | null>(null)
@@ -96,7 +101,7 @@ export function SpacesRail() {
         spaces={visible}
         loading={loading && items.length === 0}
         selectedId={selectedId}
-        onSelect={(space) => select(space.id)}
+        onSelect={(space) => navigate(hashForSummary(space.id))}
         onRename={openRename}
       />
 

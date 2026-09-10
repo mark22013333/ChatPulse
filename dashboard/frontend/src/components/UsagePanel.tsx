@@ -1,39 +1,26 @@
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import { GaugeIcon, Loader2Icon } from 'lucide-react'
-import { api } from '@/lib/api'
 import { formatNumber } from '@/lib/format'
-import type { UsageRow } from '@/lib/types'
+import { totalTokens, useUsageStore } from '@/store/usage'
 
-/** 每日 Token 用量（GET /api/v1/usage）。 */
+/** 每日 Token 用量（GET /api/v1/usage）。天數住在 store，設定頁改得動。 */
 export function UsagePanel() {
-  const [rows, setRows] = useState<UsageRow[]>([])
-  const [loading, setLoading] = useState(true)
+  const rows = useUsageStore((s) => s.rows)
+  const days = useUsageStore((s) => s.days)
+  const loading = useUsageStore((s) => s.loading)
+  const ensureLoaded = useUsageStore((s) => s.ensureLoaded)
 
   useEffect(() => {
-    let cancelled = false
-    void api
-      .usage(14)
-      .then((data) => {
-        if (!cancelled) setRows(data.usage ?? [])
-      })
-      .catch(() => {
-        if (!cancelled) setRows([])
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
+    void ensureLoaded()
+  }, [ensureLoaded])
 
-  const total = rows.reduce((sum, row) => sum + (row.total_tokens ?? 0), 0)
+  const total = totalTokens(rows)
 
   return (
     <section className="shrink-0 border-t border-border px-3 py-2.5">
       <div className="mb-2 flex items-center gap-2">
         <GaugeIcon className="size-3.5 text-muted-foreground" />
-        <h3 className="text-xs font-semibold">Token 用量（近 14 天）</h3>
+        <h3 className="text-xs font-semibold">Token 用量（近 {days} 天）</h3>
         {loading ? <Loader2Icon className="size-3 animate-spin text-muted-foreground" /> : null}
         <span className="ml-auto font-mono text-[10px] text-muted-foreground">
           {formatNumber(total)}

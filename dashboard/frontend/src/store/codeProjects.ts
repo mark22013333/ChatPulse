@@ -49,8 +49,17 @@ interface CodeProjectState {
   loading: boolean
   saving: boolean
   error: string | null
+  /** `load()` 是否已經成功跑過一次。 */
+  loaded: boolean
 
   load: () => Promise<void>
+  /**
+   * 沒載入過才載入，重複呼叫是安全的。
+   *
+   * 在此之前 `load()` 完全沒有去重，而它有兩個呼叫端（草稿工作區與參考專案
+   * 設定），切一次頁籤就多打一次 API。要強制重新載入請直接呼叫 `load()`。
+   */
+  ensureLoaded: () => Promise<void>
   create: (draft: ProjectDraft) => Promise<CodeProject | null>
   update: (id: number, draft: ProjectDraft) => Promise<CodeProject | null>
   remove: (id: number) => Promise<boolean>
@@ -70,11 +79,12 @@ function cleanBranches(
   return out
 }
 
-export const useCodeProjectStore = create<CodeProjectState>((set) => ({
+export const useCodeProjectStore = create<CodeProjectState>((set, get) => ({
   projects: [],
   loading: false,
   saving: false,
   error: null,
+  loaded: false,
 
   clearError: () => set({ error: null }),
 
@@ -82,12 +92,18 @@ export const useCodeProjectStore = create<CodeProjectState>((set) => ({
     set({ loading: true, error: null })
     try {
       const res = await api.codeProjects()
-      set({ projects: res.projects })
+      set({ projects: res.projects, loaded: true })
     } catch (err) {
       set({ error: errorMessage(err) })
     } finally {
       set({ loading: false })
     }
+  },
+
+  ensureLoaded: async () => {
+    const { loaded, loading } = get()
+    if (loaded || loading) return
+    await get().load()
   },
 
   create: async (draft) => {

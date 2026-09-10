@@ -28,14 +28,24 @@ import type { CodeEnvironment, CodeProject } from '@/lib/types'
  * 講清楚，而且驗證結果（分支還在不在）直接顯示，不要等到產草稿時才發現。
  */
 export function CodeProjectSettings() {
-  const { projects, loading, saving, error, load, create, update, remove, verify, clearError } =
-    useCodeProjectStore()
+  const {
+    projects,
+    loading,
+    saving,
+    error,
+    ensureLoaded,
+    create,
+    update,
+    remove,
+    verify,
+    clearError,
+  } = useCodeProjectStore()
   const [draft, setDraft] = useState<ProjectDraft>(emptyDraft)
   const [editingId, setEditingId] = useState<number | null>(null)
 
   useEffect(() => {
-    void load()
-  }, [load])
+    void ensureLoaded()
+  }, [ensureLoaded])
 
   const resetForm = () => {
     setDraft(emptyDraft())

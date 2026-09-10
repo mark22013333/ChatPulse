@@ -35,8 +35,8 @@ import type { Space, SummaryStyleValue } from '@/lib/types'
 
 interface SummaryWorkspaceProps {
   space: Space | null
-  /** 草稿目標建立好、已開始生成時呼叫，由外層切到草稿工作區 */
-  onDraftCreated?: () => void
+  /** 草稿目標建立好、已開始生成時呼叫，由外層導航到草稿工作區 */
+  onDraftCreated?: (mentionId: number) => void
 }
 
 export function SummaryWorkspace({ space, onDraftCreated }: SummaryWorkspaceProps) {
@@ -83,7 +83,7 @@ export function SummaryWorkspace({ space, onDraftCreated }: SummaryWorkspaceProp
       }
       selectExternal(res.mention)
       void generateDraft(res.mention.id) // 不等它跑完，切過去就看得到串流
-      onDraftCreated?.()
+      onDraftCreated?.(res.mention.id)
     } catch (err) {
       toast.error(errorMessage(err))
     } finally {
