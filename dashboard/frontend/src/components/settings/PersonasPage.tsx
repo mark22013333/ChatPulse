@@ -190,7 +190,14 @@ export function PersonasPage() {
               className="space-y-1 rounded border border-destructive/40 bg-destructive/10 p-2"
             >
               <p className="text-2xs font-medium text-destructive">匯入失敗</p>
-              <p className="text-2xs leading-relaxed text-foreground">{importError}</p>
+              {/* `break-words` 是必要的，不是保險。指路訊息會帶一整條 raw
+                  網址（沒有空白可斷），2026-09-11 在 768px（app 支援的最窄
+                  寬度）實測：同樣 class 但不加它，單獨一條網址 scrollWidth
+                  403 vs clientWidth 351——溢出 52px，而 app 外框是
+                  `overflow-clip`，溢出的部分會被**安靜地裁掉**、連捲軸都沒有。
+                  （量它要量段落自己的 scrollWidth：文字溢出不會改變元素的
+                  bounding box，量 getBoundingClientRect 永遠測不到。） */}
+              <p className="text-2xs leading-relaxed break-words text-foreground">{importError}</p>
             </div>
           ) : null}
 
@@ -199,7 +206,7 @@ export function PersonasPage() {
             // 不該用打斷式的播報（role="alert" 隱含 assertive）。
             <div role="status" className="space-y-1 rounded border border-caution-line bg-caution/10 p-2">
               <p className="text-2xs font-medium text-caution">匯入成功，但請確認一下</p>
-              <p className="text-2xs leading-relaxed text-foreground">{importNotice}</p>
+              <p className="text-2xs leading-relaxed break-words text-foreground">{importNotice}</p>
             </div>
           ) : null}
 

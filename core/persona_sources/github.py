@@ -70,6 +70,11 @@ _CANDIDATE_PATHS = (
     "{slug}/SKILL.md",
 )
 
+#: 根目錄的主檔名。**這些刻意不算 persona**（理由見 `_CANDIDATE_PATHS`
+#: 上方的註解），列在這裡只為了在「找不到指定的 persona」時能告訴使用者
+#: 「這個 repo 是把檔案放根目錄的形態，改用網址模式」——是指路，不是放寬比對。
+_ROOT_CANDIDATES: Tuple[str, ...] = ("SKILL.md", "PERSONA.md")
+
 #: 列舉 persona 時用的路徑比對。與 `_CANDIDATE_PATHS` 對應，
 #: 但**要求 slug 那一層存在**（`[^/]+`），所以根目錄的 SKILL.md 不會命中。
 _LISTING_RE = re.compile(
@@ -135,6 +140,27 @@ class GitHubPersonaSource(PersonaSource):
 
     # ---------------------------------------------------------------- 列舉
 
+    def _tree_blobs(self, owner: str, repo: str, sha: str) -> Tuple[List[Dict[str, Any]], bool]:
+        """整棵樹的 blob 清單 ＋ 「這棵樹有沒有被截斷」。
+
+        抽出來是因為**兩個地方要用**：列舉 persona，以及「找不到指定的
+        persona 時告訴使用者這個 repo 其實有哪些」。後者已經解過 commit
+        SHA 了，共用這個函式可以不必再解一次（未認證的 GitHub API
+        每小時只有 60 次）。
+
+        截斷旗標要一路帶出去：大型 repo 的樹會被截斷，而「這個 repo 有 N 個
+        persona」這種斷言在截斷的樹上是錯的（見 `_missing_persona_error`）。
+        """
+        tree = _api_json(f"{_API}/repos/{owner}/{repo}/git/trees/{sha}?recursive=1")
+        if not isinstance(tree, dict):
+            raise PersonaSourceError("GitHub trees API 回應格式非預期")
+        blobs = [
+            entry
+            for entry in (tree.get("tree") or [])
+            if isinstance(entry, dict) and entry.get("type") == "blob"
+        ]
+        return blobs, bool(tree.get("truncated"))
+
     def list_personas(self, *, repository: str, ref: Optional[str] = None, **_: Any) -> List[Dict[str, Any]]:
         """列出這個 repo 有哪些 persona。
 
@@ -143,18 +169,10 @@ class GitHubPersonaSource(PersonaSource):
         """
         owner, repo = _validate_repository(repository)
         sha, resolved_ref = self._resolve_commit(owner, repo, _validate_ref(ref))
-
-        tree = _api_json(f"{_API}/repos/{owner}/{repo}/git/trees/{sha}?recursive=1")
-        if not isinstance(tree, dict):
-            raise PersonaSourceError("GitHub trees API 回應格式非預期")
-        if tree.get("truncated"):
-            # 大型 repo 的樹會被截斷。照實說，不要讓使用者以為清單是完整的。
-            pass
+        blobs, _truncated = self._tree_blobs(owner, repo, sha)
 
         seen: Dict[str, Dict[str, Any]] = {}
-        for entry in tree.get("tree") or []:
-            if not isinstance(entry, dict) or entry.get("type") != "blob":
-                continue
+        for entry in blobs:
             path = str(entry.get("path") or "")
             match = _LISTING_RE.match(path)
             if not match:
@@ -253,9 +271,88 @@ class GitHubPersonaSource(PersonaSource):
                 extra={"path": path},
             )
 
-        raise PersonaSourceError(
+        raise self._missing_persona_error(owner, repo, sha, slug, attempted)
+
+    def _missing_persona_error(
+        self,
+        owner: str,
+        repo: str,
+        sha: str,
+        slug: str,
+        attempted: List[str],
+    ) -> PersonaSourceError:
+        """五條候選路徑都 404 時的錯誤——**要指路，不只是報告失敗**。
+
+        原本的訊息只列了試過的五條路徑。那對「打錯 slug」有幫助，但對真正
+        最常見的情況完全沒幫助：**生態裡的多數 repo 是「一個 repo 一個
+        persona、SKILL.md 放在根目錄」**（2026-09-11 實測 zeng-shiqiang、
+        kaishengwang-perspective、zhuoshu-perspective… 五個都是這種），
+        而那種形態在 Repository 模式下**永遠**找不到——根目錄不算 persona
+        是刻意的（見 `_LISTING_RE`）。使用者對著五條路徑看不出「該換模式」。
+
+        所以這裡多花一次 trees 呼叫（只在失敗路徑，且共用已解出的 SHA）
+        把話講完：這個 repo 有哪些可以匯入，或者它根本是另一種形態、
+        該用哪個網址。
+
+        兩個講究：
+
+        * 建議的網址用 **commit SHA 而不是分支名**。實測
+          `jangviktor-web/zeng-shiqiang` 的預設分支叫
+          `auto-optimize/20260825-…`，**含斜線**——而網址模式是按 `/`
+          切段解析的，含斜線的 ref 在那個網址形狀裡結構上表達不出來，
+          填了必然 404。SHA 沒有這個問題，而且順便把版本固定住。
+        * 只有在樹裡**真的看到**根目錄的 `SKILL.md` 時才建議那個網址，
+          不憑猜測給一個會 404 的連結。
+
+        列舉失敗（rate limit、樹格式怪）**不可以蓋掉原本的錯誤**——
+        指路是加分，拿不到就退回原本那句。
+        """
+        base = (
             f"在 {owner}/{repo}@{sha[:7]} 找不到 persona {slug!r}。"
             f"試過的路徑：{'、'.join(attempted)}"
+        )
+        try:
+            blobs, truncated = self._tree_blobs(owner, repo, sha)
+        except (PersonaSourceError, InvalidParameter):
+            return PersonaSourceError(base)
+
+        slugs: List[str] = []
+        root_file: Optional[str] = None
+        for entry in blobs:
+            path = str(entry.get("path") or "")
+            match = _LISTING_RE.match(path)
+            if match:
+                found = match.group("slug") or match.group("slug2")
+                if found and _SLUG_RE.match(found) and found not in slugs:
+                    slugs.append(found)
+            elif path in _ROOT_CANDIDATES and root_file is None:
+                root_file = path
+
+        if slugs:
+            shown = "、".join(slugs[:8])
+            more = f"（共 {len(slugs)} 個）" if len(slugs) > 8 else ""
+            maybe = "（清單可能不完整，這個 repo 的檔案樹太大被截斷了）" if truncated else ""
+            # 措辭刻意是「名稱有」而不是「可以匯入的是」。`_LISTING_RE` 只證明
+            # **路徑形狀**符合，證明不了那些檔案真的是 persona——實測
+            # `anthropics/skills` 有 19 個 `skills/<名稱>/SKILL.md`，全部都不是
+            # persona（brand-guidelines、docx 跑淨化都是 is_usable() == False）。
+            # 要真的判斷得逐份抓下來跑淨化，19 次請求，不值得。
+            # 說「可以匯入」會把人送去撞 409，那比不指路更糟。
+            return PersonaSourceError(
+                f"{base}。這個 repo 裡名稱形狀符合的有：{shown}{more}{maybe}"
+                "（形狀符合不代表它們是 persona——不是的話匯入會被擋下來並說明原因）"
+            )
+
+        if root_file:
+            return PersonaSourceError(
+                f"{base}。這個 repo 沒有 personas/<名稱>/ 這種結構，"
+                f"它的 {root_file} 放在根目錄——那種形態要用「網址」模式匯入："
+                f"{_RAW}/{owner}/{repo}/{sha}/{root_file}"
+            )
+
+        return PersonaSourceError(
+            f"{base}。這個 repo 裡找不到任何 persona 檔案"
+            "（既沒有 personas/<名稱>/SKILL.md，根目錄也沒有 SKILL.md）。"
         )
 
     def _fetch_by_url(self, url: str) -> FetchedPersona:
