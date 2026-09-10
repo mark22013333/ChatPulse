@@ -15,8 +15,8 @@
 | P0 設計 token 地基 | 完成 | `bb385d4` | 無。另補了 §3.5 的相容層與 §3.6 的既有 CSS 處置，規格已回填 |
 | P1 hash 路由 | 完成 | `757ad07` | `?merge=` 的 URL 同步未接上（`parseHash` 已支援並有測試，只是收件匣的勾選還沒寫回 URL） |
 | P2 保留掛載 | 完成 | `472f0c7` | 效能量測用「串流中隱藏側內容仍增長」與 API 呼叫計數取代 React DevTools Profiler |
-| P3 設定中心 | 完成 | `7d51444` | `QuickReplySettings` 378 行、`ReplyDefaultsPage` 328 行超過 250 目標——兩者渲染同一組 Select 選項，共用元件未抽出；`CodeProjectSettings` 未再拆成清單頁與表單 |
-| P4 證據欄 | 完成 | `e3cbed3` | 無 |
+| P3 設定中心 | 完成 | `7d51444` | `QuickReplySettings` 與 `ReplyDefaultsPage`（收工時 365／312 行）超過 250 目標——兩者渲染同一組 Select 選項，共用元件未抽出；`CodeProjectSettings` 未再拆成清單頁與表單 |
+| P4 證據欄 | 完成 | `e3cbed3` | **驗收條件「全域最大檔 < 250 行」沒有實際跑過就結案了**。現況扣掉認可的 `lib/types.ts` 仍有 12 個檔超標，最大是 `DraftReplyWorkspace.tsx` 477 行（改版前 656）。功能不受影響，但規格說要拆而沒拆 |
 | P5 色彩與排版退役 | 完成 | `02ab318` | 無。守門測試 `lib/tokens.test.ts` 已上，含三條正對照 |
 | P7 響應式 | 完成 | `323d691` | 768–1024 沒做成「主從切換」，實測兩欄並存可用、無功能損失 |
 | 無障礙與文案 | 完成 | `e7fecdd` | §10.3 的 `title` 處置做了一半：29 → 12，剩下的由守門測試鎖住不得增加 |
@@ -39,7 +39,7 @@
 
 1. **虛擬清單的 roving tabindex**（§10.5）。436 筆目前仍是逐個 Tab，鍵盤使用者要走很久。⌘K 命令面板已經提供了替代路徑，所以不是死路，但這條該補。
 2. **`?merge=` 的 URL 同步**。合併勾選還沒寫回網址，所以「勾了兩則」的狀態不能貼連結分享。
-3. **`QuickReplySettings` 與 `ReplyDefaultsPage` 的共用元件**。兩邊渲染同一組 Select 選項，改一邊忘了改另一邊會不一致。
+3. **`QuickReplySettings` 與 `ReplyDefaultsPage` 的共用元件**（365／312 行）。兩邊渲染同一組 Select 選項，改一邊忘了改另一邊會不一致。同一則帳還包含 P4 沒做完的檔案大小門檻——詳見 `docs/design/HANDOFF.md` 未完成工項 3b。
 4. **元件層測試**（§15.4 的四條）。目前 239 項全是純函式，元件行為靠瀏覽器實測，沒有自動化回歸。
 5. **`code_terms` 手動指定檢索關鍵字**（§1.4 已說明為何刻意不做）。
 
