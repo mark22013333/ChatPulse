@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { DownloadIcon, Loader2Icon, RefreshCwIcon, Trash2Icon } from 'lucide-react'
 import { toast } from 'sonner'
 import { PersonaProfileView } from '@/components/settings/PersonaProfileView'
@@ -14,10 +14,21 @@ import { personaSourceLine, useReplySettingsStore } from '@/store/replySettings'
 export function PersonasPage() {
   const personas = useReplySettingsStore((s) => s.personas)
   const busy = useReplySettingsStore((s) => s.busy)
+  const loaded = useReplySettingsStore((s) => s.loaded)
+  const load = useReplySettingsStore((s) => s.load)
   const importPersona = useReplySettingsStore((s) => s.importPersona)
   const refreshPersona = useReplySettingsStore((s) => s.refreshPersona)
   const deletePersona = useReplySettingsStore((s) => s.deletePersona)
   const updatePersona = useReplySettingsStore((s) => s.updatePersona)
+
+  // 這一頁必須自己載。三條路徑會**直接**落在這裡而沒有先經過任何會 load 的
+  // 頁面：`#/settings/personas` 深連結、停在這一頁按重新整理、從書籤進來。
+  // 少了這行的後果不是「慢一點才出現」，是穩定地顯示「還沒有匯入任何
+  // Persona。」——與「被刪掉了」長得一模一樣（2026-09-11 實測）。
+  // `load` 自己有 `loaded`／`loading` 的守衛，重複呼叫不會多打端點。
+  useEffect(() => {
+    void load()
+  }, [load])
 
   const [mode, setMode] = useState<'github' | 'url'>('github')
   const [repository, setRepository] = useState('')
@@ -153,7 +164,16 @@ export function PersonasPage() {
         <div className="space-y-2">
           <span className="text-xs font-semibold">已匯入（{personas.length}）</span>
           {personas.length === 0 ? (
-            <p className="text-xs text-muted-foreground">還沒有匯入任何 Persona。</p>
+            // 「還沒載完」與「真的沒有」要分開講。兩者都是空清單，但前者說
+            // 「還沒有匯入任何 Persona」是**假話**，而使用者無從分辨。
+            !loaded ? (
+              <p className="flex items-center gap-1 text-xs text-muted-foreground">
+                <Loader2Icon className="size-3 animate-spin" aria-hidden />
+                正在讀取已匯入的 Persona…
+              </p>
+            ) : (
+              <p className="text-xs text-muted-foreground">還沒有匯入任何 Persona。</p>
+            )
           ) : (
             <div className="max-h-64 space-y-2 overflow-y-auto">
               {personas.map((persona) => (
