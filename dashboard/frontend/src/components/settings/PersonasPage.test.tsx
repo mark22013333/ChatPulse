@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { PersonasPage } from './PersonasPage'
 import { useReplySettingsStore } from '@/store/replySettings'
@@ -86,6 +87,82 @@ describe('Persona 設定頁：自己會去載資料', () => {
     seed([], { loaded: true, loading: false })
     render(<PersonasPage />)
     expect(screen.getByText(/還沒有匯入任何 Persona/)).toBeInTheDocument()
+  })
+})
+
+describe('Persona 設定頁：匯入失敗的原因留在畫面上', () => {
+  /**
+   * 後端的 409 PERSONA_INVALID 現在會帶 `describe_unusable()` 的診斷
+   * （「這份檔案讀到哪些章節、可用的章節名是什麼」）。那是要**照著改**的
+   * 資訊，而 sonner 的 toast 預設 4 秒就收掉——算得出診斷卻只放在 toast 裡，
+   * 跟沒算差不多。所以它必須留在表單下方。
+   */
+  const DIAGNOSIS =
+    '這份來源淨化之後沒有留下任何可用的風格資訊。這份檔案讀到的章節是「Overview」，' +
+    '都不在可用清單裡。可用的章節名例如：思考方式（心智模型／思考框架）。'
+
+  it('**匯入失敗後診斷訊息留在畫面上**（不是只閃一下 toast）', async () => {
+    seed([], {
+      loaded: true,
+      importPersona: async () => {
+        useReplySettingsStore.setState({ error: DIAGNOSIS })
+        return null
+      },
+    })
+    render(<PersonasPage />)
+
+    // Repository 模式要兩欄都填才按得下去，用網址模式最短
+    await userEvent.click(screen.getByRole('button', { name: '網址' }))
+    await userEvent.type(screen.getByLabelText(/檔案網址/), 'https://example.invalid/a.md')
+    await userEvent.click(screen.getByRole('button', { name: /匯入/ }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(/不在可用清單裡/)
+    expect(alert).toHaveTextContent(/心智模型/)
+  })
+
+  it('換模式時清掉上一個模式的錯誤（它講的是另一種輸入的問題）', async () => {
+    seed([], {
+      loaded: true,
+      importPersona: async () => {
+        useReplySettingsStore.setState({ error: DIAGNOSIS })
+        return null
+      },
+    })
+    render(<PersonasPage />)
+
+    await userEvent.click(screen.getByRole('button', { name: '網址' }))
+    await userEvent.type(screen.getByLabelText(/檔案網址/), 'https://example.invalid/a.md')
+    await userEvent.click(screen.getByRole('button', { name: /匯入/ }))
+    expect(await screen.findByRole('alert')).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Repository' }))
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('成功之後不留著上一次的錯誤', async () => {
+    let shouldFail = true
+    seed([], {
+      loaded: true,
+      importPersona: async () => {
+        if (shouldFail) {
+          useReplySettingsStore.setState({ error: DIAGNOSIS })
+          return null
+        }
+        return persona()
+      },
+    })
+    render(<PersonasPage />)
+
+    await userEvent.click(screen.getByRole('button', { name: '網址' }))
+    await userEvent.type(screen.getByLabelText(/檔案網址/), 'https://example.invalid/a.md')
+    await userEvent.click(screen.getByRole('button', { name: /匯入/ }))
+    expect(await screen.findByRole('alert')).toBeInTheDocument()
+
+    shouldFail = false
+    await userEvent.type(screen.getByLabelText(/檔案網址/), 'x')
+    await userEvent.click(screen.getByRole('button', { name: /匯入/ }))
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
   })
 })
 

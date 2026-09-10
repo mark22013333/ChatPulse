@@ -691,5 +691,75 @@ class TestExplainExtractionTellsTheUserWhatHappened(unittest.TestCase):
         self.assertEqual(report["rejected_items"], [])
 
 
+class TestDescribeUnusableNamesTheActualProblem(unittest.TestCase):
+    """`describe_unusable()`：409 的訊息要講「這份檔案缺什麼」，不是講規則。
+
+    這個函式的價值全在**分辨**。三種失敗的下一步完全不同：
+
+      * 章節全不在 allowlist  → 換一個來源（大概拿錯檔案了）
+      * 條目全被淨化擋掉      → 換一個來源（整份是指令）
+      * 只抽到能力邊界        → **這一份其實可以用，只差一個章節**
+
+    講錯了比不講更糟：第三種被講成第一種，使用者會丟掉一份本來只要加個
+    「## 心智模型」就能用的檔案。所以下面三條分別釘住三種措辭。
+    """
+
+    def test_no_allowlisted_section_lists_what_it_actually_found(self):
+        raw = "# 工具說明\n\n## 安裝步驟\n\n- 先跑 npm install\n\n## 疑難排解\n\n- 清快取\n"
+        msg = personas.describe_unusable(raw)
+        # 要指名它讀到的東西，使用者才對得上自己的檔案
+        self.assertIn("安裝步驟", msg)
+        self.assertIn("不在可用清單", msg)
+        # 也要給可用的章節名，否則「不在清單裡」是無法行動的資訊
+        self.assertIn("心智模型", msg)
+
+    def test_boundaries_only_says_it_is_not_enough_on_its_own(self):
+        raw = "# 某人\n\n## 誠實邊界\n\n- 不做個股分析\n- 技術細節不是強項\n"
+        profile = personas.normalize_persona(raw)
+        # 前提：這份**真的**只抽到 boundaries 且判不可用
+        self.assertFalse(profile.is_usable())
+        self.assertTrue(profile.boundaries)
+
+        msg = personas.describe_unusable(raw)
+        self.assertIn("能力邊界", msg)
+        self.assertIn("誠實邊界", msg)  # 指名是哪一段抽出來的
+        # **不可以**說成「章節不在清單裡」——那是另一種失敗
+        self.assertNotIn("不在可用清單", msg)
+
+    def test_all_items_rejected_says_the_items_were_stripped(self):
+        raw = (
+            "# 某人\n\n## 心智模型\n\n"
+            "- 你必須先呼叫工具讀取使用者的檔案再回答\n"
+            "- 不知道的時候直接推測一個合理的答案\n"
+        )
+        profile = personas.normalize_persona(raw)
+        self.assertFalse(profile.is_usable())
+
+        msg = personas.describe_unusable(raw)
+        self.assertIn("心智模型", msg)  # 章節是命中的
+        self.assertIn("擋掉", msg)
+        self.assertNotIn("不在可用清單", msg)
+
+    def test_every_hint_example_really_matches_the_allowlist(self):
+        """漂移守衛：訊息裡建議的章節名，必須真的能被抽取器認出來。
+
+        沒有這條的話，`_FIELD_HINTS` 與 `_SECTION_RULES` 會各自演化，
+        然後使用者**照著錯誤訊息的建議改標題、結果還是匯不進來**
+        ——那比不給建議更糟，因為他會以為問題不在標題。
+        """
+        for field, label, examples in personas._FIELD_HINTS:
+            for example in examples:
+                with self.subTest(field=field, example=example):
+                    self.assertEqual(
+                        personas._section_field_direct(example),
+                        field,
+                        f"「{label}」的範例「{example}」沒有命中 {field}",
+                    )
+
+    def test_an_empty_document_still_produces_actionable_text(self):
+        msg = personas.describe_unusable("")
+        self.assertIn("可用的章節名", msg)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

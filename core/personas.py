@@ -916,3 +916,94 @@ def explain_extraction(raw_text: str) -> Dict[str, Any]:
         "dropped_sections": extraction.dropped,
         "rejected_items": extraction.rejected,
     }
+
+
+#: 給使用者看的「可用章節名」範例，一個欄位一組代表性寫法。
+#:
+#: 為什麼不直接印 `_SECTION_RULES` 的 key：那裡面是**比對用的子字串**
+#: （簡體／繁體／英文各種變體，還有 `voice`、`tone`、`framework` 這種單字），
+#: 整組印給使用者是雜訊，而且看起來像「章節一定要叫這個名字」。
+#: 這裡挑讀得懂的代表寫法，並由 `test_persona_normalize` 的漂移守衛保證
+#: 每一個範例都真的命中 allowlist——否則就會發生「照著錯誤訊息的建議改，
+#: 結果還是匯不進來」，那比不給建議更糟。
+_FIELD_HINTS: Tuple[Tuple[str, str, Tuple[str, ...]], ...] = (
+    ("thinking_style", "思考方式", ("心智模型", "思考框架", "Thinking Style")),
+    ("communication_style", "表達方式", ("表達 DNA", "溝通風格", "Communication Style")),
+    ("avoid", "明確反對的事", ("明確反對", "禁忌", "Avoid")),
+    ("boundaries", "能力邊界", ("誠實邊界", "已知盲區", "Boundaries")),
+)
+
+#: 錯誤訊息裡列舉章節名的上限。實測 `anthropics/skills` 的
+#: `brand-guidelines` 有 12 個以上被丟棄的章節，全列出來會把訊息灌爆。
+_MAX_LISTED_SECTIONS = 4
+
+
+def _leaf(section_path: str) -> str:
+    """`_collect` 記的是「祖先 / … / 葉」，錯誤訊息只需要葉。"""
+    return section_path.split(" / ")[-1]
+
+
+def _listed(names: Sequence[str]) -> str:
+    """去重、截斷、串成人看得懂的一句。"""
+    unique: List[str] = []
+    for name in names:
+        if name and name not in unique:
+            unique.append(name)
+    shown = "、".join(f"「{n}」" for n in unique[:_MAX_LISTED_SECTIONS])
+    rest = len(unique) - _MAX_LISTED_SECTIONS
+    return f"{shown} 等 {len(unique)} 個" if rest > 0 else shown
+
+
+def describe_unusable(raw_text: str) -> str:
+    """這份來源為什麼淨化完沒有可用的風格資訊——具體到「缺哪個章節」。
+
+    `is_usable()` 回 False 時，原本的 409 只說「淨化之後沒有留下任何可用的
+    風格資訊」。那句話講的是**規則**，不是這份檔案，所以使用者拿到之後
+    無從判斷下一步：要換一個 repo？改用手動填寫？還是這份檔案其實只差一個
+    標題？`explain_extraction()` 早就算得出答案，只是沒有人把它接出來。
+
+    三種失敗的長相完全不同，必須分開講：
+
+      1. **章節標題全都不在 allowlist** —— 最常見。通常是拿了一份根本不是
+         persona 的 skill（工作流程、工具說明、品牌規範）。
+      2. **章節命中了，但底下每一條都被淨化規則擋掉** —— 整段是指令句。
+      3. **章節命中了、也抽出東西了，但只有 `boundaries`** —— 這個最難自己
+         看出來，因為「明明有讀到東西」卻仍然被拒絕。`is_usable()` 刻意不含
+         boundaries（理由見那個函式），而使用者看不到這個規則。
+
+    回傳的是**要接在既有訊息後面**的一句診斷，不含前綴。
+    """
+    _fields, body = _parse_frontmatter(raw_text or "")
+    # 與 `explain_extraction` 走同一個抽取函式，所以這裡講的「讀到什麼」
+    # 與那邊回報的數字保證一致。
+    extraction = _collect(body)
+
+    hint = "、".join(
+        f"{label}（{'／'.join(examples[:2])}）" for _field, label, examples in _FIELD_HINTS
+    )
+
+    kept_fields = [field for field, items in extraction.buckets.items() if items]
+
+    # 情況 3：只抽到能力邊界。先判這一條——它是唯一「有讀到東西卻仍被拒絕」
+    # 的形態，講錯了使用者會完全找不到方向。
+    if kept_fields == ["boundaries"]:
+        return (
+            f"這份檔案只抽到「能力邊界」（來自 {_listed([_leaf(u['section']) for u in extraction.used])}）。"
+            "能力邊界描述的是這個人不擅長什麼，單獨存在不構成 persona——"
+            "還需要至少一個「思考方式」或「表達方式」的章節。"
+        )
+
+    # 情況 1：一個 allowlist 章節都沒命中。
+    if not extraction.used:
+        titles = [_leaf(d["section"]) for d in extraction.dropped]
+        found = f"這份檔案讀到的章節是 {_listed(titles)}，都不在可用清單裡。" if titles else "這份檔案裡沒有讀到任何章節標題。"
+        return f"{found}可用的章節名例如：{hint}。"
+
+    # 情況 2：章節命中了，但一條都沒留下。
+    sections = _listed([_leaf(u["section"]) for u in extraction.used])
+    if extraction.rejected:
+        return (
+            f"讀到了可用章節 {sections}，但底下 {len(extraction.rejected)} 條"
+            "全部被淨化規則擋掉（多半整段是指令句而不是風格描述）。"
+        )
+    return f"讀到了可用章節 {sections}，但底下沒有抽得出來的條目（需要條列或短句）。"

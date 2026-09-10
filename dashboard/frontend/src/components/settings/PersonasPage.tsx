@@ -35,6 +35,15 @@ export function PersonasPage() {
   const [slug, setSlug] = useState('')
   const [url, setUrl] = useState('')
   const [name, setName] = useState('')
+  // 匯入失敗的訊息**留在畫面上**，不只用 toast。
+  //
+  // 409 PERSONA_INVALID 現在會帶 `describe_unusable()` 的診斷（後端
+  // `_persona_import_result`），內容是「這份檔案讀到哪些章節、可用的章節名是
+  // 什麼」——那是要**照著改**的資訊，而 sonner 預設 4 秒就收掉。塞在 toast
+  // 裡等於算得出診斷卻沒真的給使用者，跟不給差不多。
+  // 用本地 state 而不是 store.error：store.error 是所有操作共用的，
+  // 拿它會把「刪除失敗」顯示在匯入表單裡。
+  const [importError, setImportError] = useState<string | null>(null)
 
   const handleImport = async () => {
     const body =
@@ -43,13 +52,17 @@ export function PersonasPage() {
         : { source_type: 'url', url: url.trim() }
     const persona = await importPersona({ ...body, name: name.trim() || undefined })
     if (persona) {
+      setImportError(null)
       toast.success(`已匯入 Persona「${persona.name}」`)
       setRepository('')
       setSlug('')
       setUrl('')
       setName('')
     } else {
-      toast.error(useReplySettingsStore.getState().error ?? '匯入失敗')
+      const message = useReplySettingsStore.getState().error ?? '匯入失敗'
+      setImportError(message)
+      // toast 只當「發生了什麼事」的即時訊號，細節看下面那塊
+      toast.error('匯入失敗，原因顯示在匯入表單下方')
     }
   }
 
@@ -78,7 +91,12 @@ export function PersonasPage() {
                   size="xs"
                   variant={mode === m ? 'default' : 'ghost'}
                   className="h-5 px-2 text-2xs"
-                  onClick={() => setMode(m)}
+                  // 換模式＝「我改用另一種方式試」，上一個模式的錯誤訊息
+                  // 留著只會誤導（它講的是另一種輸入的問題）
+                  onClick={() => {
+                    setMode(m)
+                    setImportError(null)
+                  }}
                 >
                   {m === 'github' ? 'Repository' : '網址'}
                 </Button>
@@ -155,6 +173,19 @@ export function PersonasPage() {
             )}
             匯入
           </Button>
+          {importError ? (
+            // `role="alert"` 而不是只有顏色：這塊是唯一說明「為什麼匯不進來」
+            // 的地方，用讀螢幕的人也要拿得到。整段可選取，因為使用者常常要
+            // 把章節名複製去改檔案。
+            <div
+              role="alert"
+              className="space-y-1 rounded border border-destructive/40 bg-destructive/5 p-2"
+            >
+              <p className="text-2xs font-medium text-destructive">匯入失敗</p>
+              <p className="text-2xs leading-relaxed text-foreground">{importError}</p>
+            </div>
+          ) : null}
+
           <p className="text-2xs leading-relaxed text-muted-foreground">
             匯入的內容會經過淨化：角色扮演指令、工具呼叫、讀檔要求、以及「不知道就推測」
             這類授權一律不採用。只有表達與思考風格會被保留。

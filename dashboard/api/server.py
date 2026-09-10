@@ -981,10 +981,15 @@ def _persona_import_result(
     if not profile.is_usable():
         # 這是**可預期的正常結果**，不是 bug：來源檔案可能整份都是角色扮演
         # 指令與工作流程，那些一律不採用，淨化完就空了。
+        #
+        # 訊息一定要帶 `describe_unusable()` 的診斷。少了它，使用者只知道
+        # 「這份不能用」卻不知道是「拿錯檔案」還是「只差一個章節標題」，
+        # 而那兩件事的下一步完全不同（換來源 vs 改標題）。
         raise PersonaInvalid(
             "這份來源淨化之後沒有留下任何可用的風格資訊"
             "（角色扮演指令、工作流程、工具呼叫一律不採用）。"
-            "你可以改用自訂 Persona 手動填寫風格描述。"
+            f"{personas.describe_unusable(fetched.raw_text)}"
+            "也可以改用自訂 Persona 手動填寫風格描述。"
         )
 
     name = (override_name or profile.name or fetched.name_hint or "").strip()
@@ -1126,7 +1131,15 @@ def post_persona(req: PersonaCreateRequest, viewer: Dict[str, Any] = ViewerDep):
             json.dumps({**req.profile, "name": req.name}, ensure_ascii=False)
         )
         if not profile.is_usable():
-            raise PersonaInvalid("填寫的內容淨化之後沒有留下可用的風格資訊")
+            # 這條走的是**結構化輸入**，沒有原文可以做章節診斷，所以講的是
+            # 欄位：`is_usable()` 刻意不含 boundaries，只填能力邊界會走到這裡
+            # 而使用者看不出原因（見 `PersonaProfile.is_usable`）。
+            raise PersonaInvalid(
+                "填寫的內容淨化之後沒有留下可用的風格資訊。"
+                "thinking_style、communication_style、avoid 至少要有一個有內容"
+                "——只填 boundaries（能力邊界）不算，它描述的是不擅長什麼，"
+                "單獨存在不構成 persona。"
+            )
         name = req.name.strip()
         if not name:
             raise InvalidParameter("Persona 需要名稱")
