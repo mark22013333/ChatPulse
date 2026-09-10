@@ -106,12 +106,17 @@ export function announce(
  * 行小字。
  *
  * **刻意不搶焦點**（規格 §10.6）：完成的瞬間把焦點搬到產出會打斷正在讀舊
- * 內容的人。改成在文字裡說內容在哪，讓使用者自己用 landmark 導覽過去。
+ * 內容的人。改成在文字裡說內容在哪、以及一個不必移動焦點就拿得到內容的
+ * 快捷鍵，讓使用者自己決定要不要過去。
  *
- * 這裡本來該告知一個「跳到產出」的快捷鍵，但 §11.1 表上的導覽鍵（`g s`／
- * `g m`／`[`／`]`／⌘Enter／⌘.）都還沒實作，目前只有 ⌘K／⌘J／`/`／`?`。
- * 沒有的快捷鍵不能拿來宣告，所以先講 landmark——那是標準的螢幕閱讀器導覽，
- * 不依賴自訂鍵。
+ * **兩件事都要講，不能只講快捷鍵。** landmark（「主要內容區」）是標準的螢幕
+ * 閱讀器導覽、不依賴自訂鍵；⌘⇧C 則是這裡唯一真正有用的快捷鍵——§11.1 表上
+ * 沒有「跳到產出」這個鍵，而複製剛好讓使用者不必離開現在的位置就拿到全文。
+ *
+ * 這句話在 2026-09-10 之前只講 landmark，因為當時 §11.1 只實作了五分之二、
+ * 連 ⌘⇧C 都還沒有。**沒有的快捷鍵不可以拿來宣告**（sr-only 的錯誤在畫面上
+ * 完全看不出來），所以那時只能講 landmark。`lib/hotkeys.test.ts` 現在有一條
+ * 漂移守衛在證明表上的鍵真的存在，這句話才敢寫出鍵名。
  */
 function doneText(origin: StreamOrigin, snapshot: StreamSnapshot): string {
   const parts = [`${ORIGIN_LABEL[origin]}完成，約 ${snapshot.charCount} 字`]
@@ -124,6 +129,9 @@ function doneText(origin: StreamOrigin, snapshot: StreamSnapshot): string {
   }
 
   parts.push('內容在主要內容區')
+  // 草稿要說清楚複製到的是**建議回話**，不是整份產出（前半段的脈絡分析不是
+  // 要送出去的東西）——這正是這個產品最貴的誤解之一
+  parts.push(origin === 'draft' ? '按 ⌘⇧C 複製建議回話' : '按 ⌘⇧C 複製全文')
   return parts.join('，') + '。'
 }
 

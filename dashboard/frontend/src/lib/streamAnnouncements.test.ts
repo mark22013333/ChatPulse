@@ -5,6 +5,7 @@ import {
   progressAnnouncement,
   type StreamSnapshot,
 } from './streamAnnouncements'
+import { resolveHotkey } from './hotkeys'
 
 function snap(over: Partial<StreamSnapshot> = {}): StreamSnapshot {
   return { streaming: false, error: null, replyStarted: false, charCount: 0, ...over }
@@ -136,6 +137,25 @@ describe('完成的宣告：三件事都要講', () => {
     expect(announce('draft', 'replying', 'done', snap({ charCount: 300 }))?.text).toContain(
       '內容在主要內容區',
     )
+  })
+
+  it('**告知一個真的存在的快捷鍵**（§10.6 要求，§11.1 補完後才做得到）', () => {
+    // 這句話在 §11.1 只實作五分之二時只能講 landmark——沒有的快捷鍵不可以
+    // 拿來宣告。sr-only 的錯誤在畫面上完全看不出來，所以這裡除了字串本身，
+    // 還要證明那個鍵真的解析得出動作（下一條）
+    expect(announce('summary', 'streaming', 'done', snap({ charCount: 300 }))?.text).toContain(
+      '按 ⌘⇧C 複製全文',
+    )
+    // 草稿要說複製到的是**建議回話**，不是整份產出（前半段的脈絡分析不送出）
+    expect(announce('draft', 'replying', 'done', snap({ charCount: 300 }))?.text).toContain(
+      '按 ⌘⇧C 複製建議回話',
+    )
+  })
+
+  it('**宣告裡提到的 ⌘⇧C 真的有實作**（不是照著規格抄一句話）', () => {
+    // 這條把宣告字串與解析器綁在一起。改動 resolveHotkey 的 copy 分支時，
+    // 這裡會紅——而不是讓螢幕閱讀器使用者去按一個不存在的鍵
+    expect(resolveHotkey({ key: 'C', metaKey: true, shiftKey: true }, false)).toBe('copy')
   })
 })
 
