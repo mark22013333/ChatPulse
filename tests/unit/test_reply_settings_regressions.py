@@ -493,5 +493,57 @@ class TestRenameIsSanitized(unittest.TestCase):
         self.assertEqual(calls[0]["description"], "")
 
 
+class TestRootLevelUrlImportIsFlagged(unittest.TestCase):
+    """網址模式從 repo 根目錄匯入時要提醒一句（但**不擋**）。
+
+    這一條守的是一個真實的缺口。`fxp/persona-distill-skills` 根目錄那份
+    `SKILL.md` 是「如何蒸餾一個 persona」的方法論，而它跑完淨化是
+    **`is_usable() == True`**（2026-09-11 實測：思考 4／表達 2／邊界 2）
+    ——擋住它的從來不是淨化器，是 Repository 模式的 `_LISTING_RE` 要求
+    slug 那一層存在。
+
+    網址模式沒有那道守衛。使用者貼根目錄的檔案網址就會匯進一份看起來
+    完全合理、實際上是方法論的 persona，而且**沒有任何訊號**。
+
+    為什麼是提醒而不是擋：生態裡的多數形態就是「一個 repo 一個 persona、
+    SKILL.md 放根目錄」（實測 zeng-shiqiang、kaishengwang-perspective
+    等五個），擋掉會讓網址模式對多數 repo 失效。
+    """
+
+    @staticmethod
+    def fetched(source_type="url", path=None):
+        return server.persona_sources.FetchedPersona(
+            raw_text="# x",
+            source_type=source_type,
+            extra={"path": path} if path else {},
+        )
+
+    def test_root_level_file_gets_a_notice(self):
+        notice = server._persona_import_notice(self.fetched(path="SKILL.md"))
+        self.assertIsNotNone(notice)
+        self.assertIn("SKILL.md", notice)
+        self.assertIn("方法論", notice)
+
+    def test_a_file_inside_a_directory_gets_no_notice(self):
+        """正對照：正常的 `personas/<slug>/SKILL.md` 不該被提醒。
+
+        少了這條，「永遠回提醒」也會讓上面那條通過。
+        """
+        self.assertIsNone(
+            server._persona_import_notice(self.fetched(path="personas/luozhenyu/SKILL.md"))
+        )
+        self.assertIsNone(server._persona_import_notice(self.fetched(path="skills/x/SKILL.md")))
+
+    def test_repository_mode_never_gets_a_notice(self):
+        """Repository 模式有 `_LISTING_RE` 守著，走不到根目錄。"""
+        self.assertIsNone(
+            server._persona_import_notice(self.fetched(source_type="github", path="SKILL.md"))
+        )
+
+    def test_no_path_means_no_notice(self):
+        """反推不出 path 時（provenance 只有 URL）不亂講話。"""
+        self.assertIsNone(server._persona_import_notice(self.fetched()))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

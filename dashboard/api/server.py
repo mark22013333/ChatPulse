@@ -964,6 +964,33 @@ class PersonaUpdateRequest(BaseModel):
     enabled: Optional[bool] = None
 
 
+def _persona_import_notice(fetched: persona_sources.FetchedPersona) -> Optional[str]:
+    """匯入成功了，但有件事值得說一句——目前只有一種情況。
+
+    **repo 根目錄的 SKILL.md 有可能不是 persona。** 實測
+    `fxp/persona-distill-skills` 根目錄那份是「如何蒸餾一個 persona」的
+    方法論，而它跑完淨化是 `is_usable() == True`（抽到思考 4／表達 2／
+    邊界 2）——也就是說**擋住它的不是淨化器，是 Repository 模式的
+    `_LISTING_RE` 要求 slug 那一層存在**（見 `persona_sources/github.py`）。
+
+    網址模式沒有那道守衛：使用者可以直接貼根目錄的檔案網址，而抽出來的
+    東西看起來完全像一份合理的 persona。所以這裡**不擋**（那會擋掉真的把
+    persona 放在根目錄的 repo，那是生態裡的多數形態），只提醒一句，
+    讓他去看一眼抽出來的條目對不對。
+    """
+    if fetched.source_type != "url":
+        # Repository 模式有 `_LISTING_RE` 守著，走不到根目錄
+        return None
+    path = (fetched.extra or {}).get("path") or ""
+    if not path or "/" in path:
+        return None
+    return (
+        f"這份是從 repo 根目錄的 {path} 匯入的。有些 repo 根目錄放的是"
+        "「如何寫 persona」的方法論而不是某個人的風格，"
+        "請看一眼下面抽出來的條目是不是你要的。"
+    )
+
+
 def _persona_import_result(
     viewer_id: int, fetched: persona_sources.FetchedPersona, override_name: Optional[str]
 ) -> Dict[str, Any]:
@@ -1008,6 +1035,8 @@ def _persona_import_result(
         raw_source=fetched.raw_text,
     )
 
+    notice = _persona_import_notice(fetched)
+
     existing = repo.find_persona_by_name(viewer_id, name)
     if existing is not None:
         # 同名視為「更新」而不是報衝突：使用者按「更新 Persona」時走的就是
@@ -1023,12 +1052,16 @@ def _persona_import_result(
             raw_source=payload["raw_source"],
             touch_refreshed=True,
         )
-        return {"persona": updated, "created": False}
+        return {"persona": updated, "created": False, "notice": notice}
 
     persona_id = repo.create_persona(
         viewer_id, source_type=fetched.source_type, **payload
     )
-    return {"persona": repo.get_persona(viewer_id, persona_id), "created": True}
+    return {
+        "persona": repo.get_persona(viewer_id, persona_id),
+        "created": True,
+        "notice": notice,
+    }
 
 
 @app.get("/api/v1/personas")

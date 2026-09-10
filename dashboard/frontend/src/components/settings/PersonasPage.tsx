@@ -44,16 +44,22 @@ export function PersonasPage() {
   // 用本地 state 而不是 store.error：store.error 是所有操作共用的，
   // 拿它會把「刪除失敗」顯示在匯入表單裡。
   const [importError, setImportError] = useState<string | null>(null)
+  // 「匯進來了，但有件事值得看一眼」。目前只有一種：從 repo 根目錄匯入的
+  // 檔案有可能是「如何寫 persona」的方法論而不是某個人的風格（後端的
+  // `_persona_import_notice` 有完整理由）。這種提醒**不能用 toast**：
+  // 它要人去對照下面抽出來的條目，4 秒不夠。
+  const [importNotice, setImportNotice] = useState<string | null>(null)
 
   const handleImport = async () => {
     const body =
       mode === 'github'
         ? { source_type: 'github', repository: repository.trim(), persona: slug.trim() }
         : { source_type: 'url', url: url.trim() }
-    const persona = await importPersona({ ...body, name: name.trim() || undefined })
-    if (persona) {
+    const result = await importPersona({ ...body, name: name.trim() || undefined })
+    if (result) {
       setImportError(null)
-      toast.success(`已匯入 Persona「${persona.name}」`)
+      setImportNotice(result.notice ?? null)
+      toast.success(`已匯入 Persona「${result.persona.name}」`)
       setRepository('')
       setSlug('')
       setUrl('')
@@ -61,6 +67,7 @@ export function PersonasPage() {
     } else {
       const message = useReplySettingsStore.getState().error ?? '匯入失敗'
       setImportError(message)
+      setImportNotice(null)
       // toast 只當「發生了什麼事」的即時訊號，細節看下面那塊
       toast.error('匯入失敗，原因顯示在匯入表單下方')
     }
@@ -96,6 +103,7 @@ export function PersonasPage() {
                   onClick={() => {
                     setMode(m)
                     setImportError(null)
+                    setImportNotice(null)
                   }}
                 >
                   {m === 'github' ? 'Repository' : '網址'}
@@ -179,10 +187,19 @@ export function PersonasPage() {
             // 把章節名複製去改檔案。
             <div
               role="alert"
-              className="space-y-1 rounded border border-destructive/40 bg-destructive/5 p-2"
+              className="space-y-1 rounded border border-destructive/40 bg-destructive/10 p-2"
             >
               <p className="text-2xs font-medium text-destructive">匯入失敗</p>
               <p className="text-2xs leading-relaxed text-foreground">{importError}</p>
+            </div>
+          ) : null}
+
+          {importNotice ? (
+            // `role="status"` 不是 alert：匯入**成功了**，這只是要他看一眼，
+            // 不該用打斷式的播報（role="alert" 隱含 assertive）。
+            <div role="status" className="space-y-1 rounded border border-caution-line bg-caution/10 p-2">
+              <p className="text-2xs font-medium text-caution">匯入成功，但請確認一下</p>
+              <p className="text-2xs leading-relaxed text-foreground">{importNotice}</p>
             </div>
           ) : null}
 

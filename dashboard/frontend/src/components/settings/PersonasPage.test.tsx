@@ -149,7 +149,7 @@ describe('Persona 設定頁：匯入失敗的原因留在畫面上', () => {
           useReplySettingsStore.setState({ error: DIAGNOSIS })
           return null
         }
-        return persona()
+        return { persona: persona(), notice: null }
       },
     })
     render(<PersonasPage />)
@@ -163,6 +163,50 @@ describe('Persona 設定頁：匯入失敗的原因留在畫面上', () => {
     await userEvent.type(screen.getByLabelText(/檔案網址/), 'x')
     await userEvent.click(screen.getByRole('button', { name: /匯入/ }))
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
+    // **正對照**：成功路徑真的跑到底了，不是 handleImport 中途爆掉才沒有
+    // alert。清空輸入框排在 `toast.success(result.persona.name)` 後面，
+    // 所以它空了就證明整段跑完——這正是 EvidenceList 那份 fixture 踩過的坑：
+    // 回傳形狀錯了，測試照樣綠。
+    await waitFor(() => expect(screen.getByLabelText(/檔案網址/)).toHaveValue(''))
+  })
+})
+
+describe('Persona 設定頁：從 repo 根目錄匯入時提醒一句', () => {
+  /**
+   * 後端的 `_persona_import_notice` 會在「網址模式 ＋ 根目錄檔案」時回一句
+   * 提醒。這裡守的是「它有被畫出來」以及**它不是 alert**——匯入是成功的，
+   * 用打斷式播報（role="alert" 隱含 assertive）會過度。
+   */
+  const NOTICE = '這份是從 repo 根目錄的 SKILL.md 匯入的。有些 repo 根目錄放的是「如何寫 persona」的方法論。'
+
+  async function importWithNotice(notice: string | null) {
+    seed([], {
+      loaded: true,
+      importPersona: async () => ({ persona: persona(), notice }),
+    })
+    render(<PersonasPage />)
+    await userEvent.click(screen.getByRole('button', { name: '網址' }))
+    await userEvent.type(screen.getByLabelText(/檔案網址/), 'https://example.invalid/SKILL.md')
+    await userEvent.click(screen.getByRole('button', { name: /匯入/ }))
+  }
+
+  it('**後端給了 notice 就畫在畫面上**', async () => {
+    await importWithNotice(NOTICE)
+    const status = await screen.findByRole('status')
+    expect(status).toHaveTextContent(/根目錄/)
+    expect(status).toHaveTextContent(/方法論/)
+  })
+
+  it('提醒不是 alert（匯入成功，不該用打斷式播報）', async () => {
+    await importWithNotice(NOTICE)
+    await screen.findByRole('status')
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('正對照：沒有 notice 時不畫（不是永遠畫一塊空的）', async () => {
+    await importWithNotice(null)
+    await waitFor(() => expect(screen.getByText(/已匯入/)).toBeInTheDocument())
+    expect(screen.queryByRole('status')).toBeNull()
   })
 })
 

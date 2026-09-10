@@ -184,7 +184,12 @@ export const api = {
     url?: string
     ref?: string
     name?: string
-  }) => post<{ persona: Persona; created: boolean }>('/personas/import', body as unknown as Json),
+    /** `notice` 是「匯進來了，但有件事值得看一眼」——目前只有根目錄那一種。 */
+  }) =>
+    post<{ persona: Persona; created: boolean; notice?: string | null }>(
+      '/personas/import',
+      body as unknown as Json,
+    ),
   /** 列出某個來源 repo 有哪些 Persona 可以匯入。 */
   personaSourceList: (sourceType: string, repository: string, ref?: string) =>
     request<{ personas: Array<Record<string, unknown>> }>(
