@@ -12,6 +12,7 @@ import { SettingsOverlay } from '@/components/settings/SettingsOverlay'
 import { DraftReplyWorkspace } from '@/components/draft/DraftReplyWorkspace'
 import { LoginScreen } from '@/components/LoginScreen'
 import { MentionInbox } from '@/components/MentionInbox'
+import { ShortcutHelp } from '@/components/ShortcutHelp'
 import { SpacesRail } from '@/components/SpacesRail'
 import { SummaryHistory } from '@/components/SummaryHistory'
 import { SummaryWorkspace } from '@/components/SummaryWorkspace'
@@ -185,6 +186,11 @@ export function AppShell() {
       </div>
 
       <CommandPalette />
+
+      {/* `?` 的快捷鍵說明。放在設定覆蓋層**之前**沒有影響——它自己是
+          fixed z-50，而 Esc 的層次由 store 的 isOverlayOpen() 決定，
+          不靠 DOM 順序 */}
+      <ShortcutHelp />
 
       <EvidenceDrawer
         open={!evidenceInline && drawerOpen}

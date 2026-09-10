@@ -10,7 +10,7 @@ import { SpacePrefsPage } from '@/components/settings/SpacePrefsPage'
 import { hashForSettings, type SettingsTab } from '@/lib/route'
 import { cn } from '@/lib/utils'
 import { useRouter } from '@/router/useRouter'
-import { useUiStore } from '@/store/ui'
+import { isOverlayOpen } from '@/store/ui'
 
 /** 分頁順序＝從「最常改」到「最少改」。診斷頁不在這裡，它在登入 gate 之前。 */
 const TABS: { id: SettingsTab; label: string; hint: string }[] = [
@@ -77,11 +77,12 @@ export function SettingsOverlay() {
       //    是同步的 zustand set，事件走到這裡時 paletteOpen 已經變回 false，
       //    於是設定被一起關掉。2026-09-10 由真瀏覽器 E2E 抓到；元件測試沒
       //    抓到，因為那個測試只設了 store 旗標、沒有掛真正的面板。
-      // 2. `paletteOpen`：面板開著、但這個按鍵**不是**它處理的（面板的
-      //    handler 掛在輸入框上，焦點跑掉時就不會觸發）。這時設定同樣不該
-      //    反應——上面還蓋著一層東西。
+      // 2. `isOverlayOpen()`：上面蓋著一層東西（命令面板或 `?` 說明），
+      //    但這個按鍵**不是**它處理的（面板的 handler 掛在輸入框上，焦點跑
+      //    掉時就不會觸發）。這時設定同樣不該反應。判準集中在 store 裡，
+      //    新增覆蓋層時不必回來改這裡。
       if (event.defaultPrevented) return
-      if (useUiStore.getState().paletteOpen) return
+      if (isOverlayOpen()) return
       event.stopPropagation()
       close()
     }

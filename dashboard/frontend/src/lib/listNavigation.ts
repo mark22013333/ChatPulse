@@ -45,3 +45,34 @@ export function nextListIndex(
       return null
   }
 }
+
+/**
+ * 在一份清單裡從 `currentId` 往前／往後找一格，回傳那一項的 id
+ * （規格 §11.1 的 `[`／`]`：上一則／下一則 Mention）。
+ *
+ * 三個邊界情況都刻意回 `null`，讓呼叫端可以「什麼都不做」而不是亂跳：
+ * - 清單是空的
+ * - 目前這一則不在清單裡（例如它是摘要工作台挑的 `manual`，而現在看的是
+ *   已處理分頁；或者剛被標成已處理、從待處理分頁消失了）
+ * - 已經在頭或尾——**不繞回去**。與 `nextListIndex` 同一個理由：繞回讓人
+ *   失去「我在哪」的感覺，而這裡連清單都不一定看得見（在草稿工作區按
+ *   `[`／`]` 時左欄可能捲到別處），繞回會更莫名其妙。
+ */
+export function stepId<T extends { id: number }>(
+  items: T[],
+  currentId: number | null,
+  delta: 1 | -1,
+): number | null {
+  if (items.length === 0) return null
+
+  // 還沒選任何一則：`]` 給第一則、`[` 給最後一則，讓這兩個鍵在空手時
+  // 也是一個入口，而不是完全沒反應
+  if (currentId === null) return (delta === 1 ? items[0] : items[items.length - 1]).id
+
+  const at = items.findIndex((item) => item.id === currentId)
+  if (at < 0) return null
+
+  const next = at + delta
+  if (next < 0 || next >= items.length) return null
+  return items[next].id
+}

@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useRef } from 'react'
 import {
   AlertCircleIcon,
   CheckCheckIcon,
@@ -16,6 +16,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { cn } from '@/lib/utils'
 import { errorMessage } from '@/lib/api'
 import { relativeTime } from '@/lib/format'
+import { nextListIndex } from '@/lib/listNavigation'
 import { MERGE_BLOCK_LABEL, mergeBlockReason } from '@/lib/merge'
 import { hashForMentions } from '@/lib/route'
 import { useRouter } from '@/router/useRouter'
@@ -45,6 +46,7 @@ export function MentionInbox({ onSelect, onMergedGenerate }: MentionInboxProps) 
   const clearMerge = useMentionsStore((state) => state.clearMerge)
   const spaces = useSpacesStore((state) => state.items)
   const { navigate } = useRouter()
+  const listRef = useRef<HTMLUListElement>(null)
 
   /**
    * 勾選改動之後把結果寫回網址（設計規格 §6.6）。
@@ -81,6 +83,34 @@ export function MentionInbox({ onSelect, onMergedGenerate }: MentionInboxProps) 
         `已完成一輪採集：新增 ${stats.new_mentions ?? 0} 則，掃描 ${stats.spaces_polled ?? 0}/${stats.spaces_total ?? 0} 個 Space`,
       )
     }
+  }
+
+  /**
+   * 清單的 ↑↓ Home End PageUp PageDown（設計規格 §11.1 的「左欄清單移動」）。
+   *
+   * **只移動焦點，不改選取**：開啟那一則交給 Enter／空白鍵（卡片本身就是
+   * `<button>`，瀏覽器原生處理），與 `SpaceList` 一致。每按一次方向鍵就
+   * 導覽的話，走過十則就在歷史裡留下十筆、而且每一則都會重掛草稿工作區。
+   * 想快速換一則有 `[`／`]`，那兩個鍵才是「換 Mention」。
+   *
+   * **不做 roving tabindex**：§10.5 那套是為 436 筆的虛擬清單設計的（active
+   * 那一列可能不在 DOM 裡）。這裡是幾十筆的一般清單，全部都在 DOM 裡，
+   * 而且每張卡片還有勾選框與狀態鈕——把它們排除在 tab 序之外反而更難用。
+   * 這裡是純加法：Tab 的行為完全沒動，只是多了方向鍵這條快路。
+   */
+  const onListKeyDown = (event: React.KeyboardEvent) => {
+    const card = (event.target as HTMLElement).closest?.('[data-mention-index]')
+    // 焦點在勾選框或狀態鈕上時 card 是 null——方向鍵不該從那裡跳走
+    if (!card) return
+    const from = Number(card.getAttribute('data-mention-index'))
+    if (!Number.isInteger(from)) return
+
+    const next = nextListIndex(event.key, from, visible.length)
+    if (next === null) return // 不是導航鍵就交還給瀏覽器
+    event.preventDefault()
+    listRef.current
+      ?.querySelector<HTMLElement>(`[data-mention-index="${next}"]`)
+      ?.focus()
   }
 
   const handleToggleState = async (id: number, next: MentionState) => {
@@ -193,8 +223,8 @@ export function MentionInbox({ onSelect, onMergedGenerate }: MentionInboxProps) 
           </p>
         ) : null}
 
-        <ul className="space-y-1.5">
-          {visible.map((mention) => {
+        <ul ref={listRef} onKeyDown={onListKeyDown} className="space-y-1.5">
+          {visible.map((mention, index) => {
             const active = selectedId === mention.id
             const checked = mergeIds.includes(mention.id)
             // 已處理那一頁不提供合併（回過的東西沒有「一起回」可言）
@@ -235,6 +265,9 @@ export function MentionInbox({ onSelect, onMergedGenerate }: MentionInboxProps) 
                     ) : null}
                     <button
                       type="button"
+                      // 方向鍵導航的定位點（見 onListKeyDown）。放在這顆按鈕上
+                      // 而不是外層 li：從勾選框按 ↓ 不該跳到下一則
+                      data-mention-index={index}
                       className="min-w-0 flex-1 text-left"
                       onClick={() => onSelect(mention.id)}
                     >

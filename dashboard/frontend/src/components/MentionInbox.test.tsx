@@ -172,3 +172,93 @@ describe('合併勾選寫回網址（?merge=）', () => {
     expect(window.location.hash).toBe('#/mentions/47')
   })
 })
+
+/**
+ * 清單的方向鍵導航（設計規格 §11.1 的「左欄清單移動」）。
+ *
+ * 這裡驗的是**焦點**移動，不是選取變化——開啟那一則交給 Enter／點擊。
+ * 每按一次方向鍵就導覽的話，走過十則就在歷史裡留下十筆、每一則都重掛草稿
+ * 工作區；想快速換一則有 `[`／`]`（測試在 `hooks/useGlobalHotkeys.test.tsx`）。
+ */
+describe('MentionInbox 的方向鍵導航', () => {
+  const 甲 = mention(47, 'pending', '甲')
+  const 乙 = mention(48, 'pending', '乙')
+  const 丙 = mention(49, 'pending', '丙')
+
+  /** 那則卡片上的主按鈕（就是方向鍵的定位點）。 */
+  function cardButton(sender: string) {
+    return within(card(sender)).getByRole('button', { name: new RegExp(sender) })
+  }
+
+  it('↓ 往下一則、↑ 往上一則', async () => {
+    seed([甲, 乙, 丙])
+    renderInbox()
+
+    cardButton('甲').focus()
+    await userEvent.keyboard('{ArrowDown}')
+    expect(cardButton('乙')).toHaveFocus()
+
+    await userEvent.keyboard('{ArrowDown}')
+    expect(cardButton('丙')).toHaveFocus()
+
+    await userEvent.keyboard('{ArrowUp}')
+    expect(cardButton('乙')).toHaveFocus()
+  })
+
+  it('Home 與 End 跳到頭尾，邊界夾住不繞回', async () => {
+    seed([甲, 乙, 丙])
+    renderInbox()
+
+    cardButton('甲').focus()
+    await userEvent.keyboard('{End}')
+    expect(cardButton('丙')).toHaveFocus()
+
+    // 已經在最後一則，再按 ↓ 停在原地（不繞回第一則）
+    await userEvent.keyboard('{ArrowDown}')
+    expect(cardButton('丙')).toHaveFocus()
+
+    await userEvent.keyboard('{Home}')
+    expect(cardButton('甲')).toHaveFocus()
+    await userEvent.keyboard('{ArrowUp}')
+    expect(cardButton('甲')).toHaveFocus()
+  })
+
+  it('**焦點在勾選框上時方向鍵不跳走**', async () => {
+    // 勾選框自己不吃方向鍵，但也不該讓清單搶走——使用者是在操作那個勾選框
+    seed([甲, 乙])
+    renderInbox()
+
+    mergeCheckbox('甲').focus()
+    await userEvent.keyboard('{ArrowDown}')
+    expect(mergeCheckbox('甲')).toHaveFocus()
+  })
+
+  it('**方向鍵不改變選取**（正對照：點擊才會）', async () => {
+    // 每按一次方向鍵就導覽，走過十則就是十筆歷史。移動與開啟要分開
+    const selected: number[] = []
+    seed([甲, 乙])
+    render(
+      <RouterProvider>
+        <MentionInbox onSelect={(id) => selected.push(id)} onMergedGenerate={() => {}} />
+      </RouterProvider>,
+    )
+
+    cardButton('甲').focus()
+    await userEvent.keyboard('{ArrowDown}')
+    expect(selected).toEqual([])
+
+    // 正對照：同一顆按鈕按 Enter（卡片本身就是 button）就會開啟
+    await userEvent.keyboard('{Enter}')
+    expect(selected).toEqual([48])
+  })
+
+  it('打字鍵不被吃掉（清單不該攔下不是導航鍵的按鍵）', async () => {
+    seed([甲, 乙])
+    renderInbox()
+
+    cardButton('甲').focus()
+    const event = new KeyboardEvent('keydown', { key: 'a', bubbles: true, cancelable: true })
+    cardButton('甲').dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(false)
+  })
+})

@@ -49,6 +49,20 @@ const SUMMARY_LISTBOX = '[role="listbox"][aria-label="要做摘要的 Space"]'
 const topBarButton = (page, name) => page.locator('header').getByRole('button', { name })
 const settingsDialog = (page) => page.getByRole('dialog', { name: '設定' })
 
+/**
+ * 把焦點從輸入框拿掉再測單鍵快捷鍵。
+ *
+ * 單鍵快捷鍵在 `input`／`textarea`／`[contenteditable]` 裡刻意不生效
+ * （規格 §11.2）。前面幾節點過搜尋框與分頁連結，焦點很可能還在某個輸入框上
+ * ——不先 blur 的話，`g s` 會變成在搜尋框裡打字，而失敗訊息長得像「快捷鍵
+ * 沒實作」。
+ */
+const blur = (page) =>
+  page.evaluate(() => {
+    const el = document.activeElement
+    if (el instanceof HTMLElement) el.blur()
+  })
+
 ;(async () => {
   const { browser, page, errors, authMode } = await open()
   const { check, finish } = scoreboard()
@@ -255,8 +269,175 @@ const settingsDialog = (page) => page.getByRole('dialog', { name: '設定' })
     `${regions.markdownLive} 個`,
   )
 
-  // ── 9. 沒有 console error ─────────────────────────────────
-  console.log('\n【9】沒有 console error')
+  // ── 9. `?` 快捷鍵說明 ─────────────────────────────────────
+  console.log('\n【9】? 快捷鍵說明（規格 §11.1）')
+  await goHash(page, '#/summary')
+  await blur(page)
+  await page.keyboard.press('?')
+  await page.waitForTimeout(300)
+  const helpDialog = page.getByRole('dialog', { name: '鍵盤快捷鍵' })
+  check('? 開啟說明面板', (await helpDialog.count()) > 0)
+  const kbdCount = await helpDialog.locator('kbd').count()
+  check('說明面板逐鍵畫成 kbd', kbdCount >= 20, `${kbdCount} 個 kbd`)
+  check(
+    '焦點進了面板（鍵盤使用者不會還停在後面的工作台）',
+    await page.evaluate(
+      () => document.activeElement?.getAttribute('aria-label') === '鍵盤快捷鍵',
+    ),
+  )
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(300)
+  check('Esc 關閉說明面板', (await helpDialog.count()) === 0)
+
+  // 這一條是本輪最重要的迴歸：設定開著時多開一層說明，一次 Esc 只能關一層。
+  // 同型的 bug 在命令面板上發生過（commit adf7c84），修法是 defaultPrevented
+  // ＋ store 的 isOverlayOpen()。新增覆蓋層時最容易漏掉的就是這件事。
+  await topBarButton(page, '設定').click()
+  await page.waitForTimeout(400)
+  await blur(page)
+  await page.keyboard.press('?')
+  await page.waitForTimeout(300)
+  check('設定開著時也開得了說明面板', (await helpDialog.count()) > 0)
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(400)
+  check(
+    '**Esc 只關說明面板，設定還在**',
+    (await helpDialog.count()) === 0 && (await settingsDialog(page).count()) > 0,
+  )
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(400)
+  check('正對照：再按一次 Esc 才關掉設定', (await settingsDialog(page).count()) === 0)
+
+  // ── 10. 兩鍵序列 g s / g m / g , / g h ────────────────────
+  console.log('\n【10】兩鍵序列導覽（規格 §11.1）')
+  await goHash(page, '#/mentions')
+  await blur(page)
+  await page.keyboard.press('g')
+  await page.keyboard.press('s')
+  await page.waitForTimeout(300)
+  check('g s → 摘要工作台', (await hashOf(page)) === '#/summary', await hashOf(page))
+
+  await page.keyboard.press('g')
+  await page.keyboard.press('m')
+  await page.waitForTimeout(300)
+  check('g m → Mention 收件匣', (await hashOf(page)) === '#/mentions', await hashOf(page))
+
+  await page.keyboard.press('g')
+  await page.keyboard.press(',')
+  await page.waitForTimeout(400)
+  check('g , → 設定', (await hashOf(page)) === '#/settings/reply', await hashOf(page))
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(400)
+
+  // g h 落在診斷頁。**診斷頁排在登入 gate 之前、由 App 直接渲染**（規格 §6.5），
+  // 所以它不在 AppShell 裡、全域快捷鍵在那一頁不生效——要離開得用畫面上的
+  // 「回到…」按鈕。這是既有的架構決定，不是這次的 bug，但值得留在測試裡當紀錄。
+  await goHash(page, '#/mentions')
+  await blur(page)
+  await page.keyboard.press('g')
+  await page.keyboard.press('h')
+  await page.waitForTimeout(500)
+  check('g h → 診斷頁', (await hashOf(page)) === '#/settings/diagnostics', await hashOf(page))
+  check('診斷頁有離開的入口（那一頁沒有全域快捷鍵）', (await page.getByRole('button', { name: /回到/ }).count()) > 0)
+
+  // 逾時：`g` 之後超過 1 秒才按第二鍵就不算一組
+  await goHash(page, '#/mentions')
+  await blur(page)
+  await page.keyboard.press('g')
+  await page.waitForTimeout(1300)
+  await page.keyboard.press('s')
+  await page.waitForTimeout(300)
+  check('**超過 1 秒的第二鍵不算同一組**', (await hashOf(page)) === '#/mentions', await hashOf(page))
+
+  // 正對照：同一組按鍵不等待就會動——證明上面那個「沒動」不是按鍵根本沒送到
+  await page.keyboard.press('g')
+  await page.keyboard.press('s')
+  await page.waitForTimeout(300)
+  check('正對照：不等待時同一組按鍵是會動的', (await hashOf(page)) === '#/summary', await hashOf(page))
+
+  // 在左欄搜尋框裡打字不該觸發導覽
+  await goHash(page, '#/summary')
+  const railSearch = page.locator('aside input[type="text"], aside input:not([type])').first()
+  await railSearch.click()
+  await railSearch.fill('')
+  await page.keyboard.type('gs')
+  await page.waitForTimeout(300)
+  check(
+    '**在搜尋框裡打 g s 只是打字**（值真的收到了，才證明按鍵有送到）',
+    (await hashOf(page)) === '#/summary' && (await railSearch.inputValue()) === 'gs',
+    `hash=${await hashOf(page)} value=${await railSearch.inputValue()}`,
+  )
+  await railSearch.fill('')
+
+  // ── 11. [ ] 換 Mention 與收件匣清單的 ↑↓ ─────────────────
+  console.log('\n【11】[ ] 換 Mention、收件匣清單的 ↑↓（規格 §11.1）')
+  await goHash(page, '#/mentions')
+  await page.waitForTimeout(400)
+  // 待處理可能只有一兩則，資料不夠就換到已處理分頁（那裡筆數多得多）
+  let cards = page.locator('[data-mention-index]')
+  if ((await cards.count()) < 2) {
+    await page.getByRole('tab', { name: /已處理/ }).click()
+    await page.waitForTimeout(500)
+    cards = page.locator('[data-mention-index]')
+  }
+  const cardCount = await cards.count()
+  check('收件匣至少有兩則可以走（否則下面兩條測不出東西）', cardCount >= 2, `${cardCount} 則`)
+
+  if (cardCount >= 2) {
+    await cards.first().click()
+    await page.waitForTimeout(400)
+    const firstHash = await hashOf(page)
+    await blur(page)
+    await page.keyboard.press(']')
+    await page.waitForTimeout(450)
+    const nextHash = await hashOf(page)
+    check('] 走到下一則', nextHash !== firstHash && nextHash.startsWith('#/mentions/'), `${firstHash} → ${nextHash}`)
+
+    await page.keyboard.press('[')
+    await page.waitForTimeout(450)
+    check('[ 走得回上一則', (await hashOf(page)) === firstHash, await hashOf(page))
+
+    // 已經在第一則，再按 [ 應該停住（邊界夾住、不繞回）
+    await page.keyboard.press('[')
+    await page.waitForTimeout(400)
+    check('**在第一則按 [ 停住，不繞回最後一則**', (await hashOf(page)) === firstHash, await hashOf(page))
+
+    // 清單的 ↑↓ 只移動焦點、不改網址
+    const arrow = await page.evaluate(async () => {
+      const first = document.querySelector('[data-mention-index="0"]')
+      if (!(first instanceof HTMLElement)) return null
+      first.focus()
+      const hashBefore = window.location.hash
+      first.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+      await new Promise((r) => setTimeout(r, 250))
+      return {
+        focused: document.activeElement?.getAttribute('data-mention-index'),
+        hashBefore,
+        hashAfter: window.location.hash,
+      }
+    })
+    check('↓ 把焦點移到下一則', arrow !== null && arrow.focused === '1', JSON.stringify(arrow))
+    check(
+      '**↓ 不改網址**（移動與開啟要分開，不然走過十則就是十筆歷史）',
+      arrow !== null && arrow.hashBefore === arrow.hashAfter,
+      JSON.stringify(arrow),
+    )
+  }
+
+  // ── 12. ⌘⇧C 複製 Markdown ────────────────────────────────
+  console.log('\n【12】⌘⇧C 複製 Markdown（規格 §11.1）')
+  // **不觸發串流**，所以這裡沒有摘要內容可以複製。那正好是可觀察的訊號：
+  // 快捷鍵有接上就會冒「沒有可複製的內容」，完全沒接上則什麼都不會出現。
+  // 裸 ⌘C 不可以被攔這件事由 `hooks/useGlobalHotkeys.test.tsx` 守著。
+  await goHash(page, '#/summary')
+  await blur(page)
+  await page.keyboard.press('Meta+Shift+C')
+  await page.waitForTimeout(600)
+  const copyToast = await page.getByText(/已複製摘要 Markdown|沒有可複製的內容/).count()
+  check('⌘⇧C 有接上（冒出複製結果的提示）', copyToast > 0)
+
+  // ── 13. 沒有 console error ────────────────────────────────
+  console.log('\n【13】沒有 console error')
   check('沒有 console error', errors.length === 0, errors.slice(0, 2).join(' | '))
 
   const code = finish()
