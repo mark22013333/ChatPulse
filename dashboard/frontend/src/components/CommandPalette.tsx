@@ -113,6 +113,13 @@ export function CommandPalette() {
             onKeyDown={onKeyDown}
             placeholder={`搜尋 ${spaces.length} 個 Space、Mention 與設定…`}
             aria-label="搜尋指令"
+            // 這是 ARIA 的 combobox 模式（輸入框 ＋ 一份 listbox 彈出清單），
+            // 所以 role 與 aria-expanded 都要明說。少了 role="combobox"，
+            // 下面那個 aria-activedescendant 在多數螢幕閱讀器上不會被採用
+            // ——高亮移動就完全念不出來。面板只在開著時渲染，所以 expanded
+            // 恆為 true。
+            role="combobox"
+            aria-expanded
             aria-controls="command-results"
             aria-activedescendant={results[active] ? `command-${results[active].id}` : undefined}
             className="text-foreground placeholder:text-fg-subtle min-w-0 flex-1 bg-transparent text-sm outline-none"

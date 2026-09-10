@@ -91,7 +91,11 @@ describe('設計 token 守門', () => {
   it('③ title= 只出現在白名單，且數量不得增加', () => {
     const counts: Record<string, number> = {}
     for (const file of TSX) {
-      const n = (readFileSync(file, 'utf8').match(/\stitle=/g) ?? []).length
+      // 要先洗掉註解，與 ①②⑤ 一致（那正是 stripComments 存在的理由）。
+      // 少了這一步，元件測試裡「解釋為什麼不准用 title」的註解本身會被
+      // 算成違規——2026-09-10 實際踩到，EvidenceList.test.tsx 被判 2 個。
+      // 註解裡的寫法不會被瀏覽器套用，所以洗掉不會放過任何真的違規。
+      const n = (stripComments(readFileSync(file, 'utf8')).match(/\stitle=/g) ?? []).length
       if (n > 0) counts[relative(SRC, file)] = n
     }
     for (const [file, n] of Object.entries(counts)) {
@@ -142,5 +146,14 @@ describe('守門測試自己有效嗎（正對照）', () => {
 
   it('色碼的 pattern 抓得到 #0ea5e9', () => {
     expect(FIXTURE.match(/#[0-9a-fA-F]{3,8}\b/g)).toContain('#0ea5e9')
+  })
+
+  it('**title= 的 pattern 抓得到真的屬性、但不抓註解裡提到的**', () => {
+    // ③ 改成先洗註解之後，這條就是它的正對照：證明洗掉的只有註解，
+    // 真正寫在 JSX 上的 title= 一個都沒放過。
+    expect(stripComments(FIXTURE).match(/\stitle=/g)).toHaveLength(1)
+
+    const inComment = ['// 這行在講 title= 這個屬性', '/* 這裡也提到 title="x" */'].join('\n')
+    expect(stripComments(inComment).match(/\stitle=/g)).toBeNull()
   })
 })
