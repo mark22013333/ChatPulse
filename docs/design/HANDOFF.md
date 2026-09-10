@@ -17,10 +17,11 @@
 不要破壞的東西、驗證陷阱）。設計決策的單一事實來源是
 docs/design/2026-09-09-ui-redesign.md，需要時再查對應章節，不必全讀。
 
-現況：分支 feature/ui-redesign-evidence-first，28 個 commit，main 未動，
+現況：分支 feature/ui-redesign-evidence-first，29 個 commit，main 未動，
 工作區乾淨。八個 Phase 實作完成，兩個回報的 bug 已修，五項未完成工項全部
 完成，§10.6 的串流無障礙宣告與 §10.3 的 title 清理也做完了。
-單元／元件測試 389 項全綠（含 109 項元件測試），瀏覽器 E2E 29 項全綠。
+測試 389 項全綠：node 285 項（19 檔純函式）＋ jsdom 104 項（9 檔元件）。
+瀏覽器 E2E 29 項全綠。
 
 這次要做的，依序：
 
@@ -55,12 +56,13 @@ docs/design/2026-09-09-ui-redesign.md，需要時再查對應章節，不必全�
 > 未完成工項 **1～5 全部完成**，規格 §15.4 的四條元件測試也補齊，另外新增了
 > 瀏覽器 E2E。剩下的只有 3b 的部分檔案大小帳（見那一節）。
 
-- **分支**：`feature/ui-redesign-evidence-first`，**28 個 commit**，**`main` 未動**。
+- **分支**：`feature/ui-redesign-evidence-first`，**29 個 commit**，**`main` 未動**。
 - **狀態**：八個 Phase 實作完成、兩個回報的 bug 已修、五項未完成工項全部完成、
   §10.6 串流宣告與 §10.3 的 title 清理完成。
 - **測試**：
   - 單元／元件：**389 項 / 28 檔**全綠（`npm --prefix dashboard/frontend run test`）
-    其中 **109 項是元件測試**（jsdom project，10 個 `*.test.tsx`），其餘純函式（node）。
+    - node project：**285 項 / 19 檔**（純函式，`*.test.ts`）
+    - jsdom project：**104 項 / 9 檔**（元件，`*.test.tsx`）
   - 瀏覽器 E2E：`tests/e2e/test_ui_redesign.cjs` **29 項**全綠（真 Chromium）。
     五支 `.cjs` 一起跑用 `.venv/bin/python tests/e2e/run_browser.py`。
 - **啟動**：`./chatpulse.sh web`。注意 **`chatpulse.sh` 不吃 `--port`**，一律起在 8000
