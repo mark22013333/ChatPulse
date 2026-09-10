@@ -112,13 +112,28 @@ describe('每一項證據的文字都讀得到（規格 §15.4 第 3 條）', ()
           { mention_id: 47, sender_display: '陳柏元', create_time: '2026-09-10T02:16:39Z' },
           { mention_id: 48, sender_display: '林小美', create_time: '2026-09-10T03:20:00Z' },
         ],
-        reference: { spaces: [{ id: 'spaces/BBB', name: '客服回報', count: 12 }] },
-        reply: { tone: '工程師', persona: '工程師口吻', sepia: true },
-      } as Partial<SseMeta>),
+        reference_spaces: [{ space_id: 'spaces/BBB', space_name: '客服回報', message_count: 12 }],
+        reply: {
+          tone: 'engineer',
+          tone_label: '工程師',
+          persona_id: 7,
+          persona_name: '羅振宇（羅胖）',
+          custom_prompt: true,
+          sepia: true,
+        },
+      }),
       polishMeta({}),
     )
 
-    // 這條的價值在「逐項」：漏掉哪一項就是那一項只活在別的地方
+    // 這條的價值在「逐項」：漏掉哪一項就是那一項只活在別的地方。
+    // **但「逐項」只涵蓋 bundle.items 真的產出的項**——fixture 用錯欄位名時，
+    // 那一項會直接不存在，於是這個迴圈跑得很順、什麼也沒驗到。
+    // 2026-09-11 實際發生：`reference` 應該是 `reference_spaces`，
+    // 而 referenceItem() 對空陣列回 null，「參考 Space」那一列整項消失。
+    // 所以先釘住「這幾項一定要在」，再逐項檢查文字。
+    expect(bundle.items.map((i) => i.id)).toEqual(
+      expect.arrayContaining(['reference', 'reply-setting']),
+    )
     expect(bundle.items.length).toBeGreaterThan(4)
     for (const item of bundle.items) {
       expect(
@@ -169,6 +184,55 @@ describe('每一項證據的文字都讀得到（規格 §15.4 第 3 條）', ()
     expect(detail).toBeInTheDocument()
     expect(detail.closest('details')).not.toBeNull() // 確實是收起來的那一份
     expect(screen.getByText('原串')).toBeInTheDocument()
+  })
+})
+
+/**
+ * 回話設定那一列的明細。
+ *
+ * 為什麼要獨立一段：上面「每一項的文字都讀得到」那條只斷言 `item.label`、
+ * `item.metric`、`item.summary`，**從來沒有碰過 `item.detail`**。而
+ * `reply-setting` 這一項只有 detail（`evidence.ts` 的 `replySettingItem`
+ * 不給 summary 也不給 metric），所以它整項的內容一直沒有任何測試守著。
+ *
+ * 這一點在 2026-09-11 被實際踩到：那份 fixture 寫的是
+ * `{ tone: '工程師', persona: '工程師口吻' }`，而契約上的欄位叫
+ * `tone_label` 與 `persona_name`（`types.ts:487-497` 沒有 `persona` 這個
+ * 欄位）。於是那條測試一路綠燈，實際渲染出來的卻是「Persona：未使用」、
+ * 而且口氣那一行根本沒被 push。`as Partial<SseMeta>` 的轉型讓 tsc 也看不到。
+ *
+ * 這一列的用途正是「我選的 Persona 到底有沒有生效」——它答錯的時候，
+ * 使用者看到的是「未使用」，與「真的沒選」完全無法分辨。
+ */
+describe('回話設定列的明細（Persona 到底有沒有生效）', () => {
+  it('**有 persona_name 時顯示人名**', () => {
+    renderEvidence(
+      draftMeta({
+        reply: { tone_label: '工程師', persona_id: 7, persona_name: '羅振宇（羅胖）', sepia: false },
+      }),
+    )
+
+    expect(screen.getByText('回話設定')).toBeInTheDocument()
+    expect(screen.getByText('Persona')).toBeInTheDocument()
+    expect(screen.getByText('羅振宇（羅胖）')).toBeInTheDocument()
+    expect(screen.queryByText('未使用')).toBeNull()
+    // 口氣那一行走的是 tone_label，不是 tone
+    expect(screen.getByText('口氣')).toBeInTheDocument()
+    expect(screen.getByText('工程師')).toBeInTheDocument()
+  })
+
+  it('沒有 persona_name 時顯示「未使用」（這是兩種情況的分界）', () => {
+    renderEvidence(draftMeta({ reply: { sepia: false } }))
+
+    expect(screen.getByText('Persona')).toBeInTheDocument()
+    expect(screen.getByText('未使用')).toBeInTheDocument()
+  })
+
+  it('只給 tone（沒有 tone_label）時不畫口氣那一行——契約欄位不可混用', () => {
+    renderEvidence(draftMeta({ reply: { tone: 'engineer', sepia: false } }))
+
+    expect(screen.queryByText('口氣')).toBeNull()
+    expect(screen.queryByText('engineer')).toBeNull()
   })
 })
 
