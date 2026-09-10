@@ -7,6 +7,50 @@
 
 ---
 
+## 實作進度（隨 Phase 更新）
+
+| Phase | 狀態 | commit | 與規格的落差 |
+| :--- | :--- | :--- | :--- |
+| 規格書本身 | — | `abb5013` | — |
+| P0 設計 token 地基 | 完成 | `bb385d4` | 無。另補了 §3.5 的相容層與 §3.6 的既有 CSS 處置，規格已回填 |
+| P1 hash 路由 | 完成 | `757ad07` | `?merge=` 的 URL 同步未接上（`parseHash` 已支援並有測試，只是收件匣的勾選還沒寫回 URL） |
+| P2 保留掛載 | 完成 | `472f0c7` | 效能量測用「串流中隱藏側內容仍增長」與 API 呼叫計數取代 React DevTools Profiler |
+| P3 設定中心 | 完成 | `7d51444` | `QuickReplySettings` 378 行、`ReplyDefaultsPage` 328 行超過 250 目標——兩者渲染同一組 Select 選項，共用元件未抽出；`CodeProjectSettings` 未再拆成清單頁與表單 |
+| P4 證據欄 | 完成 | `e3cbed3` | 無 |
+| P5 色彩與排版退役 | 完成 | `02ab318` | 無。守門測試 `lib/tokens.test.ts` 已上，含三條正對照 |
+| P7 響應式 | 完成 | `323d691` | 768–1024 沒做成「主從切換」，實測兩欄並存可用、無功能損失 |
+| 無障礙與文案 | 完成 | `e7fecdd` | §10.3 的 `title` 處置做了一半：29 → 12，剩下的由守門測試鎖住不得增加 |
+| P6 命令面板與鍵盤 | 完成 | `164ddc1` | 虛擬清單的 roving tabindex 未做（436 筆的鍵盤導航仍是逐個 Tab）；`g s`／`g m` 兩鍵序列未做 |
+
+### 收工數字（只算 `.tsx`，排除守門測試自己的正對照樣本）
+
+| 指標 | 改版前 | 改版後 |
+| :--- | ---: | ---: |
+| 繞過 token 的具名色 | 107 | **0** |
+| 任意像素字級 | 118 | **0** |
+| `title=` 屬性 | 29 | **12**（守門測試鎖住） |
+| `.metric`（tabular-nums） | 0 | **29** |
+| `role=` | 2 | **8** |
+| `sr-only` | 2 | **8** |
+| 前端測試 | 159 | **239** |
+| 最大的元件檔 | 913（`ReplySettings.tsx`） | **477**（`DraftReplyWorkspace.tsx`） |
+
+### 尚未做的（依價值排序）
+
+1. **虛擬清單的 roving tabindex**（§10.5）。436 筆目前仍是逐個 Tab，鍵盤使用者要走很久。⌘K 命令面板已經提供了替代路徑，所以不是死路，但這條該補。
+2. **`?merge=` 的 URL 同步**。合併勾選還沒寫回網址，所以「勾了兩則」的狀態不能貼連結分享。
+3. **`QuickReplySettings` 與 `ReplyDefaultsPage` 的共用元件**。兩邊渲染同一組 Select 選項，改一邊忘了改另一邊會不一致。
+4. **元件層測試**（§15.4 的四條）。目前 239 項全是純函式，元件行為靠瀏覽器實測，沒有自動化回歸。
+5. **`code_terms` 手動指定檢索關鍵字**（§1.4 已說明為何刻意不做）。
+
+**驗證方式的一則教訓**（值得寫進 §16.3）：用瀏覽器探針量「某件事發生了幾次」時，
+**「0 次」必須有正對照才可信**。實測時 `fetch` 攔截器一度回報「切頁籤 0 次 API 呼叫」，
+但那也可能是攔截器根本沒生效；補上「按強制刷新應該記到 1 次」的正對照之後，那個 0 才有意義。
+同理，DOM 探針要記得**限縮在 active 的那一半**——兩個工作台常駐掛載、設定是覆蓋層，
+`document.querySelector` 會選到背景那一份。
+
+---
+
 ## 0. 這份文件怎麼用
 
 這是一份**可直接照做**的規格。每一節都給到實作層級：token 給實際數值、元件給職責與 props、每個 Phase 給可勾選的驗收條件。
@@ -1372,9 +1416,14 @@ npm --prefix dashboard/frontend run test        # 基準 159 項 / 11 檔，數�
    - **可以**：新增 action、新增 state 欄位、新增 selector、開新檔（例：`codeProjects` 加 `loaded` 旗標、`mentions` 加 `startPolling`／`stopPolling`、在 `spaces.ts` 旁邊**新增** `sortByPinned` 而不動 `filterSpaces`）。
    - **不可以**：改動既有 export 的簽章或回傳形狀、把既有函式搬走、把 store 拆成 slice、改動既有測試斷言到的文案常數。
    - 唯一允許的簽章改動是 P6 的 `keyboard.ts` 的 `isComposing`（`keyboard.test.ts` 同步更新）。
+   - 為既有 action 增加**可選參數**是允許的，但預設值必須讓既有呼叫端的行為
+     **完全不變**（照 `store/replySettings.ts:198` 的 `async ({ force = false } = {})` 寫法）。
    - **機械檢查**：每個 Phase 收工對每個動過的既有 store／lib 檔跑
-     `git diff -U0 <檔> | grep '^-' | grep -v '^---'`，**刪除行必須為 0**（純新增）。
+     `git diff -U0 <檔> | grep '^-' | grep -v '^---'`，逐行確認每一條刪除行
+     都有對應的新版本（＝就地修改），**不得有淨移除**。
      注意不要寫成 `grep '^-[^-]'`——那會把原文以 `-` 開頭的內容行一起濾掉，變成靜默通過。
+   - 最終的把關仍是 159 項測試零減少、零失敗。機械檢查只是讓「改了什麼」在
+     review 時無所遁形。
 4. **串流狀態繼續住在 store，切頁籤不中止生成。** `DraftReplyWorkspace.tsx:125-130` 與 `SummaryWorkspace.tsx:110-112` 的「刻意不在 unmount 時 abort」是踩過坑寫出來的，不得「順手修正」。
 5. **`store/draft.ts:300-319` 的 `reset()` 不得清空跨 Mention 的偏好**（`referenceSpaceIds`／`codeRefs`／`refLimit`／`referenceSearch`／五個回覆設定欄位）。
 6. **任何送出動作都要二次確認對話框**，且對話框必須顯示會送出的全文與目標。
