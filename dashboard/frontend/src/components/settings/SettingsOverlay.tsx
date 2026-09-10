@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { XIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { CodeProjectsPage } from '@/components/settings/CodeProjectsPage'
@@ -10,6 +10,7 @@ import { SpacePrefsPage } from '@/components/settings/SpacePrefsPage'
 import { hashForSettings, type SettingsTab } from '@/lib/route'
 import { cn } from '@/lib/utils'
 import { useRouter } from '@/router/useRouter'
+import { useUiStore } from '@/store/ui'
 
 /** 分頁順序＝從「最常改」到「最少改」。診斷頁不在這裡，它在登入 gate 之前。 */
 const TABS: { id: SettingsTab; label: string; hint: string }[] = [
@@ -46,39 +47,38 @@ function PageFor({ tab }: { tab: SettingsTab }) {
  * 設定中心（設計規格 §8）。
  *
  * 這是一個**覆蓋層路由**：兩個工作台仍掛在後面，串流不會中斷、狀態不會掉。
- * 關閉就是 `history.back()`；直接貼連結進來（沒有上一頁）才 fallback 到摘要。
- * 因此不需要 `returnTo` 參數。
+ * 關閉就是回到 router 記下的 `previousHash`（進設定之前所在的位置），
+ * 直接貼連結進來時那是 `#/summary`。因此不需要 `returnTo` 參數。
  *
  * 判準是「**這次不一樣**留工作區，**以後都這樣**進設定中心」。
  */
 export function SettingsOverlay() {
-  const { route, navigate } = useRouter()
+  const { route, navigate, previousHash } = useRouter()
   const tab = route.settingsTab ?? 'reply'
   const panelRef = useRef<HTMLDivElement>(null)
-  const openedAt = useRef(window.history.length)
 
-  const close = () => {
-    // 有上一頁就退回去（使用者原本在看的那個 Space／Mention 還在）；
-    // 直接貼連結進來的話退不回去，落到摘要工作台
-    if (window.history.length > openedAt.current || window.history.state !== null) {
-      window.history.back()
-    } else {
-      navigate('#/summary', { replace: true })
-    }
-  }
+  // 關閉＝把「整段設定操作」這一筆歷史換回原本的位置。
+  //
+  // 一定要 replace：不帶的話會再 push 一筆，於是「進設定 → 關閉 → 按返回鍵」
+  // 又掉回設定裡。搭配下面分頁列的 replace，整段設定在歷史上只占一筆，
+  // 所以不管點過幾個分頁，關閉都只要按一次。
+  const close = useCallback(() => {
+    navigate(previousHash, { replace: true })
+  }, [navigate, previousHash])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.stopPropagation()
-        close()
-      }
+      if (event.key !== 'Escape') return
+      // 命令面板開著時它自己接管鍵盤（與 useGlobalHotkeys 同一條規則）。
+      // 面板的 Esc 是 React 合成事件，處理完原生事件仍會冒泡到 window，
+      // 不擋的話一次 Esc 會同時關掉面板與設定——由內而外才是對的。
+      if (useUiStore.getState().paletteOpen) return
+      event.stopPropagation()
+      close()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-    // close 每次 render 都是新的，但它只讀 ref 與 navigate，不需要進相依
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [close])
 
   // 開啟時把焦點移進面板，鍵盤使用者才不會還停在後面的工作台上
   useEffect(() => {
@@ -115,6 +115,15 @@ export function SettingsOverlay() {
                 <li key={item.id}>
                   <a
                     href={hashForSettings(item.id)}
+                    // 切換設定分頁不是「值得用返回鍵走回去」的導覽，它只該占
+                    // 一筆歷史。裸 <a> 每點一次就 push 一筆，於是點五個分頁
+                    // 要按五次關閉才出得去。保留 href 讓中鍵開新分頁與螢幕
+                    // 閱讀器仍然正確，只攔左鍵。
+                    onClick={(event) => {
+                      if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return
+                      event.preventDefault()
+                      navigate(hashForSettings(item.id), { replace: true })
+                    }}
                     aria-current={active ? 'page' : undefined}
                     className={cn(
                       'block rounded-lg px-2.5 py-2 transition-colors',

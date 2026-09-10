@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react'
@@ -17,6 +18,8 @@ interface NavigateOptions {
 interface RouterValue {
   route: Route
   navigate: (hash: string, options?: NavigateOptions) => void
+  /** 進入設定覆蓋層之前所在的位置。直接貼設定連結進來時是 '#/summary' */
+  previousHash: string
 }
 
 const RouterContext = createContext<RouterValue | null>(null)
@@ -52,6 +55,18 @@ export function RouterProvider({ children }: { children: ReactNode }) {
 
   const route = useMemo(() => parseHash(hash), [hash])
 
+  /**
+   * 設定覆蓋層要知道「進來之前在哪」才關得回去。
+   *
+   * 不能靠 `history.back()` 推：設定分頁之間切換用的是 replace（不然點五個
+   * 分頁就要按五次關閉），history 不再成長，任何以 `history.length` 為準的
+   * 啟發式都會失準。改由 router 自己記一份。
+   */
+  const lastNonSettings = useRef('#/summary')
+  useEffect(() => {
+    if (route.section !== 'settings') lastNonSettings.current = hash || '#/summary'
+  }, [route.section, hash])
+
   const navigate = useCallback((next: string, options: NavigateOptions = {}) => {
     if (window.location.hash === next) return
     if (options.replace) {
@@ -64,7 +79,14 @@ export function RouterProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const value = useMemo(() => ({ route, navigate }), [route, navigate])
+  // 相依只有 route／navigate：lastNonSettings 唯一的寫入者是上面那個 effect，
+  // 而它與 route 由同一次 hash 變動驅動、且在下一次 render 之前就寫完了，
+  // 所以 route 一變就會帶出最新的值。把 ref.current 列進相依陣列反而誤導
+  // ——React 不會因為 ref 的內容變了而重算。
+  const value = useMemo(
+    () => ({ route, navigate, previousHash: lastNonSettings.current }),
+    [route, navigate],
+  )
 
   return <RouterContext.Provider value={value}>{children}</RouterContext.Provider>
 }
