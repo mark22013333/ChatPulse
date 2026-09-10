@@ -100,6 +100,7 @@ export function SpacesRail() {
       <SpaceList
         spaces={visible}
         loading={loading && items.length === 0}
+        label="要做摘要的 Space"
         selectedId={selectedId}
         onSelect={(space) => navigate(hashForSummary(space.id))}
         onRename={openRename}

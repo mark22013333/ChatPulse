@@ -253,6 +253,7 @@ export function DraftReplyWorkspace({ mention, active = true }: DraftReplyWorksp
 
           <SpaceList
             spaces={referenceCandidates}
+            label="一起當作參考的 Space"
             checkedIds={referenceSpaceIds}
             onToggle={(space) => toggleReference(space.id)}
             emptyHint="查無符合的 Space"
