@@ -17,28 +17,28 @@
 不要破壞的東西、驗證陷阱）。設計決策的單一事實來源是
 docs/design/2026-09-09-ui-redesign.md，需要時再查對應章節，不必全讀。
 
-現況：分支 feature/ui-redesign-evidence-first，12 個 commit，main 未動，
-工作區乾淨。規格書的八個 Phase 都實作完成並驗證過，239 項測試全綠。
+現況：分支 feature/ui-redesign-evidence-first，18 個 commit，main 未動，
+工作區乾淨。八個 Phase 實作完成，兩個回報的 bug 已修，291 項測試全綠
+（其中 31 項是元件測試）。
 
 這次要做的，依序：
 
-1. 修 Bug 1（收件匣按鈕）與 Bug 2（設定頁要按 N 次關閉）。
-   兩者的根因、建議修法、驗收條件都寫在 HANDOFF.md 第一節，
-   已經定位到 檔案:行號 並有資料佐證，**不要重新調查，直接照著修**。
-   但如果你發現那個修法本身有問題，回報、不要照做。
+1. 元件測試還缺規格 §15.4 的前兩條（HANDOFF 未完成工項第 4 項）：
+   送出流程的確認框，以及 Sepia 三態。這兩條的價值最高——「送出了不可
+   撤回的訊息」與「以為 Sepia 生效其實沒有」是這個產品最貴的兩個錯誤。
 
-2. 修完之後補上這兩個場景的元件測試（HANDOFF 未完成工項第 4 項）。
-   目前 239 項全是純函式測試，元件行為沒有自動化回歸——這兩個 bug
-   正好是最值得先蓋住的兩條。
+2. 在真瀏覽器上覆驗 Bug 2（HANDOFF 第七節第 1 點）。上一輪只有 jsdom
+   的證據，沒有真瀏覽器實測。
 
-3. 有餘力再往下做未完成工項 1～3（虛擬清單的鍵盤導航、?merge= 的 URL
-   同步、兩個回覆設定檔的共用元件）。
+3. 有餘力再看未完成工項 5（code_terms）與「其他小項」，或動 3b 的
+   檔案大小帳（拆 DraftReplyWorkspace 要照規格 §9.2 的清單）。
 
 工作方式：
 - 每一項獨立 commit，Conventional Commits、繁體中文。
 - 每個 commit 前跑 typecheck ＋ test，並透過 scripts/webapp.py 重建
   （單獨 npm run build 會讓 dist 被判 stale，指令在 HANDOFF 第四節）。
 - 宣告修好之前要有本 session 的實際證據：測試輸出或瀏覽器實測。
+  新測試寫完做一次反向對照（把修復還原，確認測試真的會紅）。
   用瀏覽器探針時注意 HANDOFF 第四節列的三個陷阱，特別是
   「回報 0 次必須有正對照」與「DOM 探針要限縮在非 inert 的那個 pane」。
 - HANDOFF 第三節那七條約束是踩過坑寫出來的，動到相關程式碼前先看一眼。
@@ -48,25 +48,38 @@ docs/design/2026-09-09-ui-redesign.md，需要時再查對應章節，不必全�
 
 ## 30 秒現況
 
-- **分支**：`feature/ui-redesign-evidence-first`，**12 個 commit**（11 個改版 ＋ 這份交接），**`main` 未動**。
-- **狀態**：規格書的八個 Phase 全部實作完成並各自驗證過。改版本身可以用。
-- **測試**：239 項 / 16 檔全綠。`npm --prefix dashboard/frontend run test`
-- **啟動**：`./chatpulse.sh web`。驗證時我用 `--port 8010` 另開一個埠，避免佔用你正在用的 8000。
-- **待辦**：下面兩個已定位的 bug，加上五項未完成工作。
+> **2026-09-10 更新（第二個 session）**：下面第一節的兩個 bug **都已修掉**，
+> 未完成工項 1～4 也做完了。這一段與各節的狀態標記都是那一輪之後的現況。
+
+- **分支**：`feature/ui-redesign-evidence-first`，**18 個 commit**，**`main` 未動**。
+- **狀態**：規格書的八個 Phase 全部實作完成。兩個已回報的 bug 已修，有元件測試蓋住。
+- **測試**：**291 項 / 22 檔**全綠。`npm --prefix dashboard/frontend run test`
+  - 其中 **31 項是元件測試**（jsdom project，`*.test.tsx`），其餘仍是純函式（node）。
+- **啟動**：`./chatpulse.sh web`。注意 **`chatpulse.sh` 不吃 `--port`**，一律起在 8000
+  （前一版交接寫的 `--port 8010` 是錯的，那個參數會被忽略）。
+- **待辦**：未完成工項只剩第 5 項與「其他小項」，另有 3b 的檔案大小帳。
 
 ```bash
 # 接手後先跑這三個確認基準
 npm --prefix dashboard/frontend run typecheck        # 應為零錯誤
-npm --prefix dashboard/frontend run test             # 應為 239 passed / 16 files
+npm --prefix dashboard/frontend run test             # 應為 291 passed / 22 files
 .venv/bin/python -c "import sys; sys.path.insert(0,'scripts'); import webapp; print(webapp.frontend_state())"
 # 期望輸出：ready
 ```
 
 ---
 
-## 一、兩個已定位的 bug（根因已確認，附證據）
+## 一、兩個已定位的 bug（**兩個都已修復**，2026-09-10）
+
+> 這一節保留原本的根因分析，因為它解釋了「為什麼那樣修」。
+> 修復狀態與實際做法補在各自的「已修復」段。
 
 ### Bug 1：從摘要工作台產生的草稿，在待處理分頁卻顯示「退回待處理」
+
+> **已修復** — commit `8e89c22`。判準抽成 `store/mentions.ts` 的 `isOutstanding()`，
+> 原本分歧的三處都改用它。`MentionInbox.test.tsx` 有 5 項元件測試蓋住
+> （含「按下去送出的是 resolved 不是 pending」），`mentions.test.ts` 另加 4 項。
+> 反向對照做過：把修復還原，那兩項立刻紅在「找不到『標記已處理』按鈕」。
 
 **現象**（使用者回報）：摘要工作台按「產生回覆草稿」→ 跳到收件匣 → 那則出現在「待處理」分頁，但按鈕寫的是「退回待處理」。
 
@@ -133,6 +146,17 @@ export function isOutstanding(state: MentionStateValue): boolean {
 ---
 
 ### Bug 2：設定頁點了五個分頁，要按五次「關閉」才出得去
+
+> **已修復** — commit `8e71ab9`。照下面建議的兩步做：分頁列改 replace、
+> router 新增 `previousHash`、`openedAt` 與整段啟發式條件刪掉。
+> `SettingsOverlay.test.tsx` 有 8 項元件測試蓋住。反向對照做過，訊息正是回報
+> 的症狀：`expected 5 to be +0`（點五個分頁 push 了五筆）、
+> `expected '#/settings/spaces' to be '#/mentions/65'`（按一次只退一個分頁）。
+>
+> **下面「陷阱」段講的那件事是真的**：設定開著又開命令面板時，按一次 Esc
+> 會同時關掉面板與設定（面板的 Esc 是 React 合成事件，處理完原生事件仍會冒泡
+> 到設定掛在 window 上的監聽器）。同一個 commit 一併修掉，守衛與
+> `useGlobalHotkeys` 同一條規則：面板開著時設定不接鍵盤。
 
 **現象**（使用者回報）：在設定中心切換多個分頁後，每按一次「關閉」只退回上一個分頁。
 
@@ -214,7 +238,27 @@ const close = () => navigate(previousHash, { replace: true })
 
 ## 二、未完成工項（依價值排序）
 
-### 1. 虛擬清單的 roving tabindex（規格 §10.5）
+> **2026-09-10 進度**：1、2、3、4 已完成，剩 5 與「其他小項」。3b 的帳有還一部分。
+
+### 1. 虛擬清單的 roving tabindex（規格 §10.5）— **已完成**（commit `880e4ea`）
+
+實作照下面寫的做了，另外踩到三個下面沒預料到的坑，程式碼裡都留了註解：
+
+1. **roving tabindex 配虛擬滾動有個洞**：active 那一列捲出可視範圍就不在 DOM 裡，
+   於是整份清單沒有任何 `tabIndex=0` 的節點、**Tab 進不去**。解法是這時把 tab
+   停留點讓給第一個還掛著的列。
+2. **取焦要等目標列掛出來**：`scrollToIndex` 之後那一列不保證在同一個 tick 就存在，
+   所以用不設相依的 `useLayoutEffect` 每次 render 試一次，取到才收手。
+3. **改名鈕不能放進 `role="option"` 裡**（option 內不該有可互動元素）。`li` 改成
+   `role="none"` 只當定位容器，option 是它裡面那一層，改名鈕是 option 的兄弟。
+
+測試：`lib/listNavigation.test.ts` 8 項（純函式）＋ `SpaceList.test.tsx` 10 項。
+jsdom 沒有佈局、真虛擬清單一列都掛不出來，所以測試裡把 virtualizer 換成
+「固定只掛前 13 列」的假件，保留「只有一部分列在 DOM 裡」這個唯一相關的性質。
+
+<details>
+<summary>原本的規劃內容（保留供對照）</summary>
+
 436 筆 Space 目前仍是**逐個 Tab**，鍵盤使用者要走很久。⌘K 命令面板提供了替代路徑，所以不是死路，但這條該補。
 
 做法（規格 §10.5 有完整說明）：`<ul role="listbox">` ＋ `<li role="option" aria-selected>`，`tabIndex` 只有 active 那列是 0；`↑↓ Home End PageUp PageDown Enter`；移動時先 `virtualizer.scrollToIndex({ align: 'auto' })`（**不要 `center`**）再取焦。按鍵→index 的計算抽到 `lib/listNavigation.ts` 純函式測。
@@ -223,15 +267,35 @@ const close = () => navigate(previousHash, { replace: true })
 
 檔案：`components/SpaceList.tsx`。注意它同時服務單選（摘要）與複選（Reference Space）兩種模式。
 
-### 2. `?merge=` 的 URL 同步
-`lib/route.ts` 的 `parseHash` 已經支援並有測試（含順序與去重），但收件匣的勾選還沒寫回網址，所以「勾了兩則要合併」的狀態不能貼連結分享，重新整理也會掉。
+</details>
 
-做法：`MentionInbox` 的 `toggleMerge` 之後呼叫 `navigate(hashForMentions(primaryId, mergeIds), { replace: true })`；`useRouteSync` 反向套用時需要 store 有 `setMergeIds`（**新增** action，不要改既有的 `toggleMerge`）。
+### 2. `?merge=` 的 URL 同步 — **已完成**（commit `796be65`）
 
-### 3. `QuickReplySettings` 與 `ReplyDefaultsPage` 的共用元件
-兩個檔（**365 行**與 **312 行**）渲染**同一組** Select 選項——口氣、Persona、提示詞的 `SelectItem` 內容逐字重複。改一邊忘了另一邊就會不一致。
+照原訂做法做的（新增 `setMergeIds`，不動 `toggleMerge`）。兩件原本沒寫到、但會咬人的事：
 
-做法：把三組 `SelectContent` 的內容抽成 `components/settings/replyControls.tsx` 的共用元件。
+- **網址不表達「只勾了一則」。** `hashForMentions` 兩則以上才帶 `merge`
+  （`route.test.ts` 有一條守著這個設計決定）。所以 URL→store 反向同步時，
+  網址上沒有 merge **不可以**清掉單獨一則的勾選——照清的話，使用者勾第一則的
+  瞬間它會自己彈回去。突變測試確認過這條守衛。
+- **`App.tsx` 的 `onMergedGenerate` 原本導航時丟掉 `mergeIds`。** 加了反向同步
+  之後，那會在按下「合併產生草稿」的瞬間把勾選清空，`DraftReplyWorkspace` 的
+  `activeMergeIds` 跟著變空——合併就散了。已一併改成把 mergeIds 帶進網址。
+
+測試：`MentionInbox.test.tsx` +5、`useRouteSync.test.tsx` +6（後者順便把紅線 4
+的去重鎖住，含正對照）。
+
+### 3. `QuickReplySettings` 與 `ReplyDefaultsPage` 的共用元件 — **已完成**（commit `14579bf`）
+
+範圍比原訂的大一些：兩邊**讀寫的是同一份 store**，所以重複的不只是
+`SelectContent`，連 `toneItems`／`personaValue` 這些推導也逐字重複。抽出來的是
+四個完整元件（`ToneSelect`／`PersonaSelect`／`PromptSelect`／`PersonaNotice`），
+呼叫端只給真正有差異的 trigger id、寬度、`disabled`。
+
+行數 365 → **200**、312 → **139**，新檔 237。
+
+重構的驗證方式值得照抄：**先寫特徵測試，拿它跑重構前的程式碼確認會過，
+再跑重構後。** `replyControls.test.tsx` 的 6 項在前後兩版都全過——這才是
+「外部行為沒變」的證據，只跑重構後的版本證明不了任何事。
 
 ### 3b. 檔案大小門檻沒達成（規格 P4 的驗收條件，前一個 session 漏了沒檢）
 規格 §14 的 P4 有一條「**全域最大檔 < 250 行**」（`lib/types.ts` 是認可的例外），但沒有實際跑過那條檢查就結案了。現況：
@@ -240,27 +304,50 @@ const close = () => navigate(previousHash, { replace: true })
 find dashboard/frontend/src -name '*.tsx' -o -name '*.ts' | grep -v test | xargs wc -l | sort -rn | head
 ```
 
-| 檔案 | 行數 |
+| 檔案 | 行數（2026-09-10 更新） |
 | :--- | ---: |
 | `lib/types.ts` | 560（純型別，規格認可的例外） |
-| `components/DraftReplyWorkspace.tsx` | **477** |
-| `App.tsx` | 425 |
+| `components/DraftReplyWorkspace.tsx` | **478** |
+| `App.tsx` | 428 |
 | `store/replySettings.ts` | 413（store，本次未動） |
 | `components/SummaryWorkspace.tsx` | 371 |
-| `components/draft/QuickReplySettings.tsx` | 365 |
 | `lib/evidence.ts` | 360 |
-| …另有 6 個介於 256–341 之間 | |
+| `store/draft.ts` | 341 |
+| `lib/api.ts` | 321 |
+| `components/MentionInbox.tsx` | 304（本輪 +40：合併寫回網址與註解） |
+| …另有 2 個介於 256–281 之間 | |
+
+`QuickReplySettings`（365 → 200）與 `ReplyDefaultsPage`（312 → 139）已經因為
+工項 3 掉到門檻以下。仍超標的還有 8 個（不含 `types.ts`）。
 
 **這不是急件**——477 行的 `DraftReplyWorkspace` 已經比改版前的 656 行好很多，也不影響功能。但規格說要拆而沒拆，該記在帳上。真要動的話，規格 §9.2 有完整的拆檔清單（`MentionSourceCard`／`ReferenceSpacePicker`／`CodeRefPicker`／`DraftSetupPanel`／`DraftOutputPane`／`DraftReplyEditor`／`SendReplyConfirm`）。
 
 順序建議：**先修兩個 bug、先補元件測試，再談拆檔**。沒有元件測試的情況下拆 477 行是在沒有安全網的高處走。
 
-### 4. 元件層測試（規格 §15.4）
-目前 239 項**全是純函式**。元件行為（送出確認框、Sepia 三態、證據欄、命令面板）是靠瀏覽器實測驗過的，沒有自動化回歸——下一個人改壞了不會有人告訴他。
+### 4. 元件層測試（規格 §15.4）— **環境已建好**（commit `64d6733`），還有兩條沒寫
 
-規格 §15.4 列了四條高價值的測試與工具決策（加 `@testing-library/react` ＋ `jsdom`，用 `test.projects` 讓 `*.test.tsx` 走 jsdom、`*.test.ts` 維持 node，現有 239 項執行環境完全不變）。
+工具決策照規格：`@testing-library/react` ＋ `jsdom`，用 `test.projects` 讓
+`*.test.tsx` 走 jsdom、`*.test.ts` 維持 node。**既有純函式測試的執行環境完全沒變。**
 
-**Bug 1 與 Bug 2 修完之後，這兩個場景正好是前兩條元件測試的好題目。**
+目前 31 項元件測試，分佈：`MentionInbox` 10、`SettingsOverlay` 8、`SpaceList` 10、
+`useRouteSync` 6、`replyControls` 6（跨兩個 project 合計 291 項 / 22 檔）。
+
+規格 §15.4 列的四條裡，**還沒寫的是第 1 與第 2 條**：
+
+1. **送出流程**：`meta.answering` 有 3 則時確認框要列出那 3 則的寄件人與時間；
+   空白／串流中送出鈕 disabled；`send` 拋錯不關對話框。
+2. **Sepia 三態**：`polished === false` 時 `fallback_reason` 必須用 `getByText`
+   找得到（**不是** `toHaveAttribute('title')`）。
+
+這兩條的價值比已寫的還高——「送出了不可撤回的訊息」與「以為 Sepia 生效其實
+沒有」是這個產品最貴的兩個錯誤。下一輪優先做它們。
+
+**寫元件測試時記住兩件本輪學到的事**：
+
+- **每個「0／沒發生」的斷言都要配一條正對照。** 例：「切分頁 +0 筆歷史」旁邊
+  放「一次 push 導覽 +1」，證明 `history.length` 在 jsdom 真的會動。
+- **新測試寫完要做反向對照**：把被測的修復還原，確認測試真的會紅。本輪四次都做了，
+  其中兩次抓到「斷言其實沒在咬」的問題。
 
 ### 5. `code_terms` 手動指定檢索關鍵字
 規格 §1.4 說明了為何刻意不做：它要動 `store/draft.ts` 的 `generate()` 請求組裝，而那是既有測試覆蓋最密集的一段，收益（一個次要輸入框）與風險不成比例。要做的話請一併補 store 測試。
@@ -349,5 +436,26 @@ dashboard/frontend/src/
 | `e7fecdd` | 無障礙 landmark、skip link、文案去術語化 |
 | `164ddc1` | P6 命令面板與快捷鍵 |
 | `414d54c` | 規格書回填實作進度 |
+| `5a65de9` | 這份交接文件 |
+| `8e89c22` | fix：自選對話顯示成「退回待處理」（Bug 1） |
+| `8e71ab9` | fix：設定頁要按 N 次關閉（Bug 2）＋ Esc 同時關掉面板與設定 |
+| `64d6733` | test：元件測試環境（jsdom project）＋ 兩個 bug 的場景 |
+| `880e4ea` | feat：虛擬清單 roving tabindex（工項 1） |
+| `796be65` | feat：`?merge=` URL 同步（工項 2） |
+| `14579bf` | refactor：兩處回覆設定共用下拉元件（工項 3） |
 
 分支尚未推送，`main` 未動。要合併時照專案慣例 `git merge --no-ff`。
+
+---
+
+## 七、下一輪接手的人請注意
+
+1. **Bug 2 沒有在真瀏覽器上驗過。** 那一輪的 Playwright 是全新 profile、停在登入頁，
+   claude-in-chrome 擴充又沒連上，所以證據全部來自 jsdom 的元件測試。jsdom 的
+   history 實作與真瀏覽器不完全相同——**點五個分頁按一次關閉**這件事，值得你在
+   自己已登入的瀏覽器上再點一次確認。其餘幾項（Bug 1、roving tabindex、`?merge=`、
+   共用元件）也都只有測試證據。
+2. **`chatpulse.sh` 不吃 `--port`。** 前一版交接寫的 `--port 8010` 會被忽略，一律起
+   在 8000。
+3. **zsh 預設 `noclobber`**：腳本裡用 `>` 覆寫已存在的檔案會失敗（訊息是
+   `file exists`）。要覆寫用 `>|`。這個坑在本輪的暫存檔操作上踩到一次。
