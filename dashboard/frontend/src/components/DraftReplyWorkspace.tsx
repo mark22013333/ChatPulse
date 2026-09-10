@@ -19,7 +19,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { Markdown } from '@/components/Markdown'
 import { ProviderSelect } from '@/components/ProviderSelect'
-import { ReplySettings } from '@/components/ReplySettings'
+import { QuickReplySettings } from '@/components/draft/QuickReplySettings'
 import { SpaceList } from '@/components/SpaceList'
 import { errorMessage } from '@/lib/api'
 import { formatDateTime } from '@/lib/format'
@@ -275,7 +275,7 @@ export function DraftReplyWorkspace({ mention, active = true }: DraftReplyWorksp
 
           {/* 回覆設定（ADR-0007）。放在供應商之後、資料來源之前，
               維持「模型與生成設定在上、資料來源在下」的既有分組。 */}
-          <ReplySettings disabled={streaming} />
+          <QuickReplySettings disabled={streaming} />
 
           <SpaceList
             spaces={referenceCandidates}

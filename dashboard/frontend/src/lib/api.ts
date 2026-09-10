@@ -148,6 +148,8 @@ export const api = {
    *   是使用者會主動選的狀態，必須存得下去。
    */
   updatePreferences: (body: {
+    /** 取消最後一個釘選要送 `[]`——送 `null` 是「不改」，會靜默地沒有效果 */
+    pinned_space_ids?: string[]
     default_provider?: string | null
     default_limit?: number
     default_style?: string

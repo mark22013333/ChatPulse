@@ -1,9 +1,9 @@
 import { useEffect, useMemo, type ReactNode } from 'react'
-import { InboxIcon, Loader2Icon, LogOutIcon, SparklesIcon } from 'lucide-react'
+import { InboxIcon, Loader2Icon, LogOutIcon, SettingsIcon, SparklesIcon } from 'lucide-react'
 import { PulseMark } from '@/app/PulseMark'
 import { Button } from '@/components/ui/button'
-import { CodeProjectSettings } from '@/components/CodeProjectSettings'
 import { DiagnosticsPage } from '@/components/settings/DiagnosticsPage'
+import { SettingsOverlay } from '@/components/settings/SettingsOverlay'
 import { CollectorPanel } from '@/components/CollectorPanel'
 import { DraftReplyWorkspace } from '@/components/DraftReplyWorkspace'
 import { LoginScreen } from '@/components/LoginScreen'
@@ -13,7 +13,7 @@ import { SummaryHistory } from '@/components/SummaryHistory'
 import { SummaryWorkspace } from '@/components/SummaryWorkspace'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { UsagePanel } from '@/components/UsagePanel'
-import { hashForMentions, hashForSummary } from '@/lib/route'
+import { hashForMentions, hashForSettings, hashForSummary } from '@/lib/route'
 import { cn } from '@/lib/utils'
 import { useRouter } from '@/router/useRouter'
 import { useRouteSync } from '@/router/useRouteSync'
@@ -192,6 +192,15 @@ export default function App() {
               {me.viewer.display_name || me.viewer.email}
             </span>
           ) : null}
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => navigate(hashForSettings('reply'))}
+            aria-label="設定"
+          >
+            <SettingsIcon />
+            設定
+          </Button>
           <ThemeToggle />
           <Button size="sm" variant="ghost" onClick={() => void logout()}>
             <LogOutIcon />
@@ -246,18 +255,18 @@ export default function App() {
           </Pane>
           <Pane active={view === 'mentions'}>
             <CollectorPanel />
+            {/* 參考專案設定已搬到設定中心（§8）。它是「以後都這樣」的設定，
+                塞在右欄的代價是 1024px 以下整個消失且沒有替代入口。 */}
             <div className="min-h-0 flex-1 overflow-y-auto">
-              {/* 參考專案設定放這裡：與 Draft Reply 同一個情境，
-                  調整分支對應之後馬上就能在左邊勾選使用。 */}
-              <div className="border-b border-border p-3">
-                <CodeProjectSettings />
-              </div>
               <SummaryHistory />
             </div>
             <UsagePanel />
           </Pane>
         </aside>
       </div>
+
+      {/* 設定中心是覆蓋層：工作台仍掛在後面，串流不中斷、狀態不掉 */}
+      {route.section === 'settings' ? <SettingsOverlay /> : null}
     </div>
   )
 }

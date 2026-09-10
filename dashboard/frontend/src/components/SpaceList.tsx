@@ -1,6 +1,6 @@
 import { useRef } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { HashIcon, Loader2Icon, PencilIcon, UserIcon } from 'lucide-react'
+import { HashIcon, Loader2Icon, PencilIcon, PinIcon, UserIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { relativeTime, spaceTypeLabel } from '@/lib/format'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -110,7 +110,14 @@ export function SpaceList({
                   >
                     {space.displayName || space.id}
                   </span>
-                  <span className="block truncate text-[10px] text-muted-foreground">
+                  <span className="flex items-center gap-1 truncate text-[10px] text-muted-foreground">
+                    {/* 釘選的排在最前面，這個標記就是排序的解釋 */}
+                    {space.pinned ? (
+                      <>
+                        <PinIcon className="size-2.5 shrink-0" aria-hidden />
+                        <span className="sr-only">已釘選，</span>
+                      </>
+                    ) : null}
                     {spaceTypeLabel(space.type)} · 最後活動 {relativeTime(space.lastActiveTime)}
                   </span>
                 </span>

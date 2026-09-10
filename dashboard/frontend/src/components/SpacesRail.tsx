@@ -16,7 +16,7 @@ import { relativeTime } from '@/lib/format'
 import { onEnter } from '@/lib/keyboard'
 import { hashForSummary } from '@/lib/route'
 import { useRouter } from '@/router/useRouter'
-import { filterSpaces, useSpacesStore } from '@/store/spaces'
+import { filterSpaces, sortByPinned, useSpacesStore } from '@/store/spaces'
 import type { Space } from '@/lib/types'
 
 /** 左側 Space 導覽（搜尋 + 強制刷新 + 虛擬滾動清單）。 */
@@ -45,7 +45,8 @@ export function SpacesRail() {
   // 首次載入搬到 AppShell 的 bootstrap（設計規格 §7.4）：釘選、命令面板、
   // Reference Space 三處都要 spaces，不該由「哪個畫面剛好先掛載」決定何時載入。
 
-  const visible = useMemo(() => filterSpaces(items, search), [items, search])
+  // 釘選的排前面。過濾與排序刻意分開（filterSpaces 有 14 項既有測試打在上面）
+  const visible = useMemo(() => sortByPinned(filterSpaces(items, search)), [items, search])
 
   const openRename = (space: Space) => {
     // 自動猜的名字不預填——那是猜的，讓使用者從空白開始比較清楚；
