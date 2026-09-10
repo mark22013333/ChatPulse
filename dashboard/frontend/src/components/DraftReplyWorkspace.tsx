@@ -3,7 +3,6 @@ import {
   AlertCircleIcon,
   CompassIcon,
   FileCodeIcon,
-  Loader2Icon,
   MessageSquareQuoteIcon,
   SendIcon,
   SparklesIcon,
@@ -26,9 +25,8 @@ import { formatDateTime } from '@/lib/format'
 import { splitDraft, useDraftStore } from '@/store/draft'
 import { ENV_LABELS, ENV_ORDER, useCodeProjectStore } from '@/store/codeProjects'
 import { useMentionsStore } from '@/store/mentions'
-import { providerLabel, useProviderStore } from '@/store/providers'
 import { filterSpaces, useSpacesStore } from '@/store/spaces'
-import type { DraftContextMeta, Mention } from '@/lib/types'
+import type { Mention } from '@/lib/types'
 
 interface DraftReplyWorkspaceProps {
   mention: Mention | null
@@ -37,34 +35,6 @@ interface DraftReplyWorkspaceProps {
    * 每個串流 chunk；傳下去讓 Markdown 在不可見時暫停重新 parse（§7.3）。
    */
   active?: boolean
-}
-
-const CONTEXT_MODE_LABEL: Record<DraftContextMeta['mode'], string> = {
-  flat_window: '前後脈絡',
-  thread: '討論串',
-  thread_thin: '討論串＋鄰近',
-}
-
-/** 把 meta.context 濃縮成一行。舊版後端沒有這個欄位，退回原本的「討論串 N 則」。 */
-function contextLabel(context: DraftContextMeta | undefined, fallback: number | undefined) {
-  if (!context) return `討論串 ${fallback ?? 0} 則`
-  const label = CONTEXT_MODE_LABEL[context.mode] ?? '脈絡'
-  const partial = context.coverage === 'partial' ? '（不連續）' : ''
-  return `${label} ${context.message_count} 則${partial}`
-}
-
-/** hover 才需要看的細節：涵蓋的時間區間與各區塊的組成。 */
-function contextTitle(context: DraftContextMeta | undefined) {
-  if (!context) return '本次送進模型的討論串則數'
-  const lines = context.blocks.map((b) => `${b.label}：${b.count} 則`)
-  const { start, end } = context.time_range
-  if (start && end) {
-    lines.push(`涵蓋 ${formatDateTime(start)} ~ ${formatDateTime(end)}`)
-  }
-  if (context.coverage === 'partial') {
-    lines.push('系統沒能取回這則訊息周圍的完整對話（它可能太舊了），脈絡不保證連續')
-  }
-  return lines.join('\n')
 }
 
 /**
@@ -76,7 +46,6 @@ export function DraftReplyWorkspace({ mention, active = true }: DraftReplyWorksp
   const applyResolved = useMentionsStore((state) => state.applyResolved)
   const applyResolvedMany = useMentionsStore((state) => state.applyResolvedMany)
   const mergeIds = useMentionsStore((state) => state.mergeIds)
-  const providers = useProviderStore((state) => state.providers)
 
   const {
     referenceSpaceIds,
@@ -385,131 +354,10 @@ export function DraftReplyWorkspace({ mention, active = true }: DraftReplyWorksp
 
           {raw || streaming ? (
             <div className="space-y-4">
-              {meta ? (
-                <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
-                  {/* 脈絡的「形狀」一定要顯示：私訊走前後窗、群組走討論串，
-                      涵蓋範圍差很多，而從草稿內容完全看不出來是哪一種。
-                      在此之前這裡只寫「討論串 N 則」，私訊永遠顯示 1 則也沒人看得懂為什麼。 */}
-                  <span
-                    className={cn(
-                      'font-mono',
-                      meta.context?.coverage === 'partial' && 'text-amber-600 dark:text-amber-400',
-                    )}
-                    title={contextTitle(meta.context)}
-                  >
-                    {contextLabel(meta.context, meta.thread_message_count)}
-                  </span>
-                  {/* 合併回覆時一定要顯示「這份草稿會回掉幾則」：從草稿內容
-                      看不出來它有沒有真的回到每一則，而送出會一次結掉全部。 */}
-                  {(meta.answering?.length ?? 0) > 1 ? (
-                    <span
-                      className="rounded border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 font-medium text-sky-600 dark:text-sky-400"
-                      title={(meta.answering ?? [])
-                        .map(
-                          (a) =>
-                            `${a.sender_display ?? '未知成員'} · ${formatDateTime(a.create_time)}`,
-                        )
-                        .join('\n')}
-                    >
-                      合併回覆 {meta.answering?.length} 則
-                    </span>
-                  ) : null}
-                  {/* 圖片張數一定要顯示：附件有沒有被讀進去，從草稿內容看不出來，
-                      使用者只能猜。顯示 0 張也有意義——那代表「讀了但沒有圖」。 */}
-                  {meta.image_count !== undefined ? (
-                    <span
-                      className="font-mono"
-                      title={
-                        meta.images_skipped?.length
-                          ? `略過：${meta.images_skipped.join('、')}`
-                          : '實際送進模型的圖片張數'
-                      }
-                    >
-                      · 圖片 {meta.image_count} 張
-                      {meta.images_skipped?.length ? `（略過 ${meta.images_skipped.length}）` : ''}
-                    </span>
-                  ) : null}
-                  {/* 一律以 meta 回報的供應商為準——伺服器可能因別名解析而用了別的 */}
-                  {meta.provider ? (
-                    <span
-                      className="rounded border border-violet-500/25 bg-violet-500/10 px-2 py-0.5 font-medium text-violet-600 dark:text-violet-400"
-                      title="本次實際使用的 AI 供應商與模型（來自 meta 事件）"
-                    >
-                      {providerLabel(providers, meta.provider)}
-                      {meta.model ? <span className="ml-1 font-mono">· {meta.model}</span> : null}
-                    </span>
-                  ) : null}
-                  {/* 回覆設定（ADR-0007）：以伺服器回報的為準，理由同供應商——
-                      使用者選的可能被偏好或降級規則改掉，畫面要顯示實際生效的。 */}
-                  {meta.reply?.tone_label ? (
-                    <span
-                      className="rounded border border-border bg-muted/50 px-1.5 py-0.5"
-                      title="本次實際套用的回覆口氣"
-                    >
-                      {meta.reply.tone_label}
-                    </span>
-                  ) : null}
-                  {meta.reply?.persona_name ? (
-                    <span
-                      className="rounded border border-border bg-muted/50 px-1.5 py-0.5"
-                      title="本次套用的 Persona（風格參考，不代表本人）"
-                    >
-                      Persona: {meta.reply.persona_name}
-                    </span>
-                  ) : null}
-                  {meta.reply?.custom_prompt ? (
-                    <span
-                      className="rounded border border-border bg-muted/50 px-1.5 py-0.5"
-                      title="本次套用了自訂提示"
-                    >
-                      自訂提示
-                    </span>
-                  ) : null}
-                  {/*
-                    Sepia 的狀態分三種，而且必須分得出來：
-                      · 綠色「Sepia」    ＝ 潤稿完成並採用
-                      · 琥珀「Sepia 未套用」＝ 跑了但完整性檢查沒過（退回原文）
-                      · 灰色「Sepia 潤稿中」＝ 串流結束後還在潤
-                    第二種絕對不能顯示成第一種——那會讓使用者以為潤過了。
-                  */}
-                  {polish ? (
-                    <span
-                      className={cn(
-                        'rounded border px-1.5 py-0.5 font-medium',
-                        polish.polished
-                          ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
-                          : 'border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-500',
-                      )}
-                      title={
-                        polish.polished
-                          ? '已用 Sepia 潤稿，事實錨點通過完整性檢查'
-                          : (polish.fallback_reason ?? '潤稿未採用，顯示的是未潤稿的版本')
-                      }
-                    >
-                      {polish.polished ? 'Sepia' : 'Sepia 未套用'}
-                    </span>
-                  ) : meta.reply?.sepia && !streaming && raw ? (
-                    <span className="flex items-center gap-1 text-muted-foreground">
-                      <Loader2Icon className="size-3 animate-spin" />
-                      Sepia 潤稿中
-                    </span>
-                  ) : null}
-                  {(meta.reference_spaces ?? []).map((ref) => (
-                    <span
-                      key={ref.space_id}
-                      className="rounded border border-border bg-muted/50 px-1.5 py-0.5"
-                    >
-                      {ref.space_name} · {ref.message_count} 則
-                    </span>
-                  ))}
-                  {streaming ? (
-                    <span className="flex items-center gap-1">
-                      <Loader2Icon className="size-3 animate-spin" />
-                      串流中
-                    </span>
-                  ) : null}
-                </div>
-              ) : null}
+              {/* 這裡原本是一排會換行的彩色小藥丸：脈絡則數、合併幾則、圖片幾張、
+                  供應商、口氣、Persona、自訂提示、Sepia 狀態、每個 Reference Space，
+                  全部 11px、四色混雜、位置隨內容浮動。它們現在住在右側的證據欄，
+                  有固定的位置與順序（設計規格 §5）。 */}
 
               {/*
                 潤稿被退回時要明說原因。只放一個琥珀 badge 不夠——
@@ -526,55 +374,9 @@ export function DraftReplyWorkspace({ mention, active = true }: DraftReplyWorksp
                 </div>
               ) : null}
 
-              {/*
-                檢索結果條：在模型開口**之前**就顯示。
-                這是整個功能最關鍵的 UI —— 搜錯環境、搜錯關鍵字，你一眼就看得到，
-                不必先讀完一整段生成文字才發現依據是錯的。
-              */}
-              {(meta?.code_refs ?? []).length > 0 ? (
-                <div className="space-y-1.5 rounded-lg border border-sky-500/25 bg-sky-500/5 p-2.5">
-                  {(meta?.code_refs ?? []).map((ref, i) => (
-                    <div key={`${ref.project_name}-${ref.environment}-${i}`} className="text-[11px]">
-                      <p className="flex flex-wrap items-center gap-1.5">
-                        <FileCodeIcon className="size-3.5 text-sky-600 dark:text-sky-400" aria-hidden />
-                        <span className="font-medium">{ref.project_name}</span>
-                        <span className="rounded bg-sky-500/15 px-1.5 py-0.5 font-medium text-sky-700 dark:text-sky-300">
-                          {ref.environment_label}
-                        </span>
-                        <code className="font-mono text-muted-foreground">
-                          {ref.branch}@{ref.commit_sha}
-                        </code>
-                        {ref.commit_date ? (
-                          <span className="text-muted-foreground">
-                            （{ref.commit_date.slice(0, 10)}）
-                          </span>
-                        ) : null}
-                      </p>
-                      {ref.terms.length > 0 ? (
-                        <p className="mt-0.5 text-muted-foreground">
-                          關鍵字：{ref.terms.join('、')}
-                        </p>
-                      ) : null}
-                      <p className="mt-0.5 text-muted-foreground">
-                        {ref.hit_count > 0
-                          ? `命中：${ref.files.join('、')}`
-                          : '這個分支沒有找到相符的程式碼'}
-                        {ref.truncated ? '（已截斷）' : null}
-                      </p>
-                      {ref.notes.map((note, n) => (
-                        <p key={n} className="mt-0.5 text-amber-600 dark:text-amber-400">
-                          ※ {note}
-                        </p>
-                      ))}
-                    </div>
-                  ))}
-                  {(meta?.code_skipped ?? []).length > 0 ? (
-                    <p className="text-[10px] text-muted-foreground">
-                      略過：{(meta?.code_skipped ?? []).join('；')}
-                    </p>
-                  ) : null}
-                </div>
-              ) : null}
+              {/* 參考專案的檢索結果（分支、commit、命中檔案）現在是證據欄的
+                  一組列。它本來就是「這份草稿建立在什麼之上」的一部分，放在
+                  固定位置比夾在生成內容中間更容易一眼掃過。 */}
 
               <section>
                 <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold">
@@ -629,10 +431,23 @@ export function DraftReplyWorkspace({ mention, active = true }: DraftReplyWorksp
               <>
                 {' '}
                 只會送出<strong className="text-foreground">這一則</strong>訊息，
-                但送出後<strong className="text-foreground">
+                但送出後下面這 <strong className="text-foreground">
                   {meta?.answering?.length} 則
                 </strong>
                 會一起標成已處理——送出前請確認回話真的每一則都回到了。
+                {/* 逐則列出來，不是只講數字。這是整個流程裡最需要看清楚的一刻：
+                    送出不可撤回，而「漏回其中一則」從草稿內容本身看不出來。
+                    在此之前這份清單只活在一個 title 屬性裡。 */}
+                <ul className="mt-2 space-y-0.5">
+                  {(meta?.answering ?? []).map((item) => (
+                    <li key={item.mention_id} className="flex justify-between gap-3 text-xs">
+                      <span className="text-foreground">{item.sender_display ?? '未知成員'}</span>
+                      <span className="metric text-muted-foreground">
+                        {item.create_time ? formatDateTime(item.create_time) : ''}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
               </>
             ) : (
               <> 送出後這則 Mention 會自動變成已處理。</>

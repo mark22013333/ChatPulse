@@ -2,9 +2,9 @@ import { useEffect, useMemo, type ReactNode } from 'react'
 import { InboxIcon, Loader2Icon, LogOutIcon, SettingsIcon, SparklesIcon } from 'lucide-react'
 import { PulseMark } from '@/app/PulseMark'
 import { Button } from '@/components/ui/button'
+import { EvidenceColumn } from '@/components/evidence/EvidenceColumn'
 import { DiagnosticsPage } from '@/components/settings/DiagnosticsPage'
 import { SettingsOverlay } from '@/components/settings/SettingsOverlay'
-import { CollectorPanel } from '@/components/CollectorPanel'
 import { DraftReplyWorkspace } from '@/components/DraftReplyWorkspace'
 import { LoginScreen } from '@/components/LoginScreen'
 import { MentionInbox } from '@/components/MentionInbox'
@@ -12,7 +12,6 @@ import { SpacesRail } from '@/components/SpacesRail'
 import { SummaryHistory } from '@/components/SummaryHistory'
 import { SummaryWorkspace } from '@/components/SummaryWorkspace'
 import { ThemeToggle } from '@/components/ThemeToggle'
-import { UsagePanel } from '@/components/UsagePanel'
 import { hashForMentions, hashForSettings, hashForSummary } from '@/lib/route'
 import { cn } from '@/lib/utils'
 import { useRouter } from '@/router/useRouter'
@@ -248,19 +247,26 @@ export default function App() {
           </Pane>
         </main>
 
-        <aside className="relative hidden w-72 shrink-0 flex-col border-l border-border lg:flex">
+        {/*
+          右欄＝證據欄（設計規格 §5）。
+
+          它以前是個雜物抽屜：採集器狀態、Token 用量、參考專案設定、歷史
+          Summary 全塞在這裡，而且 1024px 以下整欄消失。現在它只回答一個
+          問題——「這份產出建立在什麼之上」。設定類的東西進了設定中心，
+          採集器狀態進了診斷頁，用量進了設定的資料頁。
+        */}
+        <aside
+          aria-label="證據"
+          className="relative hidden w-rail shrink-0 flex-col border-l border-border lg:flex"
+        >
           <Pane active={view === 'summary'}>
+            <EvidenceColumn origin="summary" />
+            {/* 歷史 Summary 留在這裡：它是「我在這個工作台做過什麼」，
+                與證據同一個情境，不是設定。 */}
             <SummaryHistory />
-            <UsagePanel />
           </Pane>
           <Pane active={view === 'mentions'}>
-            <CollectorPanel />
-            {/* 參考專案設定已搬到設定中心（§8）。它是「以後都這樣」的設定，
-                塞在右欄的代價是 1024px 以下整個消失且沒有替代入口。 */}
-            <div className="min-h-0 flex-1 overflow-y-auto">
-              <SummaryHistory />
-            </div>
-            <UsagePanel />
+            <EvidenceColumn origin="draft" />
           </Pane>
         </aside>
       </div>

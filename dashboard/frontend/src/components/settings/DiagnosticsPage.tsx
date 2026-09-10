@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { AlertCircleIcon, ArrowLeftIcon, Loader2Icon, RefreshCwIcon } from 'lucide-react'
 import { PulseMark } from '@/app/PulseMark'
+import { CollectorPanel } from '@/components/CollectorPanel'
 import { Button } from '@/components/ui/button'
 import { api, errorMessage } from '@/lib/api'
 import { useRouter } from '@/router/useRouter'
@@ -140,6 +141,19 @@ export function DiagnosticsPage() {
             正在向後端確認…
           </p>
         ) : null}
+
+        {/* 採集器狀態從草稿工作區的右欄搬到這裡：它是運維資訊，不是證據。
+            右欄現在只回答「這份產出建立在什麼之上」。 */}
+        <section className="mt-8">
+          <h2 className="text-md font-semibold">採集器</h2>
+          <p className="text-fg-dim mt-1 text-xs">
+            Mention 是後端輪詢 Google Chat 取得的（ADR-0004）。這裡看得到它有沒有在跑、
+            上一輪掃了多少。
+          </p>
+          <div className="mt-3">
+            <CollectorPanel />
+          </div>
+        </section>
       </main>
     </div>
   )
