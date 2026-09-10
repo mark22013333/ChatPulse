@@ -17,21 +17,24 @@
 不要破壞的東西、驗證陷阱）。設計決策的單一事實來源是
 docs/design/2026-09-09-ui-redesign.md，需要時再查對應章節，不必全讀。
 
-現況：分支 feature/ui-redesign-evidence-first，25 個 commit，main 未動，
+現況：分支 feature/ui-redesign-evidence-first，28 個 commit，main 未動，
 工作區乾淨。八個 Phase 實作完成，兩個回報的 bug 已修，五項未完成工項全部
-完成。單元／元件測試 354 項全綠（含 74 項元件測試），瀏覽器 E2E 26 項全綠。
+完成，§10.6 的串流無障礙宣告與 §10.3 的 title 清理也做完了。
+單元／元件測試 389 項全綠（含 109 項元件測試），瀏覽器 E2E 29 項全綠。
 
 這次要做的，依序：
 
-1. 3b 剩下的檔案大小帳（見那一節的表）。規格 §9.1 只為
-   `CodeProjectSettings.tsx` 留了拆檔計畫，其餘九個超標檔沒有規格依據，
+1. **規格 §11.1 的快捷鍵表只實作了五分之二。** 有的：⌘K、⌘J、Esc、
+   斜線、問號。缺的：`g s`／`g m`／`g ,`／`g h`（兩鍵序列）、左欄清單的
+   ↑↓、⌘Enter（開始生成）、⌘.（停止串流）、⌘⇧C（複製）、`[`／`]`
+   （上一則／下一則 Mention）。這是目前最大的一塊未實作規格，而且它
+   卡住另一件事——見 §10.6 那一節的說明。
+
+2. 3b 剩下的檔案大小帳（見那一節的表）。規格 §9.1 只為
+   `CodeProjectSettings.tsx` 留了拆檔計畫，其餘八個超標檔沒有規格依據，
    動之前請先看那一節的建議。
 
-2. 規格 §10.6 的 app 級 live region 還沒做（目前全 app 只有
-   `EvidenceColumn` 有一個 `role="status"`）。串流的螢幕閱讀器宣告
-   三層都缺，`lib/streamAnnouncements.ts` 也還不存在。
-
-3. 「其他小項」：`title=` 還剩 12 處、768–1024 的主從切換。
+3. 「其他小項」只剩 768–1024 的主從切換（`title=` 已清完）。
 
 工作方式：
 - 每一項獨立 commit，Conventional Commits、繁體中文。
@@ -52,12 +55,13 @@ docs/design/2026-09-09-ui-redesign.md，需要時再查對應章節，不必全�
 > 未完成工項 **1～5 全部完成**，規格 §15.4 的四條元件測試也補齊，另外新增了
 > 瀏覽器 E2E。剩下的只有 3b 的部分檔案大小帳（見那一節）。
 
-- **分支**：`feature/ui-redesign-evidence-first`，**25 個 commit**，**`main` 未動**。
-- **狀態**：八個 Phase 實作完成、兩個回報的 bug 已修、五項未完成工項全部完成。
+- **分支**：`feature/ui-redesign-evidence-first`，**28 個 commit**，**`main` 未動**。
+- **狀態**：八個 Phase 實作完成、兩個回報的 bug 已修、五項未完成工項全部完成、
+  §10.6 串流宣告與 §10.3 的 title 清理完成。
 - **測試**：
-  - 單元／元件：**354 項 / 26 檔**全綠（`npm --prefix dashboard/frontend run test`）
-    其中 **74 項是元件測試**（jsdom project，8 個 `*.test.tsx`），其餘純函式（node）。
-  - 瀏覽器 E2E：`tests/e2e/test_ui_redesign.cjs` **26 項**全綠（真 Chromium）。
+  - 單元／元件：**389 項 / 28 檔**全綠（`npm --prefix dashboard/frontend run test`）
+    其中 **109 項是元件測試**（jsdom project，10 個 `*.test.tsx`），其餘純函式（node）。
+  - 瀏覽器 E2E：`tests/e2e/test_ui_redesign.cjs` **29 項**全綠（真 Chromium）。
     五支 `.cjs` 一起跑用 `.venv/bin/python tests/e2e/run_browser.py`。
 - **啟動**：`./chatpulse.sh web`。注意 **`chatpulse.sh` 不吃 `--port`**，一律起在 8000
   （第一版交接寫的 `--port 8010` 是錯的，那個參數會被忽略）。
@@ -334,14 +338,17 @@ jsdom 沒有佈局、真虛擬清單一列都掛不出來，所以測試裡把 v
 | :--- | ---: | :--- |
 | `lib/types.ts` | 560 | — 認可的例外（純型別、鏡射後端契約） |
 | `store/replySettings.ts` | 413 | ❌ 沒有 |
-| `components/SummaryWorkspace.tsx` | 371 | ❌ 沒有 |
+| `components/SummaryWorkspace.tsx` | 383 | ❌ 沒有 |
+| `store/draft.ts` | 370 | ❌ 沒有 |
 | `lib/evidence.ts` | 360 | ⚠ §9.2 標 ~240，但沒說怎麼拆 |
-| `store/draft.ts` | 358 | ❌ 沒有 |
 | `lib/api.ts` | 321 | ❌ 沒有 |
 | `components/MentionInbox.tsx` | 304 | ❌ 沒有 |
-| `components/SpaceMessagePreview.tsx` | 281 | ❌ 沒有 |
+| `components/SpaceMessagePreview.tsx` | 287 | ❌ 沒有 |
 | `components/CodeProjectSettings.tsx` | 256 | ✅ §9.1：檔名應消失，內容進 `settings/CodeProjectsPage.tsx` ＋ `CodeProjectForm.tsx` |
 | `store/mentions.ts` | 251 | ❌ 沒有 |
+
+（`SummaryWorkspace` 與 `draft.ts` 比上一輪各多了十幾行，是 §10.3 的可見文字
+與 `code_terms` 加進去的——把 tooltip 改成可見說明本來就會讓檔案變長。）
 
 **建議（下一輪動之前先想一次）**：
 
@@ -390,8 +397,31 @@ jsdom 沒有佈局、真虛擬清單一列都掛不出來，所以測試裡把 v
 打出來的就是它們，而「打了全角逗號結果整串被當成一個詞」是完全看不出來的
 失敗——只會得到「什麼都沒命中」。
 
+### 6. 串流的螢幕閱讀器宣告（規格 §10.6）— **已完成**（commit `dbfdc11`）
+
+三層都做了：內容層 `aria-busy`（`Markdown` **絕不加 `aria-live`**）、狀態層
+`AppShell` 常駐兩個 sr-only region（`role="status"` ＋ `role="alert"`）只在
+狀態機轉換時寫入、節流層每 10 秒一次進度。字串在 `lib/streamAnnouncements.ts`
+（22 項純函式測試），接線在 `hooks/useStreamAnnouncer.ts`（12 項）。
+
+**規格有一半做不到，原因記在這裡。** §10.6 說「完成時不搶焦點，改在宣告
+文字裡告知快捷鍵」——但 §11.1 表上的導覽鍵（`g s`／`g m`／`[`／`]`／
+⌘Enter／⌘.）**都還沒實作**，目前只有 ⌘K／⌘J／斜線／問號／Esc，所以沒有
+「跳到產出」的鍵可以告知。沒有的快捷鍵不能拿來宣告，所以改成講 landmark
+（「內容在主要內容區」）——那是標準的螢幕閱讀器導覽，不依賴自訂鍵。
+**§11.1 補完之後，回來把那句話改成真正的快捷鍵。**
+
+效能上最要小心的一點：`useStreamAnnouncer` **絕對不訂閱 `text` 與 `raw`**。
+那兩個每個 chunk 都變，訂閱它們等於讓整個 App 每個 chunk 重繪一次——正是
+§9.3 要修掉的問題。它只訂閱布林值，字數等轉換發生的那一刻才 `getState()`
+讀一次。`store/draft.ts` 為此多了一個 `hasReplyHeading()`（只做 regex test、
+不切字串）。
+
 ### 其他小項
-- `title=` 還剩 12 處（規格 §10.3 逐條列了改法）。守門測試 `lib/tokens.test.ts` 已鎖住**不得增加**，所以不會惡化。
+- **`title=` 已清完**（commit `26b495c`）。29 → 2，只剩 `SummaryWorkspace` 與
+  `draft/SendReplyConfirm` 兩處 `ConfirmDialog` 的 title **prop**（對話框標題，
+  不是 tooltip）。`TITLE_BUDGET` 已從 8 檔 12 處收緊到 2 檔 2 處，而且加了一條
+  「ConfirmDialog 的 title prop 不會變成 DOM 屬性」的斷言證明那個白名單的理由。
 - 768–1024 沒做成規格寫的「主從切換」。實測兩欄並存可用、無功能損失，所以沒為它多加一種版面狀態。
 
 ---
@@ -487,6 +517,10 @@ dashboard/frontend/src/
 | `ff601f3` | feat：`code_terms` 手動指定檢索關鍵字（工項 5） |
 | `748f94a` | refactor：拆分 App.tsx（→ AppShell／TopBar／useBootstrap） |
 | `adf7c84` | test：瀏覽器 E2E（26 項）＋ 修掉它抓到的 Esc 真 bug |
+| `9ab3207` | 交接文件回填第三輪 |
+| `5880cf8` | test：元件測試逾時放寬到 15 秒（忙碌機器上的假紅燈） |
+| `dbfdc11` | feat：串流的螢幕閱讀器宣告（§10.6 三層） |
+| `26b495c` | refactor：`title=` 清到只剩兩個對話框標題（§10.3） |
 
 分支尚未推送，`main` 未動。要合併時照專案慣例 `git merge --no-ff`。
 
@@ -506,7 +540,12 @@ dashboard/frontend/src/
 4. **`tokens.test.ts` 的規則③（`title=` 預算）用的是檔案路徑當 key。** 搬動
    檔案時記得把那一筆一起搬（例：`components/DraftReplyWorkspace.tsx` →
    `components/draft/SendReplyConfirm.tsx`），不然新路徑的預算是 0、直接紅。
-5. **規格 §10.6 的 app 級 live region 還沒做。** 全 app 只有 `EvidenceColumn`
-   有一個 `role="status"`；§10.6 要求的三層（內容層 `aria-busy`、狀態層
-   `role="status"` 里程碑、10 秒節流層）與 `lib/streamAnnouncements.ts` 都不存在。
-   這是目前最大的一塊未實作規格。
+5. **寫瀏覽器 E2E 時，選擇器一定要限縮。** 兩個工作台常駐掛載（§7.2），看不見
+   的那一半仍在 DOM 裡；而 Playwright 的 `name` 預設是**子字串**比對，所以
+   `getByRole('button', { name: '設定' })` 會連收件匣裡「內文剛好提到設定」的
+   Mention 卡片一起選中，撞上 strict mode。它是**資料相關的偶發**——換一批
+   Mention 就不會發生，看起來像功能壞掉。`tests/e2e/test_ui_redesign.cjs` 開頭
+   有兩條規則與現成的 helper（`topBarButton`／`settingsDialog`／
+   `SUMMARY_LISTBOX`），照用就好。
+6. **規格 §11.1 的快捷鍵表只實作了五分之二**（見上面「這次要做的」第 1 項）。
+   它同時卡住 §10.6 的「在宣告文字裡告知快捷鍵」。
