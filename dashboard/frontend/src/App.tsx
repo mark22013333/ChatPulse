@@ -4,11 +4,13 @@ import {
   Loader2Icon,
   LogOutIcon,
   PanelRightIcon,
+  SearchIcon,
   SettingsIcon,
   SparklesIcon,
 } from 'lucide-react'
 import { PulseMark } from '@/app/PulseMark'
 import { SmallScreenNotice } from '@/app/SmallScreenNotice'
+import { CommandPalette } from '@/components/CommandPalette'
 import { Button } from '@/components/ui/button'
 import { EvidenceColumn, useEvidenceBundle } from '@/components/evidence/EvidenceColumn'
 import { EvidenceDrawer } from '@/components/evidence/EvidenceDrawer'
@@ -24,6 +26,7 @@ import { ThemeToggle } from '@/components/ThemeToggle'
 import { hashForMentions, hashForSettings, hashForSummary } from '@/lib/route'
 import { cn } from '@/lib/utils'
 import { useBreakpoint } from '@/hooks/useBreakpoint'
+import { useGlobalHotkeys } from '@/hooks/useGlobalHotkeys'
 import { useRouter } from '@/router/useRouter'
 import { useRouteSync } from '@/router/useRouteSync'
 import { useAuthStore } from '@/store/auth'
@@ -56,6 +59,10 @@ export default function App() {
   // 抽屜關著時，頂列的證據鈕要讓人知道「值得打開看一眼」
   const { bundle: evidence } = useEvidenceBundle(view === 'mentions' ? 'draft' : 'summary')
   const attentionCount = evidence.attentionCount
+
+  // 全域快捷鍵。送出類動作刻意沒有快捷鍵（設計規格 §11.1）
+  useGlobalHotkeys({ onToggleEvidence: () => toggleDrawer(breakpoint) })
+  const setPaletteOpen = useUiStore((state) => state.setPaletteOpen)
 
   // 讓頁籤能顯示「另一邊還在生成」。訂閱的是布林值，只有開始／結束時才變，
   // 不會每個 chunk 都讓整個 App 重繪。
@@ -223,6 +230,15 @@ export default function App() {
               {me.viewer.display_name || me.viewer.email}
             </span>
           ) : null}
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => setPaletteOpen(true)}
+            aria-label="開啟命令面板"
+          >
+            <SearchIcon />
+            <kbd className="text-fg-subtle text-2xs">⌘K</kbd>
+          </Button>
           {!evidenceInline ? (
             <Button
               size="sm"
@@ -327,6 +343,8 @@ export default function App() {
           </Pane>
         </aside>
       </div>
+
+      <CommandPalette />
 
       <EvidenceDrawer
         open={!evidenceInline && drawerOpen}
