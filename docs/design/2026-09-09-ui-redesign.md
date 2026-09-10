@@ -366,7 +366,9 @@ ChatPulse 給工程團隊用。Viewer 以自己的 Google 帳號登入，查閱�
 }
 ```
 
-> **Tailwind v4 注意**：`--container-rail` 是否會生成 `w-rail` utility 依 v4 版本而定。若建置後 `w-rail` 沒有生效，退回 `w-[var(--container-rail)]`，不要把數值寫死回 className。
+> **Tailwind v4 實測（2026-09-10，tailwindcss 4.3.3）**：`--container-*` 會生成 `w-*` 與 `max-w-*`，`--spacing-*` 會生成 `p-*`／`gap-*`／`min-h-*`。實測 `w-rail`、`max-w-inbox`、`p-gutter`、`gap-stack`、`min-h-tap` 五個 utility 都正常輸出。
+>
+> 注意 v4 會**樹搖掉沒被使用的 theme 變數**——建置產物裡找不到 `--container-rail` 不代表壞了，只代表還沒有人用它。
 
 ### 3.4 遷移手法：`@theme` 別名 shim
 
@@ -1330,6 +1332,11 @@ jsdom 沒有佈局，**不要去驗真實捲動位置**；虛擬清單只驗「�
 ```bash
 npm --prefix dashboard/frontend run typecheck
 npm --prefix dashboard/frontend run test        # 基準 159 項 / 11 檔，數量不得減少
+
+# 建置＋蓋章（webapp.py 沒有 CLI 旗標，直接呼叫它的函式）
+.venv/bin/python -c "import sys; sys.path.insert(0,'scripts'); import webapp; \
+  print(webapp.build_frontend(webapp.find_npm()), webapp.frontend_state())"
+# 期望輸出：True ready
 ```
 
 ### 16.2 建置：一律透過 `scripts/webapp.py`

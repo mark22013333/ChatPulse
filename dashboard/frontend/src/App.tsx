@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { InboxIcon, Loader2Icon, LogOutIcon, SparklesIcon, ZapIcon } from 'lucide-react'
+import { InboxIcon, Loader2Icon, LogOutIcon, SparklesIcon } from 'lucide-react'
+import { PulseMark } from '@/app/PulseMark'
 import { Button } from '@/components/ui/button'
 import { CodeProjectSettings } from '@/components/CodeProjectSettings'
 import { CollectorPanel } from '@/components/CollectorPanel'
@@ -134,7 +135,7 @@ export default function App() {
       <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border px-4">
         <div className="flex items-center gap-2">
           <span className="flex size-6 items-center justify-center rounded-md bg-sky-500/15 text-sky-500 ring-1 ring-sky-500/25">
-            <ZapIcon className="size-3.5" />
+            <PulseMark className="size-3.5" />
           </span>
           <span className="text-sm font-semibold tracking-tight">ChatPulse</span>
         </div>

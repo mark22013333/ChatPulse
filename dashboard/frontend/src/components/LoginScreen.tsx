@@ -1,4 +1,5 @@
-import { AlertCircleIcon, KeyRoundIcon, Loader2Icon, LogInIcon, ZapIcon } from 'lucide-react'
+import { AlertCircleIcon, KeyRoundIcon, Loader2Icon, LogInIcon } from 'lucide-react'
+import { PulseMark } from '@/app/PulseMark'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { useAuthStore } from '@/store/auth'
@@ -22,7 +23,7 @@ export function LoginScreen() {
         <CardHeader>
           <div className="mb-2 flex items-center gap-2.5">
             <span className="flex size-9 items-center justify-center rounded-lg bg-sky-500/15 text-sky-500 ring-1 ring-sky-500/25">
-              <ZapIcon className="size-4.5" />
+              <PulseMark className="size-4.5" />
             </span>
             <div>
               <CardTitle className="text-base">ChatPulse</CardTitle>
