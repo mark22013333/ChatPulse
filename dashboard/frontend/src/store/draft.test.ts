@@ -24,6 +24,7 @@ import type { SseDone, SseMeta } from '@/lib/types'
 const INITIAL = {
   referenceSpaceIds: [],
   codeRefs: [],
+  codeTerms: '',
   referenceSearch: '',
   refLimit: LIMIT_DEFAULT,
   refLimitError: null,
@@ -172,6 +173,33 @@ describe('generate 的 request body', () => {
     expect(body.merge_mention_ids).toEqual([8, 9])
   })
 
+  it('**沒填檢索關鍵字時整個 code_terms 欄位不出現**', async () => {
+    // 空陣列與省略在後端是同一件事，送空的只是噪音。這條同時守著上面那條
+    // 「什麼都沒選時的 key 清單」不會因為加了新欄位而變長。
+    const captured = captureStream()
+    useDraftStore.getState().toggleCodeRef(2, 'production')
+    await useDraftStore.getState().generate(7)
+    expect('code_terms' in (captured.body as Record<string, unknown>)).toBe(false)
+  })
+
+  it('**填了就送 code_terms（完全取代後端的自動抽詞）**', async () => {
+    const captured = captureStream()
+    useDraftStore.getState().toggleCodeRef(2, 'production')
+    useDraftStore.getState().setCodeTerms('sendPush, retryCount')
+    await useDraftStore.getState().generate(7)
+    expect((captured.body as Record<string, unknown>).code_terms).toEqual([
+      'sendPush',
+      'retryCount',
+    ])
+  })
+
+  it('只有空白／逗號的關鍵字視為沒填，欄位不出現', async () => {
+    const captured = captureStream()
+    useDraftStore.getState().setCodeTerms('  ,  ，  ')
+    await useDraftStore.getState().generate(7)
+    expect('code_terms' in (captured.body as Record<string, unknown>)).toBe(false)
+  })
+
   it('抓取則數不合法時不發請求（既有行為，不可被回覆設定破壞）', async () => {
     const captured = captureStream()
     useDraftStore.getState().setRefLimit('abc')
@@ -284,6 +312,16 @@ describe('reset 不可以清掉跨 Mention 的偏好', () => {
     expect(after.codeRefs).toEqual([{ project_id: 2, environment: 'uat' }])
     expect(after.refLimit).toBe(77)
     expect(after.referenceSearch).toBe('關鍵字')
+  })
+
+  it('**保留手動指定的檢索關鍵字**（與參考專案同一類的跨 Mention 偏好）', () => {
+    // 切一則 Mention 就把它洗掉的話，使用者每次都得重打一次——而參考專案
+    // 的勾選還留著，所以他不會想到關鍵字被清了，只會覺得搜出來的結果變了
+    useDraftStore.getState().setCodeTerms('sendPush retryCount')
+
+    useDraftStore.getState().reset()
+
+    expect(useDraftStore.getState().codeTerms).toBe('sendPush retryCount')
   })
 
   it('清掉這一次草稿的結果（含 polish）', () => {

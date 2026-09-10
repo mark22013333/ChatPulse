@@ -80,6 +80,16 @@ function renderWorkspace() {
   )
 }
 
+/** 有一個參考專案（正式／UAT 兩個環境）的狀態。 */
+function seedCodeProject() {
+  useCodeProjectStore.setState({
+    projects: [
+      { id: 3, name: 'WCS', branches: { production: 'main', uat: 'uat', dev: '' } } as never,
+    ],
+    loaded: true,
+  })
+}
+
 const sendButton = () => screen.getByRole('button', { name: '送出回話' })
 
 async function openConfirm() {
@@ -328,21 +338,58 @@ describe('Reference Space 與參考專案的控件', () => {
   })
 
   it('有參考專案時列出環境勾選', () => {
-    useCodeProjectStore.setState({
-      projects: [
-        {
-          id: 3,
-          name: 'WCS',
-          branches: { production: 'main', uat: 'uat', dev: '' },
-        } as never,
-      ],
-      loaded: true,
-    })
+    seedCodeProject()
     renderWorkspace()
 
     expect(screen.getByText('參考專案')).toBeInTheDocument()
     expect(screen.getByText('WCS')).toBeInTheDocument()
     expect(screen.getByText('main')).toBeInTheDocument()
+  })
+})
+
+describe('手動指定檢索關鍵字（ADR-0006 的逃生門）', () => {
+  const termsBox = () => screen.queryByLabelText(/自己指定檢索關鍵字/)
+
+  it('**沒勾任何專案時不出現這個輸入框**', () => {
+    // 沒勾專案的話後端根本不會搜，多一個沒作用的輸入框只會讓人困惑
+    seedCodeProject()
+    useDraftStore.setState({ codeRefs: [] })
+    renderWorkspace()
+
+    expect(termsBox()).toBeNull()
+  })
+
+  it('勾了專案才出現，並說明留空的行為', () => {
+    seedCodeProject()
+    useDraftStore.setState({ codeRefs: [{ project_id: 3, environment: 'production' }] })
+    renderWorkspace()
+
+    expect(termsBox()).toBeInTheDocument()
+    expect(screen.getByText(/留空就讓系統自己從問題裡抽/)).toBeInTheDocument()
+  })
+
+  it('**打字之後回顯切出來的關鍵字**（打成全角逗號的人才看得出來）', async () => {
+    seedCodeProject()
+    useDraftStore.setState({ codeRefs: [{ project_id: 3, environment: 'production' }] })
+    renderWorkspace()
+
+    await userEvent.type(termsBox()!, 'sendPush, retryCount')
+
+    expect(useDraftStore.getState().codeTerms).toBe('sendPush, retryCount')
+    expect(
+      screen.getByText(/會用這 2 個關鍵字搜，取代系統自動抽的：sendPush、retryCount/),
+    ).toBeInTheDocument()
+  })
+
+  it('串流中不讓改', () => {
+    seedCodeProject()
+    useDraftStore.setState({
+      codeRefs: [{ project_id: 3, environment: 'production' }],
+      streaming: true,
+    })
+    renderWorkspace()
+
+    expect(termsBox()).toBeDisabled()
   })
 })
 

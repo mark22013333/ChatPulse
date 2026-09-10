@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { api, errorMessage, LIMIT_DEFAULT, streamUrls } from '@/lib/api'
+import { parseCodeTerms } from '@/lib/codeTerms'
 import { streamSse } from '@/lib/sse'
 import { streamErrorMessage } from '@/lib/aiErrors'
 import { providerRequestField } from '@/store/providers'
@@ -46,6 +47,12 @@ interface DraftState {
   referenceSpaceIds: string[]
   /** 勾選的參考專案 —— 與 Reference Space 同樣預設不勾（ADR-0006） */
   codeRefs: CodeRefSelection[]
+  /**
+   * 手動指定的檢索關鍵字（ADR-0006 的逃生門）。存的是**輸入框那一行原文**，
+   * 不是切好的陣列——切好的話輸入框就沒辦法讓人打逗號與空白了。
+   * 送出前用 `parseCodeTerms()` 切。空字串＝不覆寫，讓後端自動抽詞。
+   */
+  codeTerms: string
   referenceSearch: string
   refLimit: number
   refLimitError: string | null
@@ -85,6 +92,7 @@ interface DraftState {
   clearReferences: () => void
   toggleCodeRef: (projectId: number, environment: CodeEnvironment) => void
   clearCodeRefs: () => void
+  setCodeTerms: (value: string) => void
   setReferenceSearch: (value: string) => void
   setRefLimit: (raw: string) => void
   setToneId: (toneId: string | null) => void
@@ -126,6 +134,7 @@ let controller: AbortController | null = null
 export const useDraftStore = create<DraftState>((set, get) => ({
   referenceSpaceIds: [],
   codeRefs: [],
+  codeTerms: '',
   referenceSearch: '',
   refLimit: LIMIT_DEFAULT,
   refLimitError: null,
@@ -173,6 +182,7 @@ export const useDraftStore = create<DraftState>((set, get) => ({
     }),
 
   clearCodeRefs: () => set({ codeRefs: [] }),
+  setCodeTerms: (codeTerms) => set({ codeTerms }),
   setReferenceSearch: (value) => set({ referenceSearch: value }),
 
   setRefLimit: (raw) => {
@@ -207,6 +217,7 @@ export const useDraftStore = create<DraftState>((set, get) => ({
       refLimitError,
       referenceSpaceIds,
       codeRefs,
+      codeTerms,
       toneId,
       personaId,
       customPrompt,
@@ -240,6 +251,12 @@ export const useDraftStore = create<DraftState>((set, get) => ({
     if (customPrompt.trim()) replyFields.custom_prompt = customPrompt.trim()
     else if (customPromptId !== null) replyFields.custom_prompt_id = customPromptId
     if (sepiaEnabled !== null) replyFields.sepia_enabled = sepiaEnabled
+
+    // `code_terms` 只在真的有填時才送。空陣列與省略在後端是同一件事
+    // （`req.code_terms ... or extract_search_terms(...)`），送空的只是噪音。
+    // 送出去就是**完全取代**自動抽詞，不是附加。
+    const terms = parseCodeTerms(codeTerms)
+    if (terms.length) replyFields.code_terms = terms
 
     await streamSse(
       streamUrls.draft(mentionId),
@@ -300,7 +317,7 @@ export const useDraftStore = create<DraftState>((set, get) => ({
   reset: () => {
     controller?.abort()
     controller = null
-    // 刻意**不清** referenceSpaceIds／codeRefs／refLimit／referenceSearch
+    // 刻意**不清** referenceSpaceIds／codeRefs／codeTerms／refLimit／referenceSearch
     // 與回覆設定（toneId／personaId／customPrompt／customPromptId／sepiaEnabled）：
     // 那些是跨 Mention 的偏好，切一則就洗掉會很難用。
     // `polish` 相反——它是這一次草稿的結果，要跟著清。
