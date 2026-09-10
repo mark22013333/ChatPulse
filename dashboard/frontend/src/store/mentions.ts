@@ -191,16 +191,28 @@ export const useMentionsStore = create<MentionsState>((set, get) => ({
 }))
 
 /**
+ * 這則還沒處理完嗎。
+ *
+ * `manual`（從摘要工作台按「產生回覆草稿」挑的）算待處理——使用者按下那個
+ * 按鈕的意思就是「我要回這則」，與被 @ 一樣是一件待辦。後端的 list_mentions
+ * 與 count_mentions 都是這樣算的，前端三處判準必須跟它一致。
+ *
+ * 這個 export 存在的理由就是「不要有第二份定義」：計數（bucket）、分頁歸類
+ * （selectMentionsByState）、收件匣的按鈕文案三處曾經各寫各的，其中按鈕那處
+ * 漏了 manual，於是自選對話在待處理分頁裡顯示成「退回待處理」。
+ */
+export function isOutstanding(state: MentionStateValue): boolean {
+  return state !== 'resolved'
+}
+
+/**
  * 依「從哪個狀態變到哪個狀態」重算計數。
  *
  * 一定要知道 `from`：只看新狀態的話，任何東西變成 resolved 都會把 pending
  * 減一，包括本來就不在 pending 的項目——數字會慢慢失真而沒人發現。
- *
- * manual 併進 pending 計算（與 repository.count_mentions 一致）：
- * 從摘要工作台挑的草稿目標也是「待我回覆」的事。
  */
 function bucket(state: MentionStateValue): keyof MentionCounts {
-  return state === 'resolved' ? 'resolved' : 'pending'
+  return isOutstanding(state) ? 'pending' : 'resolved'
 }
 
 function recount(
@@ -222,9 +234,7 @@ export function selectMentionsByState(items: Mention[], state: MentionState): Me
     .filter((item) =>
       // manual（自己從摘要工作台挑的草稿目標）歸在待處理，
       // 與後端的 list_mentions 保持一致——兩邊分歧會讓計數對不上清單
-      state === 'pending'
-        ? item.state === 'pending' || item.state === 'manual'
-        : item.state === state,
+      state === 'pending' ? isOutstanding(item.state) : item.state === state,
     )
     .sort((a, b) => new Date(b.create_time).getTime() - new Date(a.create_time).getTime())
 }

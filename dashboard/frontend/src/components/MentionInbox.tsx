@@ -17,7 +17,7 @@ import { cn } from '@/lib/utils'
 import { errorMessage } from '@/lib/api'
 import { relativeTime } from '@/lib/format'
 import { MERGE_BLOCK_LABEL, mergeBlockReason } from '@/lib/merge'
-import { selectMentionsByState, useMentionsStore } from '@/store/mentions'
+import { isOutstanding, selectMentionsByState, useMentionsStore } from '@/store/mentions'
 import { useSpacesStore } from '@/store/spaces'
 import type { MentionState } from '@/lib/types'
 
@@ -232,7 +232,11 @@ export function MentionInbox({ onSelect, onMergedGenerate }: MentionInboxProps) 
                   </div>
 
                   <div className="mt-2 flex justify-end">
-                    {mention.state === 'pending' ? (
+                    {/* 判準用 store 的 isOutstanding，不要在這裡另寫一次：
+                        manual（摘要工作台挑的草稿目標）也是待處理，寫成
+                        `=== 'pending'` 會讓它顯示「退回待處理」，而按下去會
+                        把 state 改成 pending、無聲抹掉「自選對話」這個來源標記 */}
+                    {isOutstanding(mention.state) ? (
                       <Button
                         size="xs"
                         variant="ghost"

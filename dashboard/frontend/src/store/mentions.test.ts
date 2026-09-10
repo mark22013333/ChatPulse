@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { selectMentionsByState, useMentionsStore } from './mentions'
+import { isOutstanding, selectMentionsByState, useMentionsStore } from './mentions'
 import type { Mention } from '@/lib/types'
 
 function mention(id: number, state: Mention['state']): Mention {
@@ -62,5 +62,27 @@ describe('applyResolved 的計數與清單', () => {
     reset([mention(1, 'pending')], { pending: 0, resolved: 0 })
     useMentionsStore.getState().applyResolved(mention(1, 'resolved'))
     expect(useMentionsStore.getState().counts.pending).toBe(0)
+  })
+})
+
+describe('isOutstanding：「什麼算待處理」的唯一定義', () => {
+  it('**manual 算待處理**——收件匣按鈕該顯示「標記已處理」而不是「退回待處理」', () => {
+    expect(isOutstanding('manual')).toBe(true)
+  })
+
+  it('pending 算待處理', () => {
+    expect(isOutstanding('pending')).toBe(true)
+  })
+
+  it('只有 resolved 不算', () => {
+    expect(isOutstanding('resolved')).toBe(false)
+  })
+
+  it('與分頁歸類同一個答案（三處判準不得再漂移）', () => {
+    // 這條是守門：selectMentionsByState 與 isOutstanding 若哪天又各寫各的，
+    // 「待處理分頁列出它、按鈕卻說要退回待處理」的 bug 就會重現。
+    const items = [mention(1, 'pending'), mention(2, 'manual'), mention(3, 'resolved')]
+    const inPendingTab = selectMentionsByState(items, 'pending').map((m) => m.id)
+    expect(items.filter((m) => isOutstanding(m.state)).map((m) => m.id)).toEqual(inPendingTab)
   })
 })
