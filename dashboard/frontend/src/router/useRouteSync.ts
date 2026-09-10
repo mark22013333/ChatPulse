@@ -33,4 +33,22 @@ export function useRouteSync() {
     if (useMentionsStore.getState().selectedId === target) return
     useMentionsStore.getState().select(target)
   }, [route.section, route.mentionId])
+
+  // `?merge=` → 勾選狀態。route.mergeIds 每次解析都是新陣列，所以一定要比內容。
+  useEffect(() => {
+    if (route.section !== 'mentions') return
+    const fromUrl = route.mergeIds
+    const inStore = useMentionsStore.getState().mergeIds
+    if (sameIds(fromUrl, inStore)) return
+    // URL **不表達**「只勾了一則」這個過渡狀態——hashForMentions 兩則以上才帶
+    // merge（route.test.ts 有一條守著）。所以網址上沒有 merge 時，不可以把
+    // 單獨一則的勾選清掉，否則使用者勾第一則的瞬間它就會自己彈回去。
+    if (fromUrl.length === 0 && inStore.length <= 1) return
+    useMentionsStore.getState().setMergeIds(fromUrl)
+  }, [route.section, route.mergeIds])
+}
+
+function sameIds(a: number[], b: number[]): boolean {
+  // 順序有意義：第一個是主要那則，回話會送到它的討論串
+  return a.length === b.length && a.every((id, i) => id === b[i])
 }

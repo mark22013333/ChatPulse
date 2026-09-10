@@ -30,6 +30,15 @@ interface MentionsState {
   setTab: (tab: MentionState) => void
   select: (id: number | null) => void
   toggleMerge: (id: number) => void
+  /**
+   * 整批指定勾選（給 `useRouteSync` 從 `?merge=` 反向套用）。
+   *
+   * 與 `toggleMerge` 分開是刻意的：`toggleMerge` 有「勾第一則時順便把它設成
+   * 當前選取、清掉 external」的副作用，那對「使用者剛點了一下」是對的，
+   * 對「照著網址還原狀態」則會把摘要工作台建立的草稿目標清掉（見
+   * `useRouteSync` 的註解）。這個只動 mergeIds，什麼都不碰。
+   */
+  setMergeIds: (ids: number[]) => void
   clearMerge: () => void
   /** 送出成功後把整組一起就地更新，不必重新拉整份清單 */
   applyResolvedMany: (mentions: Mention[]) => void
@@ -105,6 +114,8 @@ export const useMentionsStore = create<MentionsState>((set, get) => ({
       // 勾第一則時順便把它設成當前選取，讓右邊的工作區跟著顯示同一個對話
       return next.length === 1 ? { mergeIds: next, selectedId: next[0], external: null } : { mergeIds: next }
     }),
+
+  setMergeIds: (ids) => set({ mergeIds: ids }),
 
   clearMerge: () => set({ mergeIds: [] }),
 

@@ -17,6 +17,8 @@ import { cn } from '@/lib/utils'
 import { errorMessage } from '@/lib/api'
 import { relativeTime } from '@/lib/format'
 import { MERGE_BLOCK_LABEL, mergeBlockReason } from '@/lib/merge'
+import { hashForMentions } from '@/lib/route'
+import { useRouter } from '@/router/useRouter'
 import { isOutstanding, selectMentionsByState, useMentionsStore } from '@/store/mentions'
 import { useSpacesStore } from '@/store/spaces'
 import type { MentionState } from '@/lib/types'
@@ -42,6 +44,23 @@ export function MentionInbox({ onSelect, onMergedGenerate }: MentionInboxProps) 
   const toggleMerge = useMentionsStore((state) => state.toggleMerge)
   const clearMerge = useMentionsStore((state) => state.clearMerge)
   const spaces = useSpacesStore((state) => state.items)
+  const { navigate } = useRouter()
+
+  /**
+   * 勾選改動之後把結果寫回網址（設計規格 §6.6）。
+   *
+   * 讀 getState() 而不是自己算下一份清單：`toggleMerge` 與 `setTab` 各自
+   * 還有別的副作用（勾第一則會順便設 selectedId、換頁籤會清空勾選），
+   * 在這裡重算一次等於把那些規則抄第二份。zustand 的 set 是同步的，
+   * 呼叫完立刻讀得到新值。
+   *
+   * 一律 replace：勾選不是「值得用返回鍵走回去」的導覽，每勾一下就推一筆
+   * 歷史的話，要按好幾次返回鍵才離得開收件匣。
+   */
+  const syncMergeToUrl = () => {
+    const { mergeIds: next, selectedId: current } = useMentionsStore.getState()
+    navigate(hashForMentions(next[0] ?? current, next), { replace: true })
+  }
 
   // 載入與 45 秒輪詢已經搬進 store，由 AppShell 在登入後啟動一次
   // （設計規格 §7.4）——輪詢屬於這份資料，不屬於這個畫面。
@@ -91,7 +110,14 @@ export function MentionInbox({ onSelect, onMergedGenerate }: MentionInboxProps) 
           </Button>
         </div>
 
-        <Tabs value={tab} onValueChange={(value) => setTab(value as MentionState)}>
+        <Tabs
+          value={tab}
+          onValueChange={(value) => {
+            // setTab 會清掉勾選（已處理那頁勾起來合併沒有意義），網址要跟上
+            setTab(value as MentionState)
+            syncMergeToUrl()
+          }}
+        >
           <TabsList className="w-full">
             <TabsTrigger value="pending">
               待處理
@@ -122,7 +148,15 @@ export function MentionInbox({ onSelect, onMergedGenerate }: MentionInboxProps) 
         <div className="shrink-0 space-y-1.5 border-b border-signal-line bg-signal-wash px-3 py-2">
           <div className="flex items-center gap-2">
             <span className="text-xs font-medium">已選 {selected.length} 則，一起回成一則</span>
-            <Button size="xs" variant="ghost" className="ml-auto" onClick={clearMerge}>
+            <Button
+              size="xs"
+              variant="ghost"
+              className="ml-auto"
+              onClick={() => {
+                clearMerge()
+                syncMergeToUrl()
+              }}
+            >
               <XIcon />
               取消
             </Button>
@@ -187,7 +221,10 @@ export function MentionInbox({ onSelect, onMergedGenerate }: MentionInboxProps) 
                       <Checkbox
                         checked={checked}
                         disabled={!selectable}
-                        onCheckedChange={() => toggleMerge(mention.id)}
+                        onCheckedChange={() => {
+                          toggleMerge(mention.id)
+                          syncMergeToUrl()
+                        }}
                         className="mt-0.5 shrink-0"
                         aria-label={`選取來自 ${mention.sender_display} 的這則一起回`}
                         // 不可勾選的原因改成畫面上讀得到的一行（見下方），

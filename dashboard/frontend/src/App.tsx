@@ -295,7 +295,10 @@ export default function App() {
             <MentionInbox
               onSelect={(id) => navigate(hashForMentions(id))}
               onMergedGenerate={(primaryId, mergeIds) => {
-                navigate(hashForMentions(primaryId))
+                // 一定要把 mergeIds 帶進網址。少了它，useRouteSync 反向同步
+                // 時會判定「網址上沒有合併」而清空勾選，DraftReplyWorkspace
+                // 的 activeMergeIds 跟著變空——按下去的那一刻合併就散了。
+                navigate(hashForMentions(primaryId, mergeIds))
                 void useDraftStore.getState().generate(primaryId, mergeIds)
               }}
             />
