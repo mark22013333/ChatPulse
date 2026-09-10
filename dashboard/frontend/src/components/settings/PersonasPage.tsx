@@ -194,9 +194,13 @@ export function PersonasPage() {
                                 : `「${result.persona.name}」的來源內容沒有變化`,
                             )
                           }}
-                          title="重新從來源取得（會更新 commit）"
+                          // 這顆按鈕只有一個圖示，說明是它唯一的可及名稱來源。
+                          // 原本那句活在 tooltip 裡，鍵盤與觸控使用者拿不到
+                          // （規格 §10.3）。commit 會不會變是重點——那決定
+                          // 「明天產生的草稿還是不是同樣行為」。
+                          aria-label={`重新從來源取得「${persona.name}」，會更新 commit`}
                         >
-                          <RefreshCwIcon className="size-3" />
+                          <RefreshCwIcon className="size-3" aria-hidden />
                         </Button>
                       ) : null}
                       <Button

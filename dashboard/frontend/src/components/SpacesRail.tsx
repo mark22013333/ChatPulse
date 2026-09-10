@@ -73,7 +73,6 @@ export function SpacesRail() {
             className="ml-auto"
             onClick={() => void load({ refresh: true })}
             disabled={refreshing || loading}
-            title="跳過 5 分鐘快取，向 Google 重新取回"
           >
             {refreshing ? <Loader2Icon className="animate-spin" /> : <RefreshCwIcon />}
             強制刷新
@@ -144,11 +143,17 @@ export function SpacesRail() {
         </DialogContent>
       </Dialog>
 
-      <div className="flex shrink-0 items-center justify-between border-t border-border px-3 py-1.5 text-2xs text-muted-foreground">
-        <span>
-          顯示 {visible.length} / {total || items.length}
-        </span>
-        <span>{cached ? `快取於 ${relativeTime(cachedAt)}` : '即時資料'}</span>
+      <div className="shrink-0 border-t border-border px-3 py-1.5 text-2xs text-muted-foreground">
+        <div className="flex items-center justify-between gap-2">
+          <span>
+            顯示 {visible.length} / {total || items.length}
+          </span>
+          <span>{cached ? `快取於 ${relativeTime(cachedAt)}` : '即時資料'}</span>
+        </div>
+        {/* 「強制刷新」做什麼，原本只活在那顆按鈕的 tooltip 裡（規格 §10.3）。
+            放在這裡是因為它就是在解釋上面那個「快取於」。**自己一行**：
+            併進上面那個 justify-between 的兩欄會在 280px 的側欄撐爆。 */}
+        {cached ? <p className="pt-0.5">強制刷新會跳過快取，向 Google 重新取回</p> : null}
       </div>
     </div>
   )

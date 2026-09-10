@@ -216,21 +216,33 @@ export function SummaryWorkspace({ space, onDraftCreated, active = true }: Summa
             onBlur={() => void rememberLimit()}
             className="h-7 w-28"
             aria-invalid={Boolean(limitError)}
-            title="改完離開這個欄位就會記住，下次開啟直接用這個值"
+            aria-describedby="summary-limit-hint"
           />
+          {/* 「改完會被記住」原本只活在 tooltip 裡。那是這個欄位的**行為**
+              ——使用者不知道的話會以為只影響這一次（規格 §10.3）。 */}
+          <p id="summary-limit-hint" className="text-2xs text-muted-foreground">
+            改完離開欄位就會記住，下次開啟直接用這個值
+          </p>
         </div>
 
         {/* 產生回覆草稿放在這裡而不是摘要結果區——私訊的重點常常就是「怎麼回」，
             不該逼使用者先跑一次摘要才拿得到草稿。選了 Space 就能按。 */}
-        <Button
-          variant="outline"
-          onClick={() => void handleDraftReply()}
-          disabled={!space || streaming || draftingReply}
-          title="針對這個對話裡對方最後說的話，產生一則回覆草稿"
-        >
-          {draftingReply ? <Loader2Icon className="animate-spin" /> : <WandSparklesIcon />}
-          產生回覆草稿
-        </Button>
+        <div className="flex flex-col gap-0.5">
+          <Button
+            variant="outline"
+            onClick={() => void handleDraftReply()}
+            disabled={!space || streaming || draftingReply}
+            aria-describedby="draft-reply-hint"
+          >
+            {draftingReply ? <Loader2Icon className="animate-spin" /> : <WandSparklesIcon />}
+            產生回覆草稿
+          </Button>
+          {/* 這顆按鈕實際做什麼是唯一資訊——「產生回覆草稿」四個字看不出
+              它挑的是「對方最後說的那句」。原本只活在 tooltip 裡（§10.3）。 */}
+          <p id="draft-reply-hint" className="text-2xs text-muted-foreground">
+            針對對方最後說的話
+          </p>
+        </div>
 
         {streaming ? (
           <Button variant="outline" onClick={abort}>
@@ -304,12 +316,12 @@ export function SummaryWorkspace({ space, onDraftCreated, active = true }: Summa
                 ) : (
                   <span>正在準備…</span>
                 )}
-                {/* 一律以 meta 回報的供應商為準——伺服器可能因別名解析而用了別的 */}
+                {/* 一律以 meta 回報的供應商為準——伺服器可能因別名解析而用了別的。
+                    「本次實際使用的供應商與模型」這句說明已經是證據欄 model
+                    那一列的可見內容（§5.7），這裡不再掛 tooltip——badge 本身
+                    顯示的就是供應商與模型（§10.3）。 */}
                 {meta?.provider ? (
-                  <span
-                    className="rounded border border-line bg-muted px-2 py-0.5 font-medium text-provenance"
-                    title="本次實際使用的供應商與模型"
-                  >
+                  <span className="rounded border border-line bg-muted px-2 py-0.5 font-medium text-provenance">
                     {providerLabel(providers, meta.provider)}
                     {meta.model ? <span className="ml-1 metric">· {meta.model}</span> : null}
                   </span>

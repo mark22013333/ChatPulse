@@ -197,6 +197,13 @@ export function SpaceList({
                         <span className="sr-only">已釘選，</span>
                       </>
                     ) : null}
+                    {/* 名字是猜的就說出來。它決定「這一列是不是我要找的那個
+                        對話」，是決策資訊，不該藏在 tooltip 裡（規格 §10.3）。
+                        **放在行首**：這一行是 truncate，放行尾會第一個被裁掉，
+                        那就等於又把資訊藏起來了。 */}
+                    {space.renamable && space.nameSource !== 'dm_manual' ? (
+                      <span className="text-caution shrink-0">名稱為推測 ·&nbsp;</span>
+                    ) : null}
                     {spaceTypeLabel(space.type)} · 最後活動 {relativeTime(space.lastActiveTime)}
                   </span>
                 </span>
@@ -210,8 +217,14 @@ export function SpaceList({
                     e.stopPropagation()
                     onRename(space)
                   }}
-                  title={space.nameSource === 'dm_manual' ? '改這個名字' : '這個名字是猜的，可以自己取'}
-                  aria-label={`為 ${space.displayName} 取名`}
+                  // 「這個名字是猜的」原本只活在這顆鉛筆的 tooltip 裡。它已經
+                  // 升成列上的可見副標記（見下面的「名稱為推測」），所以這裡
+                  // 只要一個說得清楚的可及名稱就夠（規格 §10.3）。
+                  aria-label={
+                    space.nameSource === 'dm_manual'
+                      ? `改「${space.displayName}」這個名字`
+                      : `為 ${space.displayName} 取名（目前的名字是推測的）`
+                  }
                   className={cn(
                     'absolute top-1/2 right-2 -translate-y-1/2 rounded p-1 text-muted-foreground',
                     'opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100',

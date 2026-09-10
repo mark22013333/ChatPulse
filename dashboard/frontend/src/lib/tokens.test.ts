@@ -56,20 +56,21 @@ function scan(files: string[], pattern: RegExp): string[] {
  * 用次數則擋得住「偷偷多加一個」。新增任何一筆都要在 review 說明為什麼
  * 不能改成可見文字。
  *
- * 目前尚未歸零的那幾個是 P7 文案階段的處置範圍，先以「不得增加」鎖住。
+ * **2026-09-10：§10.3 的 29 處已經清完了**，這張表現在只剩 ConfirmDialog 的
+ * 兩個呼叫端。29 → 2 的過程中，每一處的處置都照 §10.3 的規則走：
+ * 決策必需 → 可見文字；補充細節 → `<details>`；與可見文字重複 → 刪。
+ * 圖示按鈕改成把說明寫進 `aria-label`（鍵盤與觸控使用者拿得到）。
+ *
+ * 這張表**只能再減、不能增**。要加任何一筆，先問「為什麼這句話不能是
+ * 畫面上讀得到的字」——29 處清下來，沒有一處的答案是「不能」。
  */
 const TITLE_BUDGET: Record<string, number> = {
-  // 這幾個是 P7 文案階段的處置範圍（設計規格 §10.3 逐條列了改法），
-  // 先用實際數字鎖住，只能降不能升。P7 收工時這張表應該只剩
-  // ConfirmDialog 的兩個呼叫端——那個 title 是對話框標題，不是 tooltip。
-  'components/SummaryWorkspace.tsx': 4,
+  // 兩處都是 ConfirmDialog 的 title prop（對話框標題，不是 tooltip）。
+  // 它渲染成 DialogTitle 的文字節點，DOM 上不會出現 title 屬性——
+  // DraftReplyWorkspace.test.tsx 與 EvidenceList.test.tsx 各有一條
+  // 「渲染結果裡 [title] 選得到 0 個」在守著這件事。
+  'components/SummaryWorkspace.tsx': 1,
   'components/draft/SendReplyConfirm.tsx': 1,
-  'components/SpacesRail.tsx': 1,
-  'components/SpaceList.tsx': 1,
-  'components/ProviderSelect.tsx': 2,
-  'components/ThemeToggle.tsx': 1,
-  'components/SpaceMessagePreview.tsx': 1,
-  'components/settings/PersonasPage.tsx': 1,
 }
 
 describe('設計 token 守門', () => {

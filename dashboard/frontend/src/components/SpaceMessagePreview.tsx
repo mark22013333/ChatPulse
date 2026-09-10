@@ -123,7 +123,6 @@ export function SpaceMessagePreview({ space, defaultCollapsed = false }: SpaceMe
           className="ml-auto"
           onClick={() => void load(space.id, { force: true })}
           disabled={loading}
-          title="重新讀取（訊息是即時取回的，不進資料庫）"
         >
           {loading ? <Loader2Icon className="animate-spin" /> : <RefreshCwIcon />}
           重新讀取
@@ -166,6 +165,13 @@ export function SpaceMessagePreview({ space, defaultCollapsed = false }: SpaceMe
               ),
             )}
           </ul>
+
+          {/* 「訊息是即時取回的，不進資料庫」原本只活在「重新讀取」那顆按鈕
+              的 tooltip 裡。它回答的是「我看到的這些有多新、會不會被存起來」
+              ——那是決策資訊，不該藏起來（規格 §10.3）。 */}
+          <p className="text-fg-subtle px-1 pt-2 text-2xs">
+            訊息是即時向 Google 取回的，不會存進資料庫；按「重新讀取」拿最新的。
+          </p>
         </div>
       )}
     </section>

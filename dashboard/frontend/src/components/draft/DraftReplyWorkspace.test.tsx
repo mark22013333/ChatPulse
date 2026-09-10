@@ -162,6 +162,17 @@ describe('送出確認框', () => {
     expect(within(dialog).queryByText(/會一起標成已處理/)).toBeNull()
   })
 
+  it('**ConfirmDialog 的 title prop 不會變成 DOM 的 tooltip 屬性**', async () => {
+    // tokens.test.ts 的白名單留了這兩處，理由是「那是對話框標題不是 tooltip」。
+    // 這條就是那個理由的證明——渲染結果裡一個 title 屬性都不該有。
+    renderWorkspace()
+    await openConfirm()
+
+    expect(document.querySelectorAll('[title]')).toHaveLength(0)
+    // 正對照：標題本身是讀得到的文字
+    expect(screen.getByText('送出這則回話？')).toBeInTheDocument()
+  })
+
   it('確認框帶回話全文預覽（按下確認之前看得到會送出什麼）', async () => {
     renderWorkspace()
 

@@ -79,7 +79,6 @@ export function ProviderSelect({ id, disabled, triggerClassName, className }: Pr
             className="h-4 px-1 text-2xs text-muted-foreground"
             disabled={saving}
             onClick={() => void handleSave()}
-            title="把目前選擇存成個人預設"
           >
             {saving ? (
               <Loader2Icon className="size-3 animate-spin" />
@@ -110,7 +109,8 @@ export function ProviderSelect({ id, disabled, triggerClassName, className }: Pr
               key={item.name}
               value={item.name}
               disabled={!item.available}
-              title={item.reason}
+              // reason 在下面已經是可見文字（不可用時還是 caution 色），
+              // 放進 tooltip 是真重複——而且 disabled 的項目摸不到 tooltip
             >
               <span className="flex w-full flex-col gap-0.5 whitespace-normal">
                 <span className="flex flex-wrap items-center gap-1.5">
