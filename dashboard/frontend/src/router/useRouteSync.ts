@@ -23,6 +23,8 @@ export function useRouteSync() {
   useEffect(() => {
     if (route.section !== 'summary') return
     const target = route.spaceId
+    // 網址沒有指定哪一個 Space ＝「不指定」，不是「忘掉剛才那個」。見下方說明。
+    if (target === null) return
     if (useSpacesStore.getState().selectedId === target) return
     useSpacesStore.getState().select(target)
   }, [route.section, route.spaceId])
@@ -30,6 +32,18 @@ export function useRouteSync() {
   useEffect(() => {
     if (route.section !== 'mentions') return
     const target = route.mentionId
+    /**
+     * `#/mentions`（沒有 id）**不表達「沒有選中任何一則」**，它表達的是
+     * 「不指定哪一則」——與同一個檔下面那條「網址不表達只勾了一則」是同一
+     * 種情況：URL 是位置的真相，但它不表達每一個過渡狀態。
+     *
+     * 這件事在 768–1024 的主從切換（規格 §12）之後變得關鍵：那個寬度下
+     * 「返回清單」就是導覽到 `#/mentions`，而 `select(null)` 會**清掉
+     * `external`**——摘要工作台建立的草稿目標正是靠它撐著，而且後端刻意
+     * 不把那一則列進收件匣清單。清掉之後使用者沒有任何路徑找得回來：
+     * 草稿內容還在 store 裡，但畫面上再也沒有那一則 Mention。
+     */
+    if (target === null) return
     if (useMentionsStore.getState().selectedId === target) return
     useMentionsStore.getState().select(target)
   }, [route.section, route.mentionId])

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { RouterProvider } from './useRouter'
 import { useRouteSync } from './useRouteSync'
 import { useMentionsStore } from '@/store/mentions'
+import { useSpacesStore } from '@/store/spaces'
 import type { Mention } from '@/lib/types'
 
 function mention(id: number): Mention {
@@ -35,6 +36,7 @@ function mountAt(hash: string) {
 
 beforeEach(() => {
   useMentionsStore.setState({ items: [], selectedId: null, mergeIds: [], external: null })
+  useSpacesStore.setState({ selectedId: null })
 })
 
 describe('useRouteSync：?merge= → 勾選狀態', () => {
@@ -91,5 +93,48 @@ describe('useRouteSync 的去重（紅線 4）', () => {
 
     expect(useMentionsStore.getState().external).toBeNull()
     expect(useMentionsStore.getState().selectedId).toBe(99)
+  })
+})
+
+/**
+ * 主從切換（規格 §12）的配套規則。
+ *
+ * 768–1024 那個寬度下「返回清單」就是導覽到沒有 id 的位置。如果那個位置
+ * 會呼叫 `select(null)`，`external`（摘要工作台建立的草稿目標）就會被清掉
+ * ——而後端刻意不把那一則列進收件匣清單，使用者沒有任何路徑找得回來。
+ */
+describe('網址沒有指定 id ＝「不指定」，不是「忘掉剛才那個」', () => {
+  it('**導覽到 #/mentions 不清掉 external**', () => {
+    useMentionsStore.getState().selectExternal(mention(65))
+
+    mountAt('#/mentions')
+
+    expect(useMentionsStore.getState().external).not.toBeNull()
+    expect(useMentionsStore.getState().selectedId).toBe(65)
+  })
+
+  it('（正對照）導覽到別的 id 仍然照清——「不指定」與「換一則」是兩件事', () => {
+    useMentionsStore.getState().selectExternal(mention(65))
+
+    mountAt('#/mentions/99')
+
+    expect(useMentionsStore.getState().external).toBeNull()
+    expect(useMentionsStore.getState().selectedId).toBe(99)
+  })
+
+  it('#/summary 不清掉選中的 Space', () => {
+    useSpacesStore.setState({ selectedId: 'spaces/abc' })
+
+    mountAt('#/summary')
+
+    expect(useSpacesStore.getState().selectedId).toBe('spaces/abc')
+  })
+
+  it('（正對照）#/summary/:key 換成別的 Space 時照換', () => {
+    useSpacesStore.setState({ selectedId: 'spaces/abc' })
+
+    mountAt('#/summary/xyz')
+
+    expect(useSpacesStore.getState().selectedId).toBe('spaces/xyz')
   })
 })

@@ -436,8 +436,136 @@ const blur = (page) =>
   const copyToast = await page.getByText(/已複製摘要 Markdown|沒有可複製的內容/).count()
   check('⌘⇧C 有接上（冒出複製結果的提示）', copyToast > 0)
 
-  // ── 13. 沒有 console error ────────────────────────────────
-  console.log('\n【13】沒有 console error')
+  // ── 13. 768–1024 的主從切換 ──────────────────────────────
+  console.log('\n【13】768–1024 主從切換（規格 §12）')
+  // **這一節只有真瀏覽器測得出來**：jsdom 沒有佈局也不算 media query。
+  //
+  // 收起來的那一半用的是 §7.2 那套手法（留著掛載、移出版面流、`inert`），
+  // **不是 `display:none`**——所以不可以用 Playwright 的 `isVisible()` 判斷：
+  // `opacity-0` 對它仍然算「可見」，四條斷言會全部假通過。要看的是
+  // computed opacity 與 `inert` 屬性。
+  const paneState = () =>
+    page.evaluate(() => {
+      const read = (el) => {
+        if (!el) return null
+        const style = getComputedStyle(el)
+        return {
+          shown: style.opacity !== '0' && style.display !== 'none',
+          inert: el.hasAttribute('inert'),
+          width: Math.round(el.getBoundingClientRect().width),
+        }
+      }
+      return {
+        list: read(document.querySelector('aside#rail')),
+        main: read(document.querySelector('main#main')),
+      }
+    })
+  const onlyOne = (panes, which) => {
+    const shown = which === 'list' ? panes.list : panes.main
+    const hidden = which === 'list' ? panes.main : panes.list
+    return shown.shown && !shown.inert && !hidden.shown && hidden.inert
+  }
+
+  await page.setViewportSize({ width: 900, height: 800 })
+  await goHash(page, '#/summary')
+  await page.waitForTimeout(400)
+  let panes = await paneState()
+  check(
+    '**900px＋沒選 Space：只顯示清單，清單占滿寬度**',
+    onlyOne(panes, 'list') && panes.list.width > 700,
+    JSON.stringify(panes),
+  )
+  check('清單那一半沒有麵包屑（清單就是最外層，沒有上一層）', (await page.getByRole('navigation', { name: '麵包屑' }).count()) === 0)
+
+  const rowCount = await page.locator(`${SUMMARY_LISTBOX} [role="option"][data-option-index]`).count()
+  if (rowCount > 0) {
+    // 先捲到清單中段，等一下要驗「進工作區再退回來，捲動位置沒有跳掉」。
+    // 停在 0 的話那條測不出東西——0 本來就不會「掉」。
+    const scrollTopOf = () =>
+      page.evaluate((sel) => document.querySelector(sel)?.parentElement?.scrollTop ?? -1, SUMMARY_LISTBOX)
+    await page.evaluate((sel) => {
+      const scroller = document.querySelector(sel)?.parentElement
+      if (scroller) scroller.scrollTop = 3000
+    }, SUMMARY_LISTBOX)
+    await page.waitForTimeout(400)
+
+    // **用 JS 的 element.click() 而不是 Playwright 的 click()**：後者會先把元素
+    // 聚焦，而聚焦一個部分捲出可視範圍的列會讓瀏覽器把它捲進來——實測
+    // scrollTop 因此從 3026 變成 2082。那個位移與「隱藏那一半」無關，混在
+    // 一起量會得到一個假的「捲動位置掉了」（HANDOFF 第四節：自製證據要先
+    // 確認自己量的是想量的東西）。
+    await page.evaluate((sel) => {
+      const opts = [...document.querySelectorAll(`${sel} [role="option"][data-option-index]`)]
+      opts[Math.floor(opts.length / 2)]?.click()
+    }, SUMMARY_LISTBOX)
+    await page.waitForTimeout(600)
+    const scrollBefore = await scrollTopOf()
+    check('清單捲得動（下一條要用它當基準）', scrollBefore > 2000, `scrollTop=${scrollBefore}`)
+
+    panes = await paneState()
+    check(
+      '**點一個 Space 之後換成只顯示工作區**',
+      onlyOne(panes, 'main'),
+      JSON.stringify(panes),
+    )
+
+    const crumb = page.getByRole('button', { name: '返回 Space 清單' })
+    check('工作區有回得去的麵包屑', (await crumb.count()) === 1)
+    await crumb.click()
+    await page.waitForTimeout(700)
+    panes = await paneState()
+    check('**按麵包屑回到清單**', onlyOne(panes, 'list'), `${await hashOf(page)} ${JSON.stringify(panes)}`)
+
+    // 規格 §7.2 的理由在這裡再現一次：虛擬清單不可以用 display:none 藏。
+    // 2026-09-10 第一版用了 max-lg:hidden，實測捲動位置從 0 自己跳到 1296。
+    const scrollAfter = await scrollTopOf()
+    check(
+      '**退回清單之後捲動位置沒有跳掉**（虛擬清單不可以用 display:none 藏）',
+      Math.abs(scrollAfter - scrollBefore) < 60,
+      `${scrollBefore} → ${scrollAfter}`,
+    )
+
+    // 這一條顧的是紅線 4 的同族問題：退回清單不可以把選取洗掉，否則從摘要
+    // 工作台建立的草稿目標會找不回來。
+    // **不驗 aria-selected**：那一列可能捲出可視範圍、根本不在 DOM 裡，
+    // 量到 0 說明不了任何事（HANDOFF 第四節第 1 條）。改按頂列的摘要頁籤
+    // ——它會帶著 store 記住的 selectedId 導覽，網址就是證據。
+    await topBarButton(page, /摘要工作台/).click()
+    await page.waitForTimeout(500)
+    check(
+      '**退回清單沒有把選取洗掉**（頂列頁籤仍回到原本那個 Space）',
+      (await hashOf(page)).startsWith('#/summary/'),
+      await hashOf(page),
+    )
+  }
+
+  // 正對照：拉回 1300px，兩欄同時看得見——證明上面的「只顯示一個」是斷點
+  // 造成的，不是某一半根本壞掉
+  await page.setViewportSize({ width: 1300, height: 800 })
+  await goHash(page, '#/summary')
+  await page.waitForTimeout(400)
+  const row1300 = page.locator(`${SUMMARY_LISTBOX} [role="option"][data-option-index]`).first()
+  if (await row1300.count()) {
+    await row1300.click()
+    await page.waitForTimeout(500)
+  }
+  panes = await paneState()
+  check(
+    '正對照：1300px 下清單與工作區同時看得見、兩邊都不是 inert',
+    panes.list.shown &&
+      panes.main.shown &&
+      !panes.list.inert &&
+      !panes.main.inert &&
+      panes.list.width < 400,
+    JSON.stringify(panes),
+  )
+  check(
+    '1300px 下不出現麵包屑（清單就在左邊，多一條是噪音）',
+    (await page.getByRole('navigation', { name: '麵包屑' }).count()) === 0,
+  )
+
+  // ── 14. 沒有 console error ────────────────────────────────
+  console.log('\n【14】沒有 console error')
   check('沒有 console error', errors.length === 0, errors.slice(0, 2).join(' | '))
 
   const code = finish()

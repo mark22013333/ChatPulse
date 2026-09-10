@@ -1,5 +1,6 @@
 import { useMemo, type ReactNode } from 'react'
 import { Loader2Icon } from 'lucide-react'
+import { MasterDetailBack } from '@/app/MasterDetailBack'
 import { SmallScreenNotice } from '@/app/SmallScreenNotice'
 import { TopBar } from '@/app/TopBar'
 import { useBootstrap } from '@/app/useBootstrap'
@@ -36,8 +37,30 @@ export function AppShell() {
   useRouteSync()
   const view = route.section === 'mentions' ? 'mentions' : 'summary'
 
+  /**
+   * 768–1024 的主從切換（設計規格 §12）：清單與工作區同時只顯示一個。
+   *
+   * **判準直接來自網址，沒有另外一個狀態**——`#/summary` 是清單、
+   * `#/summary/:key` 是工作區，收件匣同理。規格 §12 稱這是「選 URL 路由的
+   * 額外報酬」，這裡就是在領那份報酬：少一個旗標就少一種不同步。
+   *
+   * ### 為什麼**不能**用 `max-lg:hidden` 藏起來
+   *
+   * 兩半都含虛擬清單（左欄的 436 筆 Space；草稿工作區的 Reference Space
+   * 選擇器也是同一個 `SpaceList`），而 `display:none` 的容器量到的高度是 0
+   * ——§7.2 早就寫了這件事。2026-09-10 實測：捲動位置 0 的清單進工作區再
+   * 退回來，`scrollTop` 自己跳到 1296（第 12 列變成第一列）。所以這裡用的是
+   * 與 `Pane` 同一套手法：**留著掛載**、移出版面流、`inert` 退出 tab 序與
+   * 無障礙樹。這也是為什麼要用 `useBreakpoint()` 而不是純 CSS——`inert`
+   * 是屬性不是樣式，non-active 的那一半必須在 JS 這一側知道。
+   */
+  const detail = route.section === 'mentions' ? route.mentionId !== null : route.spaceId !== null
+
   // 版面斷點：≥1280 證據欄常駐，以下改成抽屜（設計規格 §12）
   const breakpoint = useBreakpoint()
+  const masterDetail = breakpoint === 'narrow' || breakpoint === 'tiny'
+  const listHidden = masterDetail && detail
+  const mainHidden = masterDetail && !detail
   const evidenceInline = breakpoint === 'wide'
   const drawerOpen = useUiStore((state) => state.drawer[breakpoint] === true)
   const toggleDrawer = useUiStore((state) => state.toggleDrawer)
@@ -85,9 +108,11 @@ export function AppShell() {
     // 而它的證據在手機寬度下讀不了——讀不了就等於在不知情的狀況下送出。
     <SmallScreenNotice>
     <div className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
-      {/* 左欄的虛擬清單有 436 筆，鍵盤使用者要 Tab 很久才到得了主要內容 */}
+      {/* 左欄的虛擬清單有 436 筆，鍵盤使用者要 Tab 很久才到得了主要內容。
+          主從切換的清單那一半顯示時 `<main>` 是 inert 的，跳過去等於跳到一個
+          不存在的地方——那時清單本身就是主要內容，改指它。 */}
       <a
-        href="#main"
+        href={mainHidden ? '#rail' : '#main'}
         className="sr-only focus:not-sr-only focus:bg-raised focus:text-foreground focus:shadow-overlay focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:rounded-md focus:px-3 focus:py-2 focus:text-sm"
       >
         跳到主要內容
@@ -121,10 +146,22 @@ export function AppShell() {
         reset() 把還在串流的內容清光。現在改成保留掛載，那些條件式 reset 也就
         退化成第二道防線。
       */}
-      <div className="flex min-h-0 flex-1">
+      {/* relative 是主從切換要的：收起來的那一半用 absolute inset-0 移出
+          版面流，定位基準就是這個容器 */}
+      <div className="relative flex min-h-0 flex-1">
         <aside
+          id="rail"
+          tabIndex={-1}
           aria-label={view === 'summary' ? 'Space 清單' : 'Mention 收件匣'}
-          className="relative flex w-inbox shrink-0 flex-col border-r border-border"
+          inert={listHidden}
+          className={cn(
+            // ≥1024 一律是固定寬度的左欄；以下走主從切換，所以寬度與右框線
+            // 都掛在 lg: 上——清單獨占畫面時右邊沒有東西，那條線是多的
+            'relative flex flex-col border-border outline-none lg:w-inbox lg:shrink-0 lg:border-r',
+            listHidden
+              ? 'pointer-events-none absolute inset-0 -z-10 w-full opacity-0'
+              : 'max-lg:w-full max-lg:flex-1',
+          )}
         >
           <Pane active={view === 'summary'}>
             <SpacesRail />
@@ -143,7 +180,21 @@ export function AppShell() {
           </Pane>
         </aside>
 
-        <main id="main" tabIndex={-1} className="relative flex min-w-0 flex-1 flex-col outline-none">
+        <main
+          id="main"
+          tabIndex={-1}
+          inert={mainHidden}
+          className={cn(
+            'relative flex min-w-0 flex-1 flex-col outline-none',
+            // 主從切換：清單那一半顯示時工作區收起來。**不用 display:none**
+            // ——草稿工作區的 Reference Space 選擇器也是虛擬清單（見上方說明）
+            mainHidden && 'pointer-events-none absolute inset-0 -z-10 opacity-0',
+          )}
+        >
+          {/* 只有主從切換的寬度需要一條回得去的路（元件自己 lg:hidden）。
+              清單那一半顯示時整個 <main> 都收起來了，麵包屑也跟著不在。 */}
+          {detail ? <MasterDetailBack view={view} /> : null}
+
           <Pane active={view === 'summary'}>
             <SummaryWorkspace
               space={selectedSpace}
