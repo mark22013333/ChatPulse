@@ -1,7 +1,7 @@
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { DraftReplyWorkspace } from './DraftReplyWorkspace'
+import { DraftReplyWorkspace } from '@/components/draft/DraftReplyWorkspace'
 import { RouterProvider } from '@/router/useRouter'
 import { useCodeProjectStore } from '@/store/codeProjects'
 import { useDraftStore } from '@/store/draft'
@@ -207,6 +207,142 @@ describe('送出的結果', () => {
       expect(within(dialog).getByRole('button', { name: '確認送出' })).toBeDisabled(),
     )
     expect(within(dialog).getByRole('button', { name: '取消' })).toBeDisabled()
+  })
+})
+
+describe('原始 Mention 卡：三種狀態不能只靠顏色分辨', () => {
+  it('pending 顯示「待處理」', () => {
+    renderWorkspace()
+    expect(screen.getByText('待處理')).toBeInTheDocument()
+  })
+
+  it('**manual 顯示「自選對話」並說明它為什麼不在收件匣**', () => {
+    // --verified 與 --signal 刻意是同一個色，所以三態一定要有文字。
+    // 這段說明原本只活在 badge 的 tooltip 裡，鍵盤與觸控使用者拿不到。
+    render(
+      <RouterProvider>
+        <DraftReplyWorkspace mention={{ ...MENTION, state: 'manual' }} />
+      </RouterProvider>,
+    )
+
+    expect(screen.getByText('自選對話')).toBeInTheDocument()
+    expect(screen.getByText(/你從摘要工作台挑的對話/)).toBeInTheDocument()
+  })
+
+  it('resolved 顯示「✓ 已處理」', () => {
+    render(
+      <RouterProvider>
+        <DraftReplyWorkspace mention={{ ...MENTION, state: 'resolved' }} />
+      </RouterProvider>,
+    )
+
+    expect(screen.getByText('✓ 已處理')).toBeInTheDocument()
+    expect(screen.queryByText(/你從摘要工作台挑的對話/)).toBeNull()
+  })
+
+  it('取不回訊息內容時說出原因，不是留白', () => {
+    render(
+      <RouterProvider>
+        <DraftReplyWorkspace
+          mention={{ ...MENTION, text: undefined, content_error: '權限不足' }}
+        />
+      </RouterProvider>,
+    )
+
+    expect(screen.getByText(/無法取回訊息內容：權限不足/)).toBeInTheDocument()
+  })
+})
+
+describe('產生鈕', () => {
+  it('沒有草稿時是「產生 Draft Reply」，有了之後變「重新產生」', () => {
+    useDraftStore.setState({ raw: '' })
+    const { unmount } = renderWorkspace()
+    expect(screen.getByRole('button', { name: /^產生 Draft Reply/ })).toBeInTheDocument()
+    unmount()
+
+    useDraftStore.setState({ raw: '### ✍️ 建議回話\n有內容了' })
+    renderWorkspace()
+    expect(screen.getByRole('button', { name: /重新產生 Draft Reply/ })).toBeInTheDocument()
+  })
+
+  it('**收件匣勾了要合併時，按鈕要說出會合併幾則**', () => {
+    // 「勾了兩則卻只回到一則」是靜默的，使用者要送出後才發現
+    useMentionsStore.setState({ mergeIds: [45, 46] })
+    renderWorkspace()
+
+    expect(screen.getByRole('button', { name: /合併 2 則/ })).toBeInTheDocument()
+  })
+
+  it('勾選裡沒有這一則時不算合併（不會把不相干的一起回掉）', () => {
+    useMentionsStore.setState({ mergeIds: [99, 100] })
+    renderWorkspace()
+
+    expect(screen.queryByRole('button', { name: /合併/ })).toBeNull()
+  })
+
+  it('串流中換成「停止串流」', () => {
+    useDraftStore.setState({ streaming: true })
+    renderWorkspace()
+
+    expect(screen.getByRole('button', { name: '停止串流' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /產生 Draft Reply/ })).toBeNull()
+  })
+
+  it('抓取則數不合法時產生鈕鎖住', () => {
+    useDraftStore.setState({ refLimitError: '抓取則數必須介於 1 至 1000 之間' })
+    renderWorkspace()
+
+    expect(screen.getByRole('button', { name: /產生 Draft Reply/ })).toBeDisabled()
+  })
+})
+
+describe('Reference Space 與參考專案的控件', () => {
+  it('已勾選數量與清空鈕', async () => {
+    useDraftStore.setState({ referenceSpaceIds: ['spaces/a', 'spaces/b'] })
+    renderWorkspace()
+
+    expect(screen.getByText('已勾選 2')).toBeInTheDocument()
+    await userEvent.click(screen.getAllByRole('button', { name: '清空' })[0])
+    expect(useDraftStore.getState().referenceSpaceIds).toEqual([])
+  })
+
+  it('**抓取則數的錯誤訊息是 role="alert" 並被輸入框指名**', () => {
+    // 只有 aria-invalid 的話，螢幕閱讀器讀得出「這欄有問題」但讀不到
+    // 「問題是什麼」（規格 §10.7）
+    useDraftStore.setState({ refLimitError: '抓取則數必須是整數' })
+    renderWorkspace()
+
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent('抓取則數必須是整數')
+    expect(screen.getByLabelText(/每群抓取則數/)).toHaveAttribute(
+      'aria-describedby',
+      alert.id,
+    )
+  })
+
+  it('一個參考專案都沒設定時整塊不畫（不是畫一個空清單）', () => {
+    useCodeProjectStore.setState({ projects: [], loaded: true })
+    renderWorkspace()
+
+    expect(screen.queryByText('參考專案')).toBeNull()
+  })
+
+  it('有參考專案時列出環境勾選', () => {
+    useCodeProjectStore.setState({
+      projects: [
+        {
+          id: 3,
+          name: 'WCS',
+          branches: { production: 'main', uat: 'uat', dev: '' },
+        } as never,
+      ],
+      loaded: true,
+    })
+    renderWorkspace()
+
+    expect(screen.getByText('參考專案')).toBeInTheDocument()
+    expect(screen.getByText('WCS')).toBeInTheDocument()
+    expect(screen.getByText('main')).toBeInTheDocument()
   })
 })
 

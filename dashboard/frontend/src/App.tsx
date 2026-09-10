@@ -16,7 +16,7 @@ import { EvidenceColumn, useEvidenceBundle } from '@/components/evidence/Evidenc
 import { EvidenceDrawer } from '@/components/evidence/EvidenceDrawer'
 import { DiagnosticsPage } from '@/components/settings/DiagnosticsPage'
 import { SettingsOverlay } from '@/components/settings/SettingsOverlay'
-import { DraftReplyWorkspace } from '@/components/DraftReplyWorkspace'
+import { DraftReplyWorkspace } from '@/components/draft/DraftReplyWorkspace'
 import { LoginScreen } from '@/components/LoginScreen'
 import { MentionInbox } from '@/components/MentionInbox'
 import { SpacesRail } from '@/components/SpacesRail'

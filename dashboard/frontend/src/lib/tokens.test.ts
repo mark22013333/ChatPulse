@@ -63,7 +63,7 @@ const TITLE_BUDGET: Record<string, number> = {
   // 先用實際數字鎖住，只能降不能升。P7 收工時這張表應該只剩
   // ConfirmDialog 的兩個呼叫端——那個 title 是對話框標題，不是 tooltip。
   'components/SummaryWorkspace.tsx': 4,
-  'components/DraftReplyWorkspace.tsx': 1,
+  'components/draft/SendReplyConfirm.tsx': 1,
   'components/SpacesRail.tsx': 1,
   'components/SpaceList.tsx': 1,
   'components/ProviderSelect.tsx': 2,
