@@ -15,16 +15,17 @@ export function CollectorPanel() {
         {collector ? (
           <span
             className={cn(
-              'ml-auto flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px]',
+              'ml-auto flex items-center gap-1 rounded-full px-2 py-0.5 text-2xs',
               collector.running
-                ? 'bg-emerald-500/10 text-emerald-500'
+                ? 'bg-signal-wash text-verified'
                 : 'bg-muted text-muted-foreground',
             )}
           >
             <span
               className={cn(
                 'size-1.5 rounded-full',
-                collector.running ? 'animate-pulse bg-emerald-500' : 'bg-muted-foreground',
+                // 實心狀態點：用 bg-verified 而不是 bg-signal-wash，8% 透明度的底色當點會看不見
+                collector.running ? 'animate-pulse bg-verified' : 'bg-muted-foreground',
               )}
             />
             {collector.running ? '運行中' : '未運行'}
@@ -33,9 +34,9 @@ export function CollectorPanel() {
       </div>
 
       {!collector ? (
-        <p className="text-[11px] text-muted-foreground">尚未取得採集器資訊。</p>
+        <p className="text-xs text-muted-foreground">尚未取得採集器資訊。</p>
       ) : (
-        <dl className="space-y-1 text-[11px]">
+        <dl className="space-y-1 text-xs">
           <Row label="實作" value={collector.implementation} />
           <Row label="間隔" value={`${collector.interval_seconds} 秒`} />
           <Row
@@ -70,7 +71,7 @@ export function CollectorPanel() {
       )}
 
       {collector?.last_error ? (
-        <div className="mt-2 flex items-start gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2 text-[11px] text-amber-600 dark:text-amber-400">
+        <div className="mt-2 flex items-start gap-1.5 rounded-lg border border-caution-line bg-caution/10 p-2 text-xs text-caution">
           <AlertTriangleIcon className="mt-0.5 size-3 shrink-0" />
           <span className="leading-relaxed break-words">{collector.last_error}</span>
         </div>

@@ -125,7 +125,7 @@ export function DraftReplyWorkspace({ mention, active = true }: DraftReplyWorksp
   if (!mention) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
-        <span className="flex size-12 items-center justify-center rounded-full bg-muted text-sky-500">
+        <span className="flex size-12 items-center justify-center rounded-full bg-muted text-signal">
           <MessageSquareQuoteIcon className="size-5" />
         </span>
         <div>
@@ -167,26 +167,31 @@ export function DraftReplyWorkspace({ mention, active = true }: DraftReplyWorksp
           {/* manual 必須單獨標。以前這裡只分 pending 與「其他」，於是從摘要
               工作台挑來的草稿目標被顯示成「已處理」——但它不在「已處理」清單裡
               （那個分頁查的是 resolved），使用者會以為系統漏掉了他的紀錄。 */}
+          {/*
+            三種狀態不能只靠顏色分辨（設計原則 3）。`--verified` 與 `--signal`
+            刻意是同一個色，所以這裡改成：**只有需要動作的「待處理」帶訊號色**，
+            另外兩種安靜下來，再用 ✓ 與文字把「已處理」和「自選對話」分開。
+          */}
           <span
             className={cn(
-              'rounded border px-1.5 py-0.5 text-[10px]',
-              mention.state === 'pending' && 'border-sky-500/30 bg-sky-500/10 text-sky-500',
-              mention.state === 'resolved' &&
-                'border-emerald-500/30 bg-emerald-500/10 text-emerald-500',
-              mention.state === 'manual' && 'border-border bg-muted text-muted-foreground',
+              'rounded border px-1.5 py-0.5 text-2xs',
+              mention.state === 'pending'
+                ? 'border-signal-line bg-signal-wash text-signal'
+                : 'border-border bg-muted text-fg-dim',
             )}
-            title={
-              mention.state === 'manual'
-                ? '你從摘要工作台挑的對話，不是別人 @ 你，所以不在收件匣的待辦清單裡。送出回話後會歸到「已處理」。'
-                : undefined
-            }
           >
             {mention.state === 'pending'
               ? '待處理'
               : mention.state === 'manual'
-                ? '手動指定'
-                : '已處理'}
+                ? '自選對話'
+                : '✓ 已處理'}
           </span>
+          {/* 這段說明原本只活在 badge 的 title 屬性裡，鍵盤與觸控使用者拿不到 */}
+          {mention.state === 'manual' ? (
+            <span className="text-fg-dim text-2xs">
+              你從摘要工作台挑的對話，不是別人 @ 你，所以不在收件匣的待辦清單裡。送出回話後會歸到「已處理」。
+            </span>
+          ) : null}
         </div>
         <p className="mt-2 rounded-lg border border-border bg-muted/40 p-3 text-xs leading-relaxed whitespace-pre-wrap">
           {mention.text ?? `（無法取回訊息內容${mention.content_error ? `：${mention.content_error}` : ''}）`}
@@ -199,7 +204,7 @@ export function DraftReplyWorkspace({ mention, active = true }: DraftReplyWorksp
           <div className="shrink-0 space-y-2 px-3 py-2.5">
             <div className="flex items-center gap-2">
               <h3 className="text-xs font-semibold">Reference Space</h3>
-              <span className="text-[10px] text-muted-foreground">
+              <span className="text-2xs text-muted-foreground">
                 已勾選 {referenceSpaceIds.length}
               </span>
               {referenceSpaceIds.length > 0 ? (
@@ -209,7 +214,7 @@ export function DraftReplyWorkspace({ mention, active = true }: DraftReplyWorksp
                 </Button>
               ) : null}
             </div>
-            <p className="text-[10px] leading-relaxed text-muted-foreground">
+            <p className="text-2xs leading-relaxed text-muted-foreground">
               預設一個都不勾。勾選的 Space 近期訊息會一併送進脈絡。
             </p>
             <Input
@@ -220,7 +225,7 @@ export function DraftReplyWorkspace({ mention, active = true }: DraftReplyWorksp
             />
             <div className="flex items-end gap-2">
               <div className="flex-1 space-y-1">
-                <Label htmlFor="draft-limit" className="text-[10px] text-muted-foreground">
+                <Label htmlFor="draft-limit" className="text-2xs text-muted-foreground">
                   每群抓取則數（1~1000）
                 </Label>
                 <Input
@@ -236,7 +241,7 @@ export function DraftReplyWorkspace({ mention, active = true }: DraftReplyWorksp
               </div>
             </div>
             {refLimitError ? (
-              <p className="text-[10px] text-destructive">{refLimitError}</p>
+              <p className="text-2xs text-destructive">{refLimitError}</p>
             ) : null}
 
             <ProviderSelect id="draft-provider" disabled={streaming} triggerClassName="w-full" />
@@ -262,7 +267,7 @@ export function DraftReplyWorkspace({ mention, active = true }: DraftReplyWorksp
                   <FileCodeIcon className="size-3.5" aria-hidden />
                   參考專案
                 </h3>
-                <span className="text-[10px] text-muted-foreground">
+                <span className="text-2xs text-muted-foreground">
                   已勾選 {codeRefs.length}
                 </span>
                 {codeRefs.length > 0 ? (
@@ -272,13 +277,13 @@ export function DraftReplyWorkspace({ mention, active = true }: DraftReplyWorksp
                   </Button>
                 ) : null}
               </div>
-              <p className="text-[10px] leading-relaxed text-muted-foreground">
+              <p className="text-2xs leading-relaxed text-muted-foreground">
                 同一個專案可同時勾正式與 UAT，草稿會分開講兩邊的差異。
               </p>
               <ul className="space-y-1.5">
                 {codeProjects.map((p) => (
                   <li key={p.id} className="space-y-1">
-                    <p className="truncate text-[11px] font-medium">{p.name}</p>
+                    <p className="truncate text-xs font-medium">{p.name}</p>
                     <div className="flex flex-wrap gap-1">
                       {ENV_ORDER.filter((env) => p.branches[env]).map((env) => {
                         const checked = codeRefs.some(
@@ -287,7 +292,7 @@ export function DraftReplyWorkspace({ mention, active = true }: DraftReplyWorksp
                         return (
                           <label
                             key={env}
-                            className={`flex cursor-pointer items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] ${
+                            className={`flex cursor-pointer items-center gap-1 rounded border px-1.5 py-0.5 text-2xs ${
                               checked
                                 ? 'border-primary bg-primary/10 text-primary'
                                 : 'border-border text-muted-foreground'
@@ -301,7 +306,7 @@ export function DraftReplyWorkspace({ mention, active = true }: DraftReplyWorksp
                               onChange={() => toggleCodeRef(p.id, env)}
                             />
                             {ENV_LABELS[env]}
-                            <code className="font-mono opacity-70">{p.branches[env]}</code>
+                            <code className="metric opacity-70">{p.branches[env]}</code>
                           </label>
                         )
                       })}
@@ -365,7 +370,7 @@ export function DraftReplyWorkspace({ mention, active = true }: DraftReplyWorksp
                 還是「檢查太嚴」的唯一依據。
               */}
               {polish && !polish.polished && polish.fallback_reason ? (
-                <div className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-700 dark:text-amber-400">
+                <div className="mt-2 rounded border border-caution-line bg-caution/10 px-3 py-2 text-xs leading-relaxed text-caution">
                   <span className="font-medium">Sepia 潤稿未採用</span>
                   <span className="ml-1">{polish.fallback_reason}</span>
                   <span className="ml-1 text-muted-foreground">
@@ -380,7 +385,7 @@ export function DraftReplyWorkspace({ mention, active = true }: DraftReplyWorksp
 
               <section>
                 <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold">
-                  <CompassIcon className="size-4 text-sky-500" />
+                  <CompassIcon className="size-4 text-signal" />
                   脈絡分析
                 </h3>
                 <Markdown
@@ -393,9 +398,9 @@ export function DraftReplyWorkspace({ mention, active = true }: DraftReplyWorksp
 
               <section>
                 <div className="mb-2 flex items-center gap-1.5">
-                  <MessageSquareQuoteIcon className="size-4 text-emerald-500" />
+                  <MessageSquareQuoteIcon className="size-4 text-verified" />
                   <h3 className="text-sm font-semibold">建議回話</h3>
-                  <span className="text-[11px] text-muted-foreground">（可直接編輯）</span>
+                  <span className="text-xs text-muted-foreground">（可直接編輯）</span>
                   <Button
                     size="sm"
                     className="ml-auto"
@@ -411,7 +416,8 @@ export function DraftReplyWorkspace({ mention, active = true }: DraftReplyWorksp
                   onChange={(event) => setReplyText(event.target.value)}
                   rows={10}
                   placeholder="建議回話會串流到這裡，你可以直接修改。"
-                  className="min-h-48 font-mono text-xs leading-relaxed"
+                  // 這是要給人讀的中文散文，不是 log：等寬對 CJK 沒作用，只會讓它難讀
+                  className="min-h-48 text-base leading-relaxed"
                 />
               </section>
             </div>

@@ -52,7 +52,7 @@ export function ActionItems({ markdown }: ActionItemsProps) {
     <section className="rounded-xl border border-border bg-card/60 p-4">
       <div className="mb-3 flex items-center justify-between gap-2">
         <h3 className="flex items-center gap-2 text-sm font-semibold">
-          <ListChecksIcon className="size-4 text-emerald-500" />
+          <ListChecksIcon className="size-4 text-verified" />
           Action Items
           <span className="text-xs font-normal text-muted-foreground">
             （{checked.size}/{items.length} 已勾選）
@@ -80,7 +80,7 @@ export function ActionItems({ markdown }: ActionItemsProps) {
                 />
                 <span className="min-w-0 text-xs leading-relaxed">
                   {item.owner ? (
-                    <span className="mr-1.5 rounded bg-emerald-500/10 px-1.5 py-0.5 font-medium text-emerald-500">
+                    <span className="mr-1.5 rounded bg-signal-wash px-1.5 py-0.5 font-medium text-verified">
                       {item.owner}
                     </span>
                   ) : null}

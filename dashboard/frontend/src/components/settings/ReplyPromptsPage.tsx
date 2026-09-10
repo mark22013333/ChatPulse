@@ -75,7 +75,7 @@ export function ReplyPromptsPage() {
                 type="button"
                 size="xs"
                 variant="ghost"
-                className="ml-auto h-5 px-1 text-[10px] text-muted-foreground"
+                className="ml-auto h-5 px-1 text-2xs text-muted-foreground"
                 onClick={() => setText(customPrompt)}
               >
                 帶入草稿頁目前的內容
@@ -86,7 +86,7 @@ export function ReplyPromptsPage() {
                 type="button"
                 size="xs"
                 variant="ghost"
-                className="ml-auto h-5 px-1 text-[10px]"
+                className="ml-auto h-5 px-1 text-2xs"
                 onClick={() => {
                   setEditingId(null)
                   setName('')
@@ -100,7 +100,7 @@ export function ReplyPromptsPage() {
           </div>
           <div className="grid gap-2 sm:grid-cols-2">
             <div className="flex flex-col gap-1">
-              <Label htmlFor="preset-name" className="text-[11px] text-muted-foreground">
+              <Label htmlFor="preset-name" className="text-xs text-muted-foreground">
                 名稱
               </Label>
               <Input
@@ -112,7 +112,7 @@ export function ReplyPromptsPage() {
               />
             </div>
             <div className="flex flex-col gap-1">
-              <Label htmlFor="preset-desc" className="text-[11px] text-muted-foreground">
+              <Label htmlFor="preset-desc" className="text-xs text-muted-foreground">
                 說明（選填）
               </Label>
               <Input
@@ -125,7 +125,7 @@ export function ReplyPromptsPage() {
             </div>
           </div>
           <div className="flex flex-col gap-1">
-            <Label htmlFor="preset-text" className="text-[11px] text-muted-foreground">
+            <Label htmlFor="preset-text" className="text-xs text-muted-foreground">
               內容
             </Label>
             <Textarea
@@ -152,7 +152,7 @@ export function ReplyPromptsPage() {
         <div className="space-y-2">
           <span className="text-xs font-semibold">已儲存（{replyPrompts.length}）</span>
           {replyPrompts.length === 0 ? (
-            <p className="text-[11px] text-muted-foreground">還沒有儲存任何提示詞。</p>
+            <p className="text-xs text-muted-foreground">還沒有儲存任何提示詞。</p>
           ) : (
             <div className="max-h-56 space-y-2 overflow-y-auto">
               {replyPrompts.map((preset) => (
@@ -164,7 +164,7 @@ export function ReplyPromptsPage() {
                         type="button"
                         size="xs"
                         variant="ghost"
-                        className="h-5 px-1 text-[10px]"
+                        className="h-5 px-1 text-2xs"
                         onClick={() => {
                           setEditingId(preset.id)
                           setName(preset.name)
@@ -178,7 +178,7 @@ export function ReplyPromptsPage() {
                         type="button"
                         size="xs"
                         variant="ghost"
-                        className="h-5 px-1 text-[10px] text-destructive"
+                        className="h-5 px-1 text-2xs text-destructive"
                         onClick={async () => {
                           if (await deleteReplyPrompt(preset.id)) {
                             toast.success(`已刪除「${preset.name}」`)
@@ -191,9 +191,9 @@ export function ReplyPromptsPage() {
                     </div>
                   </div>
                   {preset.description ? (
-                    <p className="text-[10px] text-muted-foreground">{preset.description}</p>
+                    <p className="text-2xs text-muted-foreground">{preset.description}</p>
                   ) : null}
-                  <p className="whitespace-pre-wrap text-[10px] leading-snug text-muted-foreground">
+                  <p className="whitespace-pre-wrap text-2xs leading-snug text-muted-foreground">
                     {preset.prompt}
                   </p>
                 </div>

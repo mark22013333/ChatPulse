@@ -96,21 +96,21 @@ export function MentionInbox({ onSelect, onMergedGenerate }: MentionInboxProps) 
             <TabsTrigger value="pending">
               待處理
               {counts.pending > 0 ? (
-                <span className="ml-1 inline-flex min-w-4 items-center justify-center rounded-full bg-sky-500 px-1 text-[10px] font-semibold text-white">
+                <span className="ml-1 inline-flex min-w-4 items-center justify-center rounded-full bg-signal px-1 text-2xs font-semibold text-signal-on">
                   {counts.pending}
                 </span>
               ) : null}
             </TabsTrigger>
             <TabsTrigger value="resolved">
               已處理
-              <span className="ml-1 text-[10px] text-muted-foreground">{counts.resolved}</span>
+              <span className="ml-1 text-2xs text-muted-foreground">{counts.resolved}</span>
             </TabsTrigger>
           </TabsList>
         </Tabs>
       </div>
 
       {error ? (
-        <div className="flex shrink-0 items-start gap-2 border-b border-destructive/30 bg-destructive/10 px-3 py-2 text-[11px] text-destructive">
+        <div className="flex shrink-0 items-start gap-2 border-b border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
           <AlertCircleIcon className="mt-0.5 size-3 shrink-0" />
           <span>{error}</span>
         </div>
@@ -119,9 +119,9 @@ export function MentionInbox({ onSelect, onMergedGenerate }: MentionInboxProps) 
       {/* 合併列。只在真的勾了東西時才出現——常駐一條工具列會讓
           「單則回覆」這個絕大多數的情況每次都要多看一行。 */}
       {merging ? (
-        <div className="shrink-0 space-y-1.5 border-b border-sky-500/30 bg-sky-500/10 px-3 py-2">
+        <div className="shrink-0 space-y-1.5 border-b border-signal-line bg-signal-wash px-3 py-2">
           <div className="flex items-center gap-2">
-            <span className="text-[11px] font-medium">已選 {selected.length} 則，一起回成一則</span>
+            <span className="text-xs font-medium">已選 {selected.length} 則，一起回成一則</span>
             <Button size="xs" variant="ghost" className="ml-auto" onClick={clearMerge}>
               <XIcon />
               取消
@@ -139,7 +139,7 @@ export function MentionInbox({ onSelect, onMergedGenerate }: MentionInboxProps) 
               : `合併產生草稿（${selected.length} 則）`}
           </Button>
           {/* 回話只會送到第一則所在的討論串，這件事一定要講在按下去之前 */}
-          <p className="text-[10px] leading-relaxed text-muted-foreground">
+          <p className="text-2xs leading-relaxed text-muted-foreground">
             回話會送到「{selected[0]?.space_name}」，送出後這 {selected.length} 則會一起標成已處理。
           </p>
         </div>
@@ -172,10 +172,12 @@ export function MentionInbox({ onSelect, onMergedGenerate }: MentionInboxProps) 
                 <div
                   className={cn(
                     'rounded-lg border p-2.5 transition-colors',
+                    // 勾選與選中都是 signal 底，靠邊框強弱分辨：勾選用實心 signal，
+                    // 選中用半透明的 signal-line——兩者都換成同一組 token 會讓狀態糊在一起
                     checked
-                      ? 'border-sky-500/60 bg-sky-500/15'
+                      ? 'border-signal bg-signal-wash'
                       : active
-                        ? 'border-sky-500/40 bg-sky-500/10'
+                        ? 'border-signal-line bg-signal-wash'
                         : 'border-border/70 bg-card/50 hover:border-border',
                     merging && !selectable && 'opacity-45',
                   )}
@@ -188,13 +190,10 @@ export function MentionInbox({ onSelect, onMergedGenerate }: MentionInboxProps) 
                         onCheckedChange={() => toggleMerge(mention.id)}
                         className="mt-0.5 shrink-0"
                         aria-label={`選取來自 ${mention.sender_display} 的這則一起回`}
-                        title={
-                          selectable
-                            ? '勾起來可以和其他幾則用一則回話一起回完'
-                            : blocked
-                              ? MERGE_BLOCK_LABEL[blocked]
-                              : undefined
-                        }
+                        // 不可勾選的原因改成畫面上讀得到的一行（見下方），
+                        // 用 aria-describedby 綁過去。原本它只活在 title 屬性裡，
+                        // 鍵盤與觸控使用者完全拿不到（設計規格 §10.3）。
+                        aria-describedby={!selectable && blocked ? `merge-block-${mention.id}` : undefined}
                       />
                     ) : null}
                     <button
@@ -204,23 +203,28 @@ export function MentionInbox({ onSelect, onMergedGenerate }: MentionInboxProps) 
                     >
                       <div className="flex items-baseline justify-between gap-2">
                         <span className="truncate text-xs font-medium">{mention.space_name}</span>
-                        <span className="shrink-0 text-[10px] text-muted-foreground">
+                        <span className="shrink-0 text-2xs text-muted-foreground">
                           {relativeTime(mention.create_time)}
                         </span>
                       </div>
-                      <p className="mt-0.5 text-[11px] text-muted-foreground">
+                      <p className="mt-0.5 text-xs text-muted-foreground">
                         {mention.sender_display} 提到你
                       </p>
-                      <p className="mt-1 line-clamp-3 text-[11px] leading-relaxed whitespace-pre-wrap">
+                      <p className="mt-1 line-clamp-3 text-xs leading-relaxed whitespace-pre-wrap">
                         {mention.text
                           ? mention.text
                           : mention.content_error
                             ? `（無法取回訊息內容：${mention.content_error}）`
                             : '（訊息內容取不到）'}
                       </p>
-                      {/* 不能勾的要說原因。只把它變灰的話，使用者只會覺得壞了 */}
-                      {merging && !selectable && blocked ? (
-                        <p className="mt-1 text-[10px] text-amber-600 dark:text-amber-500">
+                      {/* 不能勾的要說原因。只把它變灰的話，使用者只會覺得壞了。
+                          這行是決定「能不能送」的資訊，字級維持 13px 不縮到 12px。
+
+                          顯示條件從 `merging && !selectable` 放寬成 `!selectable`：
+                          原本只有已經勾了東西時才說原因，但使用者第一次想勾就被擋住
+                          的那一刻，正是最需要知道為什麼的時候。 */}
+                      {!selectable && blocked ? (
+                        <p id={`merge-block-${mention.id}`} className="mt-1 text-xs text-caution">
                           {MERGE_BLOCK_LABEL[blocked]}
                         </p>
                       ) : null}

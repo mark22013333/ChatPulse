@@ -22,7 +22,7 @@ export function LoginScreen() {
       <Card className="w-full max-w-md">
         <CardHeader>
           <div className="mb-2 flex items-center gap-2.5">
-            <span className="flex size-9 items-center justify-center rounded-lg bg-sky-500/15 text-sky-500 ring-1 ring-sky-500/25">
+            <span className="flex size-9 items-center justify-center rounded-lg bg-signal-wash text-signal ring-1 ring-signal-line">
               <PulseMark className="size-4.5" />
             </span>
             <div>
@@ -62,7 +62,7 @@ export function LoginScreen() {
             <>
               <div className="flex items-center gap-3 py-1">
                 <span className="h-px flex-1 bg-border" />
-                <span className="text-[11px] text-muted-foreground">或</span>
+                <span className="text-xs text-muted-foreground">或</span>
                 <span className="h-px flex-1 bg-border" />
               </div>
               <Button
@@ -75,7 +75,7 @@ export function LoginScreen() {
                 {bootstrapPending ? <Loader2Icon className="animate-spin" /> : <KeyRoundIcon />}
                 匯入既有憑證
               </Button>
-              <p className="text-[11px] leading-relaxed text-muted-foreground">
+              <p className="text-xs leading-relaxed text-muted-foreground">
                 把 Phase 1 之前留下的 <code>config/google_chat_token.json</code> 匯入為你的身分。
                 只有三個 chat scope，沒有身分 scope 時可能需要設定{' '}
                 <code>CHATPULSE_BOOTSTRAP_USER_ID</code>。
@@ -84,7 +84,7 @@ export function LoginScreen() {
           ) : null}
 
           {status ? (
-            <p className="pt-1 text-[11px] text-muted-foreground">
+            <p className="pt-1 text-xs text-muted-foreground">
               目前已授權的 Viewer 數：{status.viewer_count}
             </p>
           ) : null}

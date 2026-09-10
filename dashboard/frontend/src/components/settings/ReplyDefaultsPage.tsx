@@ -117,21 +117,22 @@ export function ReplyDefaultsPage() {
             <SelectItem value={INHERIT}>
               <span className="flex w-full flex-col gap-0.5 whitespace-normal">
                 <span className="font-medium">{toneItems[INHERIT]}</span>
-                <span className="text-[10px] leading-snug text-muted-foreground">
+                <span className="text-2xs leading-snug text-muted-foreground">
                   不指定口氣，沿用你的偏好或系統預設。
                 </span>
               </span>
             </SelectItem>
+            {/* SelectItem 不放 title：description 在下一行已經可見，是真重複 */}
             {tones.map((tone) => (
-              <SelectItem key={tone.id} value={tone.id} title={tone.description}>
+              <SelectItem key={tone.id} value={tone.id}>
                 <span className="flex w-full flex-col gap-0.5 whitespace-normal">
                   <span className="font-medium">{tone.label}</span>
-                  <span className="text-[10px] leading-snug text-muted-foreground">
+                  <span className="text-2xs leading-snug text-muted-foreground">
                     {tone.description}
                   </span>
                   {/* 固定範例：所有 tone 的範例都在講同一個事實，
                       並排看得出「變的是語氣、不是內容」，也不必為了預覽打一次 AI */}
-                  <span className="text-[10px] leading-snug text-sky-600 dark:text-sky-400">
+                  <span className="text-2xs leading-snug text-signal">
                     例：{tone.example}
                   </span>
                 </span>
@@ -159,21 +160,21 @@ export function ReplyDefaultsPage() {
           </SelectTrigger>
           <SelectContent className="w-auto max-w-96 min-w-72">
             <SelectItem value={INHERIT}>
-              <span className="text-[11px]">跟隨預設</span>
+              <span className="text-xs">跟隨預設</span>
             </SelectItem>
             <SelectItem value={NONE}>
-              <span className="text-[11px]">不使用 Persona</span>
+              <span className="text-xs">不使用 Persona</span>
             </SelectItem>
             {enabledPersonas.map((persona) => (
               <SelectItem key={persona.id} value={String(persona.id)}>
                 <span className="flex w-full flex-col gap-0.5 whitespace-normal">
                   <span className="font-medium">{persona.name}</span>
                   {persona.description ? (
-                    <span className="text-[10px] leading-snug text-muted-foreground">
+                    <span className="text-2xs leading-snug text-muted-foreground">
                       {persona.description}
                     </span>
                   ) : null}
-                  <span className="font-mono text-[10px] text-muted-foreground">
+                  <span className="metric text-2xs text-muted-foreground">
                     {personaSourceLine(persona)}
                   </span>
                 </span>
@@ -183,20 +184,20 @@ export function ReplyDefaultsPage() {
         </Select>
         {activePersona ? (
           <div className="max-w-md space-y-0.5 rounded border border-border bg-muted/40 px-2 py-1.5">
-            <p className="font-mono text-[10px] text-muted-foreground">
+            <p className="metric text-2xs text-muted-foreground">
               {personaSourceLine(activePersona)}
             </p>
             {activePersona.refreshed_at ? (
-              <p className="text-[10px] text-muted-foreground">
+              <p className="text-2xs text-muted-foreground">
                 最後更新 {activePersona.refreshed_at.slice(0, 10)}
               </p>
             ) : (
-              <p className="text-[10px] text-muted-foreground">
+              <p className="text-2xs text-muted-foreground">
                 匯入於 {activePersona.imported_at.slice(0, 10)}
               </p>
             )}
             {needsPublicFigureNotice(activePersona) ? (
-              <p className="text-[10px] leading-snug text-amber-600 dark:text-amber-500">
+              <p className="text-2xs leading-snug text-caution">
                 {PUBLIC_FIGURE_NOTICE}
               </p>
             ) : null}
@@ -229,17 +230,17 @@ export function ReplyDefaultsPage() {
             </SelectTrigger>
             <SelectContent className="w-auto max-w-96 min-w-72">
               <SelectItem value={INHERIT}>
-                <span className="text-[11px]">跟隨預設</span>
+                <span className="text-xs">跟隨預設</span>
               </SelectItem>
               <SelectItem value={NONE}>
-                <span className="text-[11px]">不套用</span>
+                <span className="text-xs">不套用</span>
               </SelectItem>
               {replyPrompts.map((preset) => (
                 <SelectItem key={preset.id} value={String(preset.id)}>
                   <span className="flex w-full flex-col gap-0.5 whitespace-normal">
                     <span className="font-medium">{preset.name}</span>
                     {preset.description ? (
-                      <span className="text-[10px] leading-snug text-muted-foreground">
+                      <span className="text-2xs leading-snug text-muted-foreground">
                         {preset.description}
                       </span>
                     ) : null}
@@ -267,11 +268,6 @@ export function ReplyDefaultsPage() {
             'flex max-w-md items-start gap-2',
             sepia.available ? 'cursor-pointer' : 'cursor-not-allowed opacity-60',
           )}
-          title={
-            sepia.available
-              ? '在保留原始事實與技術內容的前提下，調整回覆的自然度、節奏與 AI 味。'
-              : sepia.reason
-          }
         >
           <Checkbox
             checked={sepiaEnabled === true}
@@ -280,22 +276,22 @@ export function ReplyDefaultsPage() {
             className="mt-px"
           />
           <span className="flex flex-col gap-0.5">
-            <span className="flex items-center gap-1 text-[11px] font-medium">
-              <SparklesIcon className="size-3 text-violet-500" aria-hidden />
+            <span className="flex items-center gap-1 text-xs font-medium">
+              <SparklesIcon className="size-3 text-provenance" aria-hidden />
               使用 Sepia 潤稿
             </span>
-            <span className="text-[10px] leading-snug text-muted-foreground">
+            <span className="text-2xs leading-snug text-muted-foreground">
               只調整〈建議回話〉的自然度與節奏，不會改動事實、數字或程式碼佐證。
             </span>
           </span>
         </label>
         {!sepia.available && sepia.reason ? (
-          <p className="text-[10px] leading-snug text-amber-600 dark:text-amber-500">
+          <p className="text-2xs leading-snug text-caution">
             {sepia.reason}
           </p>
         ) : null}
         {sepia.available && sepiaRules.version ? (
-          <p className="font-mono text-[10px] text-muted-foreground">
+          <p className="metric text-2xs text-muted-foreground">
             sepia v{sepiaRules.version}
             {sepiaRules.source_commit_sha ? ` @ ${sepiaRules.source_commit_sha.slice(0, 7)}` : ''}
           </p>

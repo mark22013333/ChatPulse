@@ -66,7 +66,7 @@ export function PersonasPage() {
                   type="button"
                   size="xs"
                   variant={mode === m ? 'default' : 'ghost'}
-                  className="h-5 px-2 text-[10px]"
+                  className="h-5 px-2 text-2xs"
                   onClick={() => setMode(m)}
                 >
                   {m === 'github' ? 'Repository' : '網址'}
@@ -78,7 +78,7 @@ export function PersonasPage() {
           {mode === 'github' ? (
             <div className="grid gap-2 sm:grid-cols-2">
               <div className="flex flex-col gap-1">
-                <Label htmlFor="persona-repo" className="text-[11px] text-muted-foreground">
+                <Label htmlFor="persona-repo" className="text-xs text-muted-foreground">
                   Repository（owner/repo）
                 </Label>
                 <Input
@@ -90,7 +90,7 @@ export function PersonasPage() {
                 />
               </div>
               <div className="flex flex-col gap-1">
-                <Label htmlFor="persona-slug" className="text-[11px] text-muted-foreground">
+                <Label htmlFor="persona-slug" className="text-xs text-muted-foreground">
                   Persona 名稱（目錄名）
                 </Label>
                 <Input
@@ -104,7 +104,7 @@ export function PersonasPage() {
             </div>
           ) : (
             <div className="flex flex-col gap-1">
-              <Label htmlFor="persona-url" className="text-[11px] text-muted-foreground">
+              <Label htmlFor="persona-url" className="text-xs text-muted-foreground">
                 檔案網址（只接受 github.com 與 raw.githubusercontent.com）
               </Label>
               <Input
@@ -118,7 +118,7 @@ export function PersonasPage() {
           )}
 
           <div className="flex flex-col gap-1">
-            <Label htmlFor="persona-name" className="text-[11px] text-muted-foreground">
+            <Label htmlFor="persona-name" className="text-xs text-muted-foreground">
               顯示名稱（選填，來源檔案的名稱常常是識別字而不是人名）
             </Label>
             <Input
@@ -144,7 +144,7 @@ export function PersonasPage() {
             )}
             匯入
           </Button>
-          <p className="text-[10px] leading-relaxed text-muted-foreground">
+          <p className="text-2xs leading-relaxed text-muted-foreground">
             匯入的內容會經過淨化：角色扮演指令、工具呼叫、讀檔要求、以及「不知道就推測」
             這類授權一律不採用。只有表達與思考風格會被保留。
           </p>
@@ -153,7 +153,7 @@ export function PersonasPage() {
         <div className="space-y-2">
           <span className="text-xs font-semibold">已匯入（{personas.length}）</span>
           {personas.length === 0 ? (
-            <p className="text-[11px] text-muted-foreground">還沒有匯入任何 Persona。</p>
+            <p className="text-xs text-muted-foreground">還沒有匯入任何 Persona。</p>
           ) : (
             <div className="max-h-64 space-y-2 overflow-y-auto">
               {personas.map((persona) => (
@@ -161,7 +161,7 @@ export function PersonasPage() {
                   <div className="flex items-center gap-2">
                     <span className="text-xs font-medium">{persona.name}</span>
                     {!persona.enabled ? (
-                      <span className="rounded border border-border px-1 py-px text-[10px] text-muted-foreground">
+                      <span className="rounded border border-border px-1 py-px text-2xs text-muted-foreground">
                         已停用
                       </span>
                     ) : null}
@@ -170,7 +170,7 @@ export function PersonasPage() {
                         type="button"
                         size="xs"
                         variant="ghost"
-                        className="h-5 px-1 text-[10px]"
+                        className="h-5 px-1 text-2xs"
                         onClick={() => void updatePersona(persona.id, { enabled: !persona.enabled })}
                       >
                         {persona.enabled ? '停用' : '啟用'}
@@ -180,7 +180,7 @@ export function PersonasPage() {
                           type="button"
                           size="xs"
                           variant="ghost"
-                          className="h-5 px-1 text-[10px]"
+                          className="h-5 px-1 text-2xs"
                           disabled={busy}
                           onClick={async () => {
                             const result = await refreshPersona(persona.id)
@@ -203,7 +203,7 @@ export function PersonasPage() {
                         type="button"
                         size="xs"
                         variant="ghost"
-                        className="h-5 px-1 text-[10px] text-destructive"
+                        className="h-5 px-1 text-2xs text-destructive"
                         onClick={async () => {
                           if (await deletePersona(persona.id)) {
                             toast.success(`已刪除「${persona.name}」`)
@@ -215,11 +215,11 @@ export function PersonasPage() {
                     </div>
                   </div>
                   {persona.description ? (
-                    <p className="text-[10px] leading-snug text-muted-foreground">
+                    <p className="text-2xs leading-snug text-muted-foreground">
                       {persona.description}
                     </p>
                   ) : null}
-                  <p className="font-mono text-[10px] text-muted-foreground">
+                  <p className="metric text-2xs text-muted-foreground">
                     {personaSourceLine(persona)}
                   </p>
                   <PersonaProfileView persona={persona} />

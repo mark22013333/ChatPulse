@@ -94,34 +94,6 @@
     --color-ring: var(--signal);
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   ⚠ 暫時的遷移橋樑（設計規格 §3.4）。P5 逐檔退役完成後整段刪除。
-
-   把 Tailwind 具名色重新指向語意 token，讓約 107 處 call site 不改一行
-   就換上新配色。它同時解掉 `dark:` 成對寫法的陷阱：`text-sky-500` 與
-   `dark:text-sky-400` 現在解析到同一個 var(--signal)，而 --signal 本身
-   已經是主題感知的，所以 `dark:` 變體自動退化成無害的 no-op。
-   ═══════════════════════════════════════════════════════════════ */
-@theme inline {
-    --color-sky-300: var(--signal);
-    --color-sky-400: var(--signal);
-    --color-sky-500: var(--signal);
-    --color-sky-600: var(--signal);
-    --color-sky-700: var(--signal);
-    --color-emerald-400: var(--verified);
-    --color-emerald-500: var(--verified);
-    --color-emerald-600: var(--verified);
-    --color-amber-400: var(--caution);
-    --color-amber-500: var(--caution);
-    --color-amber-600: var(--caution);
-    --color-amber-700: var(--caution);
-    --color-violet-400: var(--provenance);
-    --color-violet-500: var(--provenance);
-    --color-violet-600: var(--provenance);
-    --color-rose-500: var(--line-strong);
-    --color-teal-500: var(--line-strong);
-}
-
 /* ── 淺色：冷調紙，不是暖奶油 ──────────────────────────────── */
 :root {
     color-scheme: light;

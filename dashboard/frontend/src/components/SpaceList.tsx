@@ -85,7 +85,7 @@ export function SpaceList({
                 className={cn(
                   'flex w-full items-center gap-2 rounded-lg border border-transparent px-2 py-1.5 text-left transition-colors',
                   'hover:bg-accent/60',
-                  isSelected && 'border-sky-500/30 bg-sky-500/10',
+                  isSelected && 'border-signal-line bg-signal-wash',
                 )}
               >
                 {multi ? (
@@ -105,12 +105,12 @@ export function SpaceList({
                   <span
                     className={cn(
                       'block truncate text-xs font-medium',
-                      isSelected ? 'text-sky-500' : 'text-foreground',
+                      isSelected ? 'text-signal' : 'text-foreground',
                     )}
                   >
                     {space.displayName || space.id}
                   </span>
-                  <span className="flex items-center gap-1 truncate text-[10px] text-muted-foreground">
+                  <span className="flex items-center gap-1 truncate text-2xs text-muted-foreground">
                     {/* 釘選的排在最前面，這個標記就是排序的解釋 */}
                     {space.pinned ? (
                       <>

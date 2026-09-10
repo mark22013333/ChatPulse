@@ -151,13 +151,13 @@ export function CodeProjectSettings() {
                       )}
                       {info &&
                         (ok ? (
-                          <span className="inline-flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400">
+                          <span className="inline-flex items-center gap-1 text-xs text-verified">
                             <CheckCircle2Icon className="size-3.5" aria-hidden />
                             {info.commit}
                             {info.commit_date ? `（${info.commit_date.slice(0, 10)}）` : null}
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400">
+                          <span className="inline-flex items-center gap-1 text-xs text-caution">
                             <AlertTriangleIcon className="size-3.5" aria-hidden />
                             分支不存在
                             {info.did_you_mean?.length
@@ -171,7 +171,7 @@ export function CodeProjectSettings() {
               </ul>
 
               {p.last_verify_error && (
-                <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
+                <p className="mt-2 text-xs text-caution">
                   {p.last_verify_error}
                 </p>
               )}

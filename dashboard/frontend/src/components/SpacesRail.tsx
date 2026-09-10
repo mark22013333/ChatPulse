@@ -92,7 +92,7 @@ export function SpacesRail() {
       </div>
 
       {error ? (
-        <p className="shrink-0 border-b border-destructive/30 bg-destructive/10 px-3 py-2 text-[11px] text-destructive">
+        <p className="shrink-0 border-b border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
           {error}
         </p>
       ) : null}
@@ -128,7 +128,7 @@ export function SpacesRail() {
               // 是「選這個字」，不是「儲存」。見 lib/keyboard.ts
               onKeyDown={onEnter(() => void submitRename())}
             />
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               清空後儲存＝取消自訂，回到自動辨識的結果。這個名字只有你看得到，
               不會改動 Google Chat。
             </p>
@@ -143,7 +143,7 @@ export function SpacesRail() {
         </DialogContent>
       </Dialog>
 
-      <div className="flex shrink-0 items-center justify-between border-t border-border px-3 py-1.5 text-[10px] text-muted-foreground">
+      <div className="flex shrink-0 items-center justify-between border-t border-border px-3 py-1.5 text-2xs text-muted-foreground">
         <span>
           顯示 {visible.length} / {total || items.length}
         </span>

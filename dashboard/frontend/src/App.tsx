@@ -161,7 +161,7 @@ export default function App() {
       {/* 頂列 */}
       <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border px-4">
         <div className="flex items-center gap-2">
-          <span className="flex size-6 items-center justify-center rounded-md bg-sky-500/15 text-sky-500 ring-1 ring-sky-500/25">
+          <span className="flex size-6 items-center justify-center rounded-md bg-signal-wash text-signal ring-1 ring-signal-line">
             <PulseMark className="size-3.5" />
           </span>
           <span className="text-sm font-semibold tracking-tight">ChatPulse</span>
@@ -187,7 +187,7 @@ export default function App() {
 
         <div className="ml-auto flex items-center gap-2">
           {me?.viewer ? (
-            <span className="hidden text-[11px] text-muted-foreground sm:inline">
+            <span className="hidden text-xs text-muted-foreground sm:inline">
               {me.viewer.display_name || me.viewer.email}
             </span>
           ) : null}
@@ -324,18 +324,17 @@ function ViewTab({ active, onClick, icon, label, badge, busy }: ViewTabProps) {
       {icon}
       {label}
       {busy ? (
-        <span
-          className="relative flex size-1.5"
-          title="正在生成，切到別的頁籤也會繼續"
-          aria-label="正在生成"
-        >
-          {/* motion-safe：尊重使用者的「減少動態效果」系統設定 */}
-          <span className="absolute inline-flex size-full rounded-full bg-sky-500 opacity-75 motion-safe:animate-ping" />
-          <span className="relative inline-flex size-1.5 rounded-full bg-sky-500" />
-        </span>
+        <>
+          {/* 常態與 reduced-motion 的降級表徵都定義在 index.css 的 .live-dot，
+              不再逐處寫 motion-safe:（那樣一定會漏）。 */}
+          <span className="live-dot" aria-hidden />
+          {/* 說明改成頁籤可及名稱的一部分，不放進 title——title 對鍵盤與
+              觸控使用者不可達（設計規格 §10.2）。 */}
+          <span className="sr-only">（正在生成，切到別的頁籤也會繼續）</span>
+        </>
       ) : null}
       {badge && badge > 0 ? (
-        <span className="inline-flex min-w-4 items-center justify-center rounded-full bg-sky-500 px-1 text-[10px] font-semibold text-white">
+        <span className="inline-flex min-w-4 items-center justify-center rounded-full bg-signal px-1 text-2xs font-semibold text-signal-on">
           {badge}
         </span>
       ) : null}

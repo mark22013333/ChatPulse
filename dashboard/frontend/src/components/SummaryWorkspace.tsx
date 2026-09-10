@@ -163,13 +163,13 @@ export function SummaryWorkspace({ space, onDraftCreated, active = true }: Summa
           <p className="truncate text-sm font-semibold">
             {space ? space.displayName : '尚未選擇 Space'}
           </p>
-          <p className="truncate font-mono text-[11px] text-muted-foreground">
+          <p className="metric truncate text-xs text-muted-foreground">
             {space ? space.id : '請從左側清單選一個 Space'}
           </p>
         </div>
 
         <div className="flex flex-col gap-1">
-          <Label htmlFor="summary-style" className="text-[11px] text-muted-foreground">
+          <Label htmlFor="summary-style" className="text-xs text-muted-foreground">
             摘要風格
           </Label>
           <Select
@@ -201,7 +201,7 @@ export function SummaryWorkspace({ space, onDraftCreated, active = true }: Summa
         <ProviderSelect id="summary-provider" disabled={streaming} />
 
         <div className="flex flex-col gap-1">
-          <Label htmlFor="summary-limit" className="text-[11px] text-muted-foreground">
+          <Label htmlFor="summary-limit" className="text-xs text-muted-foreground">
             抓取則數（1~1000）
           </Label>
           <Input
@@ -275,7 +275,7 @@ export function SummaryWorkspace({ space, onDraftCreated, active = true }: Summa
               space ? 'py-8' : 'h-full',
             )}
           >
-            <span className="flex size-12 items-center justify-center rounded-full bg-muted text-sky-500">
+            <span className="flex size-12 items-center justify-center rounded-full bg-muted text-signal">
               <WandSparklesIcon className="size-5" />
             </span>
             <div>
@@ -292,8 +292,8 @@ export function SummaryWorkspace({ space, onDraftCreated, active = true }: Summa
         {text || streaming ? (
           <div className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
-                <span className="rounded border border-sky-500/25 bg-sky-500/10 px-2 py-0.5 font-medium text-sky-500">
+              <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                <span className="rounded border border-signal-line bg-signal-wash px-2 py-0.5 font-medium text-signal">
                   {styleItems[style] ?? style}
                 </span>
                 {meta ? (
@@ -307,11 +307,11 @@ export function SummaryWorkspace({ space, onDraftCreated, active = true }: Summa
                 {/* 一律以 meta 回報的供應商為準——伺服器可能因別名解析而用了別的 */}
                 {meta?.provider ? (
                   <span
-                    className="rounded border border-violet-500/25 bg-violet-500/10 px-2 py-0.5 font-medium text-violet-600 dark:text-violet-400"
+                    className="rounded border border-line bg-muted px-2 py-0.5 font-medium text-provenance"
                     title={`本次實際使用的 AI 供應商與模型（來自 meta 事件）`}
                   >
                     {providerLabel(providers, meta.provider)}
-                    {meta.model ? <span className="ml-1 font-mono">· {meta.model}</span> : null}
+                    {meta.model ? <span className="ml-1 metric">· {meta.model}</span> : null}
                   </span>
                 ) : null}
                 {streaming ? (
