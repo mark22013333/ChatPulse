@@ -76,9 +76,8 @@ export function LoginScreen() {
                 匯入既有憑證
               </Button>
               <p className="text-xs leading-relaxed text-muted-foreground">
-                把 Phase 1 之前留下的 <code>config/google_chat_token.json</code> 匯入為你的身分。
-                只有三個 chat scope，沒有身分 scope 時可能需要設定{' '}
-                <code>CHATPULSE_BOOTSTRAP_USER_ID</code>。
+                把這台機器上既有的授權檔匯入成你的身分。適用於在 ChatPulse 加入 Google
+                登入之前就設定過的環境。匯入後若認不出你是誰，診斷頁有排查步驟。
               </p>
             </>
           ) : null}

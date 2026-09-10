@@ -74,7 +74,6 @@ export function QuickReplySettings({ disabled }: QuickReplySettingsProps) {
   const personas = useReplySettingsStore((s) => s.personas)
   const replyPrompts = useReplySettingsStore((s) => s.replyPrompts)
   const polishers = useReplySettingsStore((s) => s.polishers)
-  const sepiaRules = useReplySettingsStore((s) => s.sepiaRules)
   const load = useReplySettingsStore((s) => s.load)
 
   useEffect(() => {
@@ -356,14 +355,6 @@ export function QuickReplySettings({ disabled }: QuickReplySettingsProps) {
             {!sepia.available && sepia.reason ? (
               <p className="text-2xs leading-snug text-caution">
                 {sepia.reason}
-              </p>
-            ) : null}
-            {sepia.available && sepiaRules.version ? (
-              <p className="metric text-2xs text-muted-foreground">
-                sepia v{sepiaRules.version}
-                {sepiaRules.source_commit_sha
-                  ? ` @ ${sepiaRules.source_commit_sha.slice(0, 7)}`
-                  : ''}
               </p>
             ) : null}
           </div>

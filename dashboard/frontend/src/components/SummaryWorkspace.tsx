@@ -308,7 +308,7 @@ export function SummaryWorkspace({ space, onDraftCreated, active = true }: Summa
                 {meta?.provider ? (
                   <span
                     className="rounded border border-line bg-muted px-2 py-0.5 font-medium text-provenance"
-                    title={`本次實際使用的 AI 供應商與模型（來自 meta 事件）`}
+                    title="本次實際使用的供應商與模型"
                   >
                     {providerLabel(providers, meta.provider)}
                     {meta.model ? <span className="ml-1 metric">· {meta.model}</span> : null}

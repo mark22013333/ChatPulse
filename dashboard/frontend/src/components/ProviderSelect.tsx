@@ -79,7 +79,7 @@ export function ProviderSelect({ id, disabled, triggerClassName, className }: Pr
             className="h-4 px-1 text-2xs text-muted-foreground"
             disabled={saving}
             onClick={() => void handleSave()}
-            title="把目前選擇存成個人預設（PATCH /preferences）"
+            title="把目前選擇存成個人預設"
           >
             {saving ? (
               <Loader2Icon className="size-3 animate-spin" />

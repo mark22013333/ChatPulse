@@ -80,7 +80,7 @@ export function CodeProjectSettings() {
           參考專案
         </h2>
         <p className="text-sm text-muted-foreground">
-          登錄本機的 git repo，Draft Reply 就能引用實際程式碼回答 PM 的問題。
+          登錄這台機器上的程式碼資料夾，Draft Reply 就能引用實際程式碼回答問題。
           <strong className="text-foreground">
             務必把正式與 UAT 分別對應到正確的分支
           </strong>
@@ -195,7 +195,7 @@ export function CodeProjectSettings() {
             />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="cp-path">本機路徑（絕對路徑）</Label>
+            <Label htmlFor="cp-path">專案資料夾路徑（絕對路徑）</Label>
             <Input
               id="cp-path"
               value={draft.repo_path}

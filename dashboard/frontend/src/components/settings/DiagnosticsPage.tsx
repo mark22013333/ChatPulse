@@ -5,6 +5,7 @@ import { CollectorPanel } from '@/components/CollectorPanel'
 import { Button } from '@/components/ui/button'
 import { api, errorMessage } from '@/lib/api'
 import { useRouter } from '@/router/useRouter'
+import { useReplySettingsStore } from '@/store/replySettings'
 import type { HealthResponse } from '@/lib/types'
 
 interface Row {
@@ -54,6 +55,36 @@ function toRows(health: HealthResponse): Row[] {
  * P1 先做到把 `/health` 攤開來看。P3 會再補上 Sepia 規則版本、採集器上次
  * 輪詢時間，以及目前散落在各處的實作細節文案（登入畫面的環境變數名等）。
  */
+/**
+ * Sepia 的規則版本。
+ *
+ * 從回覆設定搬到這裡：那是「這台機器上裝的是哪一版」，屬於運維資訊。
+ * 使用者在選要不要潤稿時不需要看到 commit sha。
+ */
+function SepiaVersion() {
+  const sepiaRules = useReplySettingsStore((s) => s.sepiaRules)
+  const load = useReplySettingsStore((s) => s.load)
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  if (!sepiaRules.version) return null
+
+  return (
+    <section className="mt-8">
+      <h2 className="text-md font-semibold">潤稿規則</h2>
+      <div className="border-line-evidence mt-3 grid grid-cols-[7rem_1fr] gap-x-4 border-b py-2.5">
+        <span className="text-fg-dim text-xs">Sepia 版本</span>
+        <span className="metric text-sm">
+          v{sepiaRules.version}
+          {sepiaRules.source_commit_sha ? ` @ ${sepiaRules.source_commit_sha.slice(0, 7)}` : ''}
+        </span>
+      </div>
+    </section>
+  )
+}
+
 export function DiagnosticsPage() {
   const { navigate } = useRouter()
   const [health, setHealth] = useState<HealthResponse | null>(null)
@@ -141,6 +172,8 @@ export function DiagnosticsPage() {
             正在向後端確認…
           </p>
         ) : null}
+
+        <SepiaVersion />
 
         {/* 採集器狀態從草稿工作區的右欄搬到這裡：它是運維資訊，不是證據。
             右欄現在只回答「這份產出建立在什麼之上」。 */}

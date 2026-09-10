@@ -182,6 +182,14 @@ export default function App() {
     // 而它的證據在手機寬度下讀不了——讀不了就等於在不知情的狀況下送出。
     <SmallScreenNotice>
     <div className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
+      {/* 左欄的虛擬清單有 436 筆，鍵盤使用者要 Tab 很久才到得了主要內容 */}
+      <a
+        href="#main"
+        className="sr-only focus:not-sr-only focus:bg-raised focus:text-foreground focus:shadow-overlay focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:rounded-md focus:px-3 focus:py-2 focus:text-sm"
+      >
+        跳到主要內容
+      </a>
+
       {/* 頂列 */}
       <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border px-4">
         <div className="flex items-center gap-2">
@@ -191,7 +199,7 @@ export default function App() {
           <span className="text-sm font-semibold tracking-tight">ChatPulse</span>
         </div>
 
-        <nav className="ml-2 flex items-center gap-1 rounded-lg bg-muted p-0.5">
+        <nav aria-label="工作台" className="ml-2 flex items-center gap-1 rounded-lg bg-muted p-0.5">
           <ViewTab
             active={view === 'summary'}
             onClick={() => navigate(hashForSummary(selectedSpaceId))}
@@ -260,7 +268,10 @@ export default function App() {
         退化成第二道防線。
       */}
       <div className="flex min-h-0 flex-1">
-        <aside className="relative flex w-72 shrink-0 flex-col border-r border-border">
+        <aside
+          aria-label={view === 'summary' ? 'Space 清單' : 'Mention 收件匣'}
+          className="relative flex w-inbox shrink-0 flex-col border-r border-border"
+        >
           <Pane active={view === 'summary'}>
             <SpacesRail />
           </Pane>
@@ -275,7 +286,7 @@ export default function App() {
           </Pane>
         </aside>
 
-        <main className="relative flex min-w-0 flex-1 flex-col">
+        <main id="main" tabIndex={-1} className="relative flex min-w-0 flex-1 flex-col outline-none">
           <Pane active={view === 'summary'}>
             <SummaryWorkspace
               space={selectedSpace}
