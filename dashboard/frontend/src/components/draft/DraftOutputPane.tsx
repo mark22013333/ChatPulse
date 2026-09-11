@@ -26,6 +26,9 @@ export function DraftOutputPane({ active, onRequestSend }: DraftOutputPaneProps)
   const polish = useDraftStore((s) => s.polish)
   const restored = useDraftStore((s) => s.restored)
   const restoredAt = useDraftStore((s) => s.restoredAt)
+  // 還原的這份有沒有帶到完整證據（新格式才有）。用 context 當代表：
+  // 它與 reference_spaces／answering／image_count 是同一批、同時存或同時缺。
+  const hasFullEvidence = useDraftStore((s) => Boolean(s.meta?.context))
 
   const sections = useMemo(() => splitDraft(raw), [raw])
 
@@ -57,10 +60,21 @@ export function DraftOutputPane({ active, onRequestSend }: DraftOutputPaneProps)
             <div className="rounded border border-line-evidence bg-muted/40 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
               <span className="font-medium text-foreground">這是先前存下來的草稿</span>
               {restoredAt ? <span className="ml-1">產生於 {formatDateTime(restoredAt)}</span> : null}
-              <span className="ml-1">
-                產生當下的脈絡證據沒有保存，證據欄只看得到生成、回話設定與潤稿。
-                要拿到完整證據請重新產生。
-              </span>
+              {/*
+                只有**真的缺**證據時才這樣講。2026-09-11 起產生的草稿會把整份
+                meta 一起存下來，證據欄是完整的——對那些還說「沒有保存」就是
+                一句假話，而且會讓人白白重新產生一次（燒配額）。
+                判準用 `meta.context` 在不在，因為那正是舊格式唯一缺的那一批
+                欄位的代表（見 `store/draft.ts` 的 loadStored）。
+              */}
+              {hasFullEvidence ? (
+                <span className="ml-1">證據欄是產生當下記錄的完整內容。</span>
+              ) : (
+                <span className="ml-1">
+                  產生當下的脈絡證據沒有保存，證據欄只看得到生成、回話設定與潤稿。
+                  要拿到完整證據請重新產生。
+                </span>
+              )}
             </div>
           ) : null}
 

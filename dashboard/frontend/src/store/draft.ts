@@ -381,11 +381,15 @@ export const useDraftStore = create<DraftState>((set, get) => ({
     try {
       const stored = await api.storedDraft(mentionId)
       const cfg = stored.generation_config ?? {}
-      // 用存下來的設定拼一份**局部** meta。刻意不填 context／reference_spaces／
-      // answering／image_count——那些從來沒存過，填假的比留空危險得多，
-      // 而 `toEvidence` 對缺的欄位本來就會畫成 missing（配合 restored 旗標
-      // 說出正確的理由）。
-      const meta = {
+      // 2026-09-11 之後產生的草稿把**整份 meta** 存了下來（就是當初送給
+      // 瀏覽器的那一份），證據欄可以完整還原。有就直接用，不要自己重拼——
+      // 重拼等於再寫一份會跟後端漂移的邏輯。
+      //
+      // 更早的那批（本機 53 筆）只有平鋪的欄位，就拼一份**局部** meta。
+      // 刻意不填 context／reference_spaces／answering／image_count：那些
+      // 從來沒存過，填假的比留空危險得多，而 `toEvidence` 對缺的欄位本來
+      // 就會畫成 missing（配合 restored 旗標說出正確的理由）。
+      const meta = (cfg.meta ?? {
         type: 'meta',
         mention_id: mentionId,
         provider: cfg.provider,
@@ -399,7 +403,7 @@ export const useDraftStore = create<DraftState>((set, get) => ({
           custom_prompt_id: cfg.custom_prompt_id,
           sepia: cfg.sepia === true,
         },
-      } as unknown as SseMeta
+      }) as unknown as SseMeta
       const polish: DraftPolishMeta | null =
         cfg.polished === undefined
           ? null

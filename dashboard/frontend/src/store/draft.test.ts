@@ -525,3 +525,70 @@ describe('loadStored（讀回既有草稿）', () => {
     expect(useDraftStore.getState().restoredAt).toBeNull()
   })
 })
+
+/**
+ * 兩種 `generation_config` 形狀都要吃得下。
+ *
+ * 2026-09-11 起後端把整份 meta 一起存（就是送給瀏覽器的那一份原件），
+ * 更早的那批（本機 53 筆）只有平鋪欄位。**舊的不補**，所以讀的那一側
+ * 必須永久支援兩種格式——把舊分支拿掉，那 53 筆就會變成讀回來一片空白。
+ */
+describe('loadStored — 新舊兩種 generation_config', () => {
+  const FULL_META = {
+    type: 'meta',
+    mention_id: 65,
+    space: '工程討論',
+    context: { mode: 'thread', message_count: 42, coverage: 'full', blocks: [] },
+    reference_spaces: [{ space_id: 'spaces/B', space_name: '客服回報', message_count: 12 }],
+    answering: [{ mention_id: 65, sender_display: '陳柏元', create_time: '2026-09-10T02:16:39Z' }],
+    image_count: 2,
+    provider: 'claude_cli',
+    model: 'claude-cli:opus',
+    reply: { persona_name: '羅振宇（羅胖）', sepia: true },
+  }
+
+  it('**新格式：整份 meta 直接用，證據欄還原得回脈絡與參考來源**', async () => {
+    vi.spyOn(api, 'storedDraft').mockResolvedValue({
+      draft_id: 90,
+      mention_id: 65,
+      content_md: '新的草稿',
+      generation_config: { provider: 'claude_cli', meta: FULL_META },
+      created_at: '2026-09-11T09:00:00Z',
+      sent_at: null,
+    } as never)
+
+    await useDraftStore.getState().loadStored(65)
+
+    const { meta } = useDraftStore.getState()
+    expect(meta?.context?.message_count).toBe(42)
+    expect(meta?.reference_spaces?.[0].space_name).toBe('客服回報')
+    expect(meta?.answering).toHaveLength(1)
+    expect(meta?.image_count).toBe(2)
+  })
+
+  it('**舊格式仍然讀得回來**（那 53 筆不補，永遠走這條）', async () => {
+    vi.spyOn(api, 'storedDraft').mockResolvedValue({
+      draft_id: 80,
+      mention_id: 65,
+      content_md: '舊的草稿',
+      generation_config: {
+        provider: 'claude_cli',
+        model: 'claude-cli:opus',
+        persona_name: '羅振宇（羅胖）',
+        sepia: true,
+      },
+      created_at: '2026-09-08T01:20:41Z',
+      sent_at: null,
+    } as never)
+
+    await useDraftStore.getState().loadStored(65)
+
+    const { meta, raw } = useDraftStore.getState()
+    expect(raw).toBe('舊的草稿')
+    // 存下來的那三列照樣讀得出來
+    expect(meta?.reply?.persona_name).toBe('羅振宇（羅胖）')
+    // 沒存過的仍然留空——不可以因為新增了 meta 分支就順手補預設值
+    expect(meta?.context).toBeUndefined()
+    expect(meta?.reference_spaces).toBeUndefined()
+  })
+})

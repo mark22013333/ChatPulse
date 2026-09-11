@@ -2487,6 +2487,10 @@ def draft_stream(
         # finally 仍要看得到已收到的內容才補存得了（見 save_partial）
         collected: List[str] = []
         saved = False
+        # 與 `collected` 同樣放在 try 外面：斷線補存那條路在 finally 裡，
+        # 而 meta 是在 try 中段才組好的——沒有這個初始值，「meta 還沒組好就
+        # 出錯」會讓 finally 自己噴 NameError，把真正的錯誤蓋掉。
+        meta_event: Optional[Dict[str, Any]] = None
         try:
             client = get_client(viewer_id)
             ai = get_provider(viewer_id, req_provider)
@@ -2596,8 +2600,16 @@ def draft_stream(
                 resolved_code_refs, code_terms
             )
 
-            yield sse(
-                {
+            # 先組好再送，因為**同一份**要一起存進 `generation_config_json`。
+            #
+            # 存「送給瀏覽器的那一份」而不是另外組一份，有兩個理由：
+            #   1. 不會多洩漏任何東西——這份內容瀏覽器本來就收到了，
+            #      而它已經過濾過（例如自訂提示只記「有沒有」不記全文，
+            #      見 `resolve_reply_options`）。
+            #   2. 不會有第二份組裝邏輯可以跟這裡漂移。
+            # 少了這一步，重新載入的草稿就只還原得了「生成／回話設定／潤稿」
+            # 三列，脈絡與參考來源永遠回不來（見 `get_stored_draft`）。
+            meta_event = {
                     "type": "meta",
                     "mention_id": mention_id,
                     "space": mention.get("space_name") or mention["space_id"],
@@ -2651,8 +2663,8 @@ def draft_stream(
                     # 這次套用的回覆設定（ADR-0007）。與 code_refs 同一個理由：
                     # 讓 Viewer 在模型開口之前就看得到「系統以為我選了什麼」。
                     "reply": reply_meta,
-                }
-            )
+            }
+            yield sse(meta_event)
 
             prompt = prompts.draft_reply_prompt(
                 anchor_text=ctx.anchor_text or mention_text,
@@ -2725,6 +2737,10 @@ def draft_stream(
                 "model": ai.model,
                 **reply_meta,
                 **polish_meta,
+                # 整份 meta，讓重新載入時證據欄能完整還原（不只三列）。
+                # 上面那些平鋪的鍵**刻意保留**：2026-09-11 之前產生的草稿只有
+                # 平鋪版本，讀回來時還得靠它們，不能因為有了 meta 就拿掉。
+                "meta": meta_event,
             }
             draft_id = (
                 repo.create_draft(mention_id, content, generation_config)
@@ -2761,6 +2777,11 @@ def draft_stream(
                     "partial": True,
                     "polished": False,
                 }
+                # meta 已經送給瀏覽器了就一起存——中斷的草稿同樣讀得回完整
+                # 證據。還沒組好（更早就出錯）就不放，讀回來時那幾列會照
+                # 既有邏輯畫成「沒有保存」。
+                if meta_event is not None:
+                    partial_config["meta"] = meta_event
                 save_partial(
                     lambda text: repo.create_draft(mention_id, text, partial_config),
                     "草稿",

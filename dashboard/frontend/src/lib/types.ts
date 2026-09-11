@@ -331,9 +331,13 @@ export interface Mention {
 /**
  * 從資料庫讀回來的既有草稿（`GET /mentions/{id}/draft`）。
  *
- * **`generation_config` 不是產生當下的完整 meta。** 只有
- * `{provider, model} ＋ 回覆設定 ＋ 潤稿結果`——證據欄的「生成」「回話設定」
- * 「潤稿」三列。脈絡、參考 Space、程式碼佐證、合併回覆對象沒有存下來。
+ * `generation_config` 有**兩種形狀**，讀的時候要都吃得下：
+ *
+ * * **2026-09-11 之後**：多一個 `meta`，就是產生當下送給瀏覽器的那份
+ *   SSE meta 原件。證據欄可以完整還原。
+ * * **更早**（本機 53 筆）：只有平鋪的 `{provider, model} ＋ 回覆設定 ＋
+ *   潤稿結果`，也就是證據欄的「生成」「回話設定」「潤稿」三列。脈絡、
+ *   參考 Space、程式碼佐證、合併回覆對象當時沒有存，**補不回來**。
  */
 export interface StoredDraft {
   draft_id: number
@@ -346,6 +350,8 @@ export interface StoredDraft {
     polisher?: string
     polish_model?: string
     fallback_reason?: string
+    /** 完整的產生當下 meta（新版才有）。 */
+    meta?: SseMeta
   }
   created_at: string
   sent_at: string | null

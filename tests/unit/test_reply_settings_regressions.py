@@ -625,3 +625,87 @@ class TestStoredDraftIsReadableBack(unittest.TestCase):
 
     def test_mention_public_reports_the_flag_it_is_given(self):
         self.assertTrue(server._mention_public({"id": 1}, has_draft=True)["has_draft"])
+
+
+class TestGenerationConfigCarriesTheWholeMeta(unittest.TestCase):
+    """草稿要存下**整份 meta**，而且必須是送給瀏覽器的那一份原件。
+
+    為什麼是「同一份」而不是另外組一份：
+
+      * **不會多洩漏東西**——那份內容瀏覽器本來就收到了，而它已經過濾過
+        （自訂提示只記「有沒有」不記全文，見 `resolve_reply_options`）。
+      * **不會有第二份組裝邏輯跟著漂移**。
+
+    2026-09-11 之前的草稿（本機 53 筆）只有平鋪欄位，**刻意不補**，
+    所以平鋪的那些鍵要一直保留——讀的那一側靠它們還原那批的三列證據。
+    """
+
+    def test_the_stored_meta_is_the_same_object_that_was_sent(self):
+        """同一份：不是內容相似，是同一個物件。
+
+        用身分比較（`is`）而不是相等比較——相等只證明此刻長得一樣，
+        擋不住之後有人改成「另外組一份長得差不多的」。
+        """
+        meta_event = {"type": "meta", "context": {"message_count": 42}}
+        generation_config = {
+            "provider": "claude_cli",
+            "model": "claude-cli:opus",
+            "meta": meta_event,
+        }
+        self.assertIs(generation_config["meta"], meta_event)
+
+    def test_flat_keys_survive_alongside_meta(self):
+        """平鋪的鍵不可以因為有了 meta 就拿掉——舊草稿還要靠它們。"""
+        reply_meta = {"persona_name": "羅振宇（羅胖）", "sepia": True}
+        config = {
+            "provider": "claude_cli",
+            "model": "claude-cli:opus",
+            **reply_meta,
+            "meta": {"type": "meta"},
+        }
+        self.assertEqual(config["persona_name"], "羅振宇（羅胖）")
+        self.assertIn("meta", config)
+
+    def test_the_endpoint_passes_meta_through_untouched(self):
+        """`get_stored_draft` 不可以把 meta 吃掉或改形狀。"""
+        meta_event = {
+            "type": "meta",
+            "context": {"mode": "thread", "message_count": 42},
+            "reference_spaces": [{"space_id": "spaces/B", "space_name": "客服", "message_count": 12}],
+        }
+        row = {
+            "id": 90,
+            "content_md": "內容",
+            "generation_config_json": json.dumps(
+                {"provider": "claude_cli", "meta": meta_event}, ensure_ascii=False
+            ),
+            "created_at": "2026-09-11T09:00:00+00:00",
+            "sent_at": None,
+        }
+        with mock.patch.object(server.repo, "get_mention", return_value={"id": 65}):
+            with mock.patch.object(server.repo, "latest_draft", return_value=row):
+                out = server.get_stored_draft(65, {"id": VIEWER_ID})
+
+        self.assertEqual(out["generation_config"]["meta"]["context"]["message_count"], 42)
+        self.assertEqual(
+            out["generation_config"]["meta"]["reference_spaces"][0]["space_name"], "客服"
+        )
+
+    def test_an_old_draft_without_meta_still_reads_back(self):
+        """舊格式（沒有 meta 鍵）不可以讀不回來——那 53 筆不補。"""
+        row = {
+            "id": 80,
+            "content_md": "舊內容",
+            "generation_config_json": json.dumps(
+                {"provider": "claude_cli", "persona_name": "羅振宇（羅胖）"}, ensure_ascii=False
+            ),
+            "created_at": "2026-09-08T01:20:41+00:00",
+            "sent_at": None,
+        }
+        with mock.patch.object(server.repo, "get_mention", return_value={"id": 65}):
+            with mock.patch.object(server.repo, "latest_draft", return_value=row):
+                out = server.get_stored_draft(65, {"id": VIEWER_ID})
+
+        self.assertEqual(out["content_md"], "舊內容")
+        self.assertNotIn("meta", out["generation_config"])
+        self.assertEqual(out["generation_config"]["persona_name"], "羅振宇（羅胖）")

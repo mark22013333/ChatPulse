@@ -532,3 +532,47 @@ describe('讀回既有草稿', () => {
     expect(screen.queryByText('這是先前存下來的草稿')).toBeNull()
   })
 })
+
+/**
+ * 還原提示那句話要跟著「證據到底全不全」走。
+ *
+ * 新格式（2026-09-11 起）連整份 meta 一起存，證據欄是完整的——對那種草稿
+ * 還說「脈絡證據沒有保存」就是一句假話，而且會讓人白白重新產生一次、
+ * 燒掉一次 AI 配額。舊的那 53 筆則相反，必須繼續講實話。
+ */
+describe('還原提示要說對「證據全不全」', () => {
+  function renderRestored(meta: unknown) {
+    useDraftStore.setState({
+      raw: '### ✍️ 建議回話\n內容',
+      replyText: '內容',
+      mentionId: 45,
+      restored: true,
+      restoredAt: '2026-09-08T01:20:41Z',
+      meta: meta as never,
+    })
+    return render(
+      <RouterProvider>
+        <DraftReplyWorkspace mention={MENTION} />
+      </RouterProvider>,
+    )
+  }
+
+  it('**有完整 meta 時不可以說「沒有保存」**', () => {
+    renderRestored({
+      type: 'meta',
+      mention_id: 45,
+      context: { mode: 'thread', message_count: 42, coverage: 'full', blocks: [] },
+    })
+
+    expect(screen.getByText('這是先前存下來的草稿')).toBeInTheDocument()
+    expect(screen.getByText(/證據欄是產生當下記錄的完整內容/)).toBeInTheDocument()
+    expect(screen.queryByText(/脈絡證據沒有保存/)).toBeNull()
+  })
+
+  it('舊格式（沒有 context）仍然照實說缺了什麼', () => {
+    renderRestored({ type: 'meta', mention_id: 45, reply: { sepia: false } })
+
+    expect(screen.getByText(/脈絡證據沒有保存/)).toBeInTheDocument()
+    expect(screen.queryByText(/完整內容/)).toBeNull()
+  })
+})
