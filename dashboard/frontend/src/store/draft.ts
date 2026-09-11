@@ -92,6 +92,15 @@ interface DraftState {
   mentionId: number | null
   /** 這次潤稿的結果（沒開潤稿時是 null）。UI 用它顯示「Sepia 有沒有生效」。 */
   polish: DraftPolishMeta | null
+  /**
+   * 目前這份草稿是從資料庫**還原**的，不是這次串流產生的。
+   *
+   * 證據欄要靠它把「這項證據沒有保存」與「伺服器沒回報」分開講
+   * （見 `lib/evidence.ts` 的 `restored`）。按「重新產生」會回到 false。
+   */
+  restored: boolean
+  /** 還原的那份草稿是什麼時候產生的（ISO 字串）。 */
+  restoredAt: string | null
 
   /** 行內編輯器的內容 */
   replyText: string
@@ -115,6 +124,13 @@ interface DraftState {
   setReplyText: (text: string) => void
   /** `mergeIds` 是要「一起回」的其他 Mention（不含 mentionId 自己） */
   generate: (mentionId: number, mergeIds?: number[]) => Promise<void>
+  /**
+   * 把這一則**已經存下來**的草稿讀回來（`GET /mentions/{id}/draft`）。
+   *
+   * 回 true 代表真的還原了一份。沒有草稿（404）回 false 並且**不設 error**
+   * ——多數 Mention 本來就沒產過草稿，那是正常狀態不是失敗。
+   */
+  loadStored: (mentionId: number) => Promise<boolean>
   abort: () => void
   reset: () => void
   send: (mentionId: number) => Promise<Mention[]>
@@ -164,6 +180,8 @@ export const useDraftStore = create<DraftState>((set, get) => ({
   error: null,
   mentionId: null,
   polish: null,
+  restored: false,
+  restoredAt: null,
 
   replyText: '',
   replyEdited: false,
@@ -250,6 +268,9 @@ export const useDraftStore = create<DraftState>((set, get) => ({
       error: null,
       mentionId,
       polish: null,
+      // 重新產生＝這份不再是還原的，證據欄要恢復講真正的原因
+      restored: false,
+      restoredAt: null,
       replyText: '',
       replyEdited: false,
     })
@@ -341,10 +362,75 @@ export const useDraftStore = create<DraftState>((set, get) => ({
       error: null,
       mentionId: null,
       polish: null,
+      restored: false,
+      restoredAt: null,
       replyText: '',
       replyEdited: false,
       sending: false,
     })
+  },
+
+  loadStored: async (mentionId) => {
+    // 不要蓋掉正在串流的內容：使用者可能剛按了產生，而清單那邊慢一步才
+    // 觸發還原。已經有這一則的草稿在手上時也不要重讀（會把他編到一半的
+    // 內容洗掉——`replyEdited` 擋得住覆寫，但整個 raw／meta 還是會被換掉）。
+    const state = get()
+    if (state.streaming) return false
+    if (state.mentionId === mentionId && state.raw) return false
+
+    try {
+      const stored = await api.storedDraft(mentionId)
+      const cfg = stored.generation_config ?? {}
+      // 用存下來的設定拼一份**局部** meta。刻意不填 context／reference_spaces／
+      // answering／image_count——那些從來沒存過，填假的比留空危險得多，
+      // 而 `toEvidence` 對缺的欄位本來就會畫成 missing（配合 restored 旗標
+      // 說出正確的理由）。
+      const meta = {
+        type: 'meta',
+        mention_id: mentionId,
+        provider: cfg.provider,
+        model: cfg.model,
+        reply: {
+          tone: cfg.tone,
+          tone_label: cfg.tone_label,
+          persona_id: cfg.persona_id,
+          persona_name: cfg.persona_name,
+          custom_prompt: cfg.custom_prompt,
+          custom_prompt_id: cfg.custom_prompt_id,
+          sepia: cfg.sepia === true,
+        },
+      } as unknown as SseMeta
+      const polish: DraftPolishMeta | null =
+        cfg.polished === undefined
+          ? null
+          : ({
+              polished: cfg.polished,
+              polisher: cfg.polisher,
+              polish_model: cfg.polish_model,
+              fallback_reason: cfg.fallback_reason,
+            } as DraftPolishMeta)
+
+      set({
+        streaming: false,
+        raw: stored.content_md,
+        meta,
+        polish,
+        draftId: stored.draft_id,
+        mentionId,
+        error: null,
+        restored: true,
+        restoredAt: stored.created_at,
+        replyText: stored.content_md,
+        replyEdited: false,
+      })
+      return true
+    } catch {
+      // 404（這則還沒有草稿）是**正常狀態**，不是錯誤——多數 Mention 都是
+      // 這樣，把它寫進 error 會讓每次點開一則沒草稿的都跳一次紅字。
+      // 其他錯誤（網路、500）同樣安靜處理：還原失敗最多就是看不到舊草稿，
+      // 使用者仍然可以按「產生」，不值得擋在畫面上。
+      return false
+    }
   },
 
   send: async (mentionId) => {

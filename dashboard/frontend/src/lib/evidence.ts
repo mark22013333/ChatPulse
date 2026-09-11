@@ -83,7 +83,22 @@ interface ToEvidenceInput {
   streaming: boolean
   /** 注入，evidence.ts 不 import store */
   providerLabel: (name: string) => string
+  /**
+   * 這份 meta 是從資料庫**還原**的既有草稿，不是這次串流產生的。
+   *
+   * 為什麼要分：`draft_replies.generation_config_json` 只存了
+   * `{provider, model} ＋ 回覆設定 ＋ 潤稿結果`，脈絡／參考 Space／
+   * 程式碼佐證／合併回覆對象**從來沒有存過**。缺的那幾列本來就會畫成
+   * `missing`（那是對的），但它們的說明寫的是「這個版本的伺服器沒有回報」
+   * ——對還原的草稿那句話是**錯的理由**，會害人去查伺服器版本。
+   *
+   * 這個旗標只改「為什麼沒有」那句話，不改狀態。
+   */
+  restored?: boolean
 }
+
+/** 某一列在還原的草稿裡為什麼是空的。 */
+const RESTORED_MISSING = '這是從紀錄還原的草稿，產生當下的這項證據沒有保存'
 
 function timeRange(start?: string, end?: string): string | null {
   if (!start || !end) return null
@@ -95,7 +110,7 @@ function pendingItem(kind: EvidenceKind, label: string): EvidenceItem {
   return { id: kind, kind, status: 'pending', label, detail: [] }
 }
 
-function contextItem(meta: SseMeta): EvidenceItem {
+function contextItem(meta: SseMeta, restored = false): EvidenceItem {
   const context = meta.context
   if (!context) {
     // 舊版後端沒有這個欄位。**不可畫成 ok**——顯示「不知道」比顯示一個
@@ -105,7 +120,7 @@ function contextItem(meta: SseMeta): EvidenceItem {
       kind: 'context',
       status: 'missing',
       label: '脈絡',
-      summary: '這個版本的伺服器沒有回報脈絡形狀',
+      summary: restored ? RESTORED_MISSING : '這個版本的伺服器沒有回報脈絡形狀',
       metric: meta.thread_message_count
         ? { value: String(meta.thread_message_count), unit: '則' }
         : undefined,
@@ -158,14 +173,14 @@ function answeringItem(meta: SseMeta): EvidenceItem | null {
   }
 }
 
-function imagesItem(meta: SseMeta): EvidenceItem {
+function imagesItem(meta: SseMeta, restored = false): EvidenceItem {
   if (meta.image_count === undefined) {
     return {
       id: 'images',
       kind: 'images',
       status: 'missing',
       label: '附件',
-      summary: '這個版本的伺服器沒有回報圖片張數',
+      summary: restored ? RESTORED_MISSING : '這個版本的伺服器沒有回報圖片張數',
       detail: [],
     }
   }
@@ -319,7 +334,7 @@ function sourceItem(meta: SseMeta): EvidenceItem {
  * 使用者掃證據欄的動線每次都一樣，才掃得快。
  */
 export function toEvidence(input: ToEvidenceInput): EvidenceBundle {
-  const { origin, meta, polish, streaming, providerLabel } = input
+  const { origin, meta, polish, streaming, providerLabel, restored = false } = input
 
   if (!meta) {
     return {
@@ -333,10 +348,10 @@ export function toEvidence(input: ToEvidenceInput): EvidenceBundle {
   const items: EvidenceItem[] = []
 
   if (origin === 'draft') {
-    items.push(contextItem(meta))
+    items.push(contextItem(meta, restored))
     const answering = answeringItem(meta)
     if (answering) items.push(answering)
-    items.push(imagesItem(meta))
+    items.push(imagesItem(meta, restored))
     const reference = referenceItem(meta)
     if (reference) items.push(reference)
     items.push(...codeItems(meta))

@@ -547,3 +547,81 @@ class TestRootLevelUrlImportIsFlagged(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestStoredDraftIsReadableBack(unittest.TestCase):
+    """讀回既有草稿：`GET /mentions/{id}/draft` 與清單的 has_draft。
+
+    這個端點補的是一個沉默的缺口：草稿一直都寫進 `draft_replies`
+    （本機實測 53 筆），但 `repo.latest_draft()` 寫好了卻**零呼叫者**，
+    所以重新整理之後畫面是空的——看起來像草稿沒了。
+
+    兩條界線要守住：
+
+      * **歸屬**：別人的 Mention 要回 MENTION_NOT_FOUND，不可以因為
+        `latest_draft()` 只吃 mention_id 就把別人的草稿吐出來。
+      * **has_draft 必須由呼叫端算**：它是前端決定「要不要去讀回草稿」的
+        唯一依據，錯報 False 的後果是草稿在資料庫裡卻永遠讀不回來，
+        與「草稿不見了」完全無法分辨。送出後那條路徑特別容易錯——
+        那些 Mention 一定有草稿。
+    """
+
+    @staticmethod
+    def _viewer():
+        return {"id": VIEWER_ID}
+
+    def test_a_mention_that_is_not_yours_is_not_found(self):
+        with mock.patch.object(server.repo, "get_mention", return_value=None):
+            with self.assertRaises(server.MentionNotFound):
+                server.get_stored_draft(999, self._viewer())
+
+    def test_no_draft_is_its_own_error_not_mention_not_found(self):
+        """「這則不是你的」與「這則還沒產過草稿」要分得開。
+
+        後者是完全正常的狀態，前端靠這個 code 決定安靜略過。
+        """
+        with mock.patch.object(server.repo, "get_mention", return_value={"id": 7}):
+            with mock.patch.object(server.repo, "latest_draft", return_value=None):
+                with self.assertRaises(server.DraftNotFound):
+                    server.get_stored_draft(7, self._viewer())
+
+    def test_it_returns_content_and_parsed_config(self):
+        row = {
+            "id": 80,
+            "content_md": "### ✍️ 建議回話\n舊的版本。",
+            "generation_config_json": json.dumps(
+                {"provider": "claude_cli", "persona_name": "羅振宇（羅胖）"},
+                ensure_ascii=False,
+            ),
+            "created_at": "2026-09-08T01:20:41+00:00",
+            "sent_at": None,
+        }
+        with mock.patch.object(server.repo, "get_mention", return_value={"id": 65}):
+            with mock.patch.object(server.repo, "latest_draft", return_value=row):
+                out = server.get_stored_draft(65, self._viewer())
+
+        self.assertEqual(out["draft_id"], 80)
+        self.assertIn("舊的版本", out["content_md"])
+        self.assertEqual(out["generation_config"]["persona_name"], "羅振宇（羅胖）")
+
+    def test_a_corrupt_config_does_not_lose_the_draft(self):
+        """設定存壞了不該讓整份草稿讀不回來——內文才是主角。"""
+        row = {
+            "id": 81,
+            "content_md": "內容還在",
+            "generation_config_json": "{壞掉的 json",
+            "created_at": "2026-09-08T01:20:41+00:00",
+            "sent_at": None,
+        }
+        with mock.patch.object(server.repo, "get_mention", return_value={"id": 65}):
+            with mock.patch.object(server.repo, "latest_draft", return_value=row):
+                out = server.get_stored_draft(65, self._viewer())
+
+        self.assertEqual(out["content_md"], "內容還在")
+        self.assertEqual(out["generation_config"], {})
+
+    def test_mention_public_defaults_has_draft_to_false(self):
+        self.assertFalse(server._mention_public({"id": 1})["has_draft"])
+
+    def test_mention_public_reports_the_flag_it_is_given(self):
+        self.assertTrue(server._mention_public({"id": 1}, has_draft=True)["has_draft"])

@@ -240,3 +240,63 @@ describe('toEvidence — 摘要工作台', () => {
     expect(bundle.items[0].metric).toEqual({ value: '42', unit: '則' })
   })
 })
+
+/**
+ * 從紀錄還原的草稿：缺的那幾列要說**對的**理由。
+ *
+ * `draft_replies.generation_config_json` 只存了 `{provider, model}` ＋ 回覆
+ * 設定 ＋ 潤稿結果。脈絡、參考 Space、合併對象、附件張數從來沒存過，所以
+ * 還原的草稿必然缺那幾列——**畫成 missing 是對的**（本來就這樣），
+ * 錯的是理由：預設那句「這個版本的伺服器沒有回報」會害人去查伺服器版本，
+ * 而真正的原因是「這份是還原的，當時沒存」。
+ *
+ * 狀態不可以因為 restored 而改變：還原的草稿確實沒有那些證據，
+ * 把它畫成 ok 才是真正危險的那種錯。
+ */
+describe('toEvidence — 還原的草稿（restored）', () => {
+  const partial = {
+    type: 'meta',
+    mention_id: 65,
+    provider: 'claude_cli',
+    model: 'claude-cli:opus',
+    reply: { persona_id: 1, persona_name: '羅振宇（羅胖）', sepia: true },
+  } as unknown as SseMeta
+
+  const restoredBundle = () =>
+    toEvidence({ origin: 'draft', meta: partial, polish: null, streaming: false, providerLabel, restored: true })
+
+  it('**脈絡那一列說「沒有保存」，不說「伺服器沒回報」**', () => {
+    const context = byKind(restoredBundle().items, 'context')[0]
+    expect(context.status).toBe('missing')
+    expect(context.summary).toMatch(/沒有保存/)
+    expect(context.summary).not.toMatch(/伺服器/)
+  })
+
+  it('附件那一列同理', () => {
+    const images = byKind(restoredBundle().items, 'images')[0]
+    expect(images.status).toBe('missing')
+    expect(images.summary).toMatch(/沒有保存/)
+  })
+
+  it('**正對照：沒有 restored 時仍然說「伺服器沒回報」**', () => {
+    // 少了這條，「永遠說沒有保存」也會讓上面兩條通過——而那對真正的
+    // 舊版後端是錯的訊息。
+    const context = byKind(run(partial).items, 'context')[0]
+    expect(context.summary).toMatch(/伺服器/)
+    expect(context.summary).not.toMatch(/沒有保存/)
+  })
+
+  it('restored 只改理由、不改狀態（不可以因此畫成 ok）', () => {
+    const context = byKind(restoredBundle().items, 'context')[0]
+    const images = byKind(restoredBundle().items, 'images')[0]
+    expect(context.status).toBe('missing')
+    expect(images.status).toBe('missing')
+  })
+
+  it('存下來的那三列照樣讀得出來（生成／回話設定）', () => {
+    const items = restoredBundle().items
+    expect(byKind(items, 'model')[0].summary).toBeTruthy()
+    const reply = byKind(items, 'reply-setting')[0]
+    expect(reply.detail.some((d) => d.value === '羅振宇（羅胖）')).toBe(true)
+  })
+})

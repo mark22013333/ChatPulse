@@ -318,6 +318,37 @@ export interface Mention {
   resolved_at: string | null
   text?: string | null
   content_error?: string | null
+  /**
+   * 這一則有沒有**存下來**的草稿。
+   *
+   * 草稿一直都寫進 `draft_replies`，但在這之前沒有任何路徑讀得回來，
+   * 於是重新整理之後畫面是空的、看起來像草稿沒了。這個旗標是前端決定
+   * 「要不要去 GET 回那份草稿」的唯一依據。
+   */
+  has_draft?: boolean
+}
+
+/**
+ * 從資料庫讀回來的既有草稿（`GET /mentions/{id}/draft`）。
+ *
+ * **`generation_config` 不是產生當下的完整 meta。** 只有
+ * `{provider, model} ＋ 回覆設定 ＋ 潤稿結果`——證據欄的「生成」「回話設定」
+ * 「潤稿」三列。脈絡、參考 Space、程式碼佐證、合併回覆對象沒有存下來。
+ */
+export interface StoredDraft {
+  draft_id: number
+  mention_id: number
+  content_md: string
+  generation_config: Partial<DraftReplySettingsMeta> & {
+    provider?: string
+    model?: string
+    polished?: boolean
+    polisher?: string
+    polish_model?: string
+    fallback_reason?: string
+  }
+  created_at: string
+  sent_at: string | null
 }
 
 export interface MentionsResponse {

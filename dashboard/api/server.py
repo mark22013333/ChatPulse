@@ -65,6 +65,7 @@ from core.errors import (
     ChatPulseError,
     CodeProjectNotFound,
     ConfigurationError,
+    DraftNotFound,
     InvalidParameter,
     MentionNotFound,
     NotAuthenticated,
@@ -1369,7 +1370,14 @@ def create_draft_target(req: DraftTargetRequest, viewer: Dict[str, Any] = Viewer
     return {
         "mention_id": mention_id,
         "mention": (
-            _mention_public(rows[0], name_resolver_for(viewer), viewer_id=viewer_id)
+            _mention_public(
+                rows[0],
+                name_resolver_for(viewer),
+                viewer_id=viewer_id,
+                # 通常是剛建立的手動 Mention（沒有草稿），但這個端點對同一則
+                # 按第二次會拿到既有的那筆——那時它可能已經有草稿了
+                has_draft=repo.latest_draft(mention_id) is not None,
+            )
             if rows
             else None
         ),
@@ -1908,7 +1916,11 @@ def _hydrate_mention_content(
 
 
 def _mention_public(
-    row: Dict[str, Any], resolve=None, *, viewer_id: Optional[int] = None
+    row: Dict[str, Any],
+    resolve=None,
+    *,
+    viewer_id: Optional[int] = None,
+    has_draft: bool = False,
 ) -> Dict[str, Any]:
     sender = row.get("sender_display")
     if not sender and resolve:
@@ -1940,6 +1952,11 @@ def _mention_public(
         "resolved_at": row.get("resolved_at"),
         "text": row.get("text"),
         "content_error": row.get("content_error"),
+        # 有沒有存下來的草稿。**呼叫端一定要算**（不要讓它預設 False 就送出）
+        # ——這個旗標是前端決定「要不要去讀回草稿」的唯一依據，錯報 False
+        # 的後果是草稿明明在資料庫裡卻永遠不會被載回來，與「草稿不見了」
+        # 完全無法分辨。
+        "has_draft": has_draft,
     }
 
 
@@ -1959,10 +1976,17 @@ def get_mentions(
 
     # 名錄要在 hydrate 之後才建（那一步會學到新名字）
     resolve = name_resolver_for(viewer)
+    # 一次查完整個 Viewer 的草稿分佈，不要每列各查一次——這裡預設就是 200 列
+    with_drafts = repo.mention_ids_with_drafts(viewer["id"])
     return {
         "count": len(rows),
         "counts": repo.count_mentions(viewer["id"]),
-        "mentions": [_mention_public(r, resolve, viewer_id=viewer["id"]) for r in rows],
+        "mentions": [
+            _mention_public(
+                r, resolve, viewer_id=viewer["id"], has_draft=r.get("id") in with_drafts
+            )
+            for r in rows
+        ],
     }
 
 
@@ -1985,7 +2009,14 @@ def patch_mention(
     if not repo.get_mention(viewer["id"], mention_id):
         raise MentionNotFound()
     row = repo.set_mention_state(viewer["id"], mention_id, req.state)
-    return _mention_public(row or {}, name_resolver_for(viewer), viewer_id=viewer["id"])
+    # 這一列也要帶對 has_draft：前端會拿這個回應覆蓋清單裡的那一列，
+    # 用預設的 False 會把「這則有草稿」這件事洗掉。單筆查詢，很便宜。
+    return _mention_public(
+        row or {},
+        name_resolver_for(viewer),
+        viewer_id=viewer["id"],
+        has_draft=repo.latest_draft(mention_id) is not None,
+    )
 
 
 @app.post("/api/v1/mentions/refresh")
@@ -2378,6 +2409,49 @@ def resolve_reply_options(
     return options, sepia_enabled, meta
 
 
+@app.get("/api/v1/mentions/{mention_id}/draft")
+def get_stored_draft(mention_id: int, viewer: Dict[str, Any] = ViewerDep):
+    """取回這一則**已經存下來**的最新草稿。
+
+    為什麼需要這個端點：草稿一直都有存進 `draft_replies`，但在這之前沒有
+    任何路徑把它讀回來——`repo.latest_draft()` 寫好了卻零呼叫者。於是重新
+    整理、切回收件匣再點進來、或隔天再開，畫面都是空的，看起來像草稿沒了。
+    實際上它在資料庫裡（本機實測 53 筆）。
+
+    **`generation_config` 不等於產生當下的完整 meta。** 存下來的只有
+    `{provider, model} ＋ reply_meta ＋ polish_meta`——也就是證據欄的
+    「生成」「回話設定」「潤稿」三列。脈絡（讀了幾則、涵蓋範圍、時間範圍）、
+    參考 Space、程式碼佐證、合併回覆對象**沒有存**，所以還原不了。
+    前端要把這件事明講（見 `toEvidence` 的 `restored`），不可以讓一份
+    只有一半證據的草稿看起來像完整的——這個分支整個設計前提就是
+    「證據要對得上」，半套的證據比沒有更糟。
+    """
+    viewer_id = viewer["id"]
+    if not repo.get_mention(viewer_id, mention_id):
+        raise MentionNotFound()
+
+    row = repo.latest_draft(mention_id)
+    if not row:
+        raise DraftNotFound(f"Mention {mention_id} 還沒有存下來的草稿")
+
+    raw = row.get("generation_config_json")
+    try:
+        config = json.loads(raw) if raw else {}
+    except ValueError:
+        # 存壞的設定不該讓整個草稿讀不回來——內文才是主角
+        log.warning("Draft %s 的 generation_config_json 不是合法 JSON", row.get("id"))
+        config = {}
+
+    return {
+        "draft_id": row.get("id"),
+        "mention_id": mention_id,
+        "content_md": row.get("content_md") or "",
+        "generation_config": config,
+        "created_at": row.get("created_at"),
+        "sent_at": row.get("sent_at"),
+    }
+
+
 @app.post("/api/v1/mentions/{mention_id}/draft/stream")
 def draft_stream(
     mention_id: int, req: DraftRequest, viewer: Dict[str, Any] = ViewerDep
@@ -2747,12 +2821,23 @@ def reply_to_mention(
     # 訊息已經送出去了，收不回來。這裡任何一則標記失敗都不該讓整個請求變成
     # 500——那會讓使用者以為沒送出而再送一次，對方就收到兩則。
     resolver = name_resolver_for(viewer)
+    # 這條路徑上的 Mention **一定**有草稿（剛剛才送出去），所以不能讓
+    # has_draft 用預設的 False——前端會拿這些列覆蓋清單，洗掉之後就再也
+    # 讀不回那份草稿了。一次查完整組，不在迴圈裡逐筆查。
+    with_drafts = repo.mention_ids_with_drafts(viewer_id)
     updated_rows = []
     for t in targets:
         try:
             row = repo.set_mention_state(viewer_id, t["id"], "resolved")
             if row:
-                updated_rows.append(_mention_public(row, resolver, viewer_id=viewer_id))
+                updated_rows.append(
+                    _mention_public(
+                        row,
+                        resolver,
+                        viewer_id=viewer_id,
+                        has_draft=row.get("id") in with_drafts,
+                    )
+                )
         except Exception:
             log.exception("回話已送出，但 Mention %s 標記已處理失敗", t["id"])
 

@@ -427,3 +427,108 @@ describe('Sepia 潤稿被退回時要明說原因', () => {
     expect(screen.queryByText('Sepia 潤稿未採用')).toBeNull()
   })
 })
+
+/**
+ * 讀回已經存下來的草稿。
+ *
+ * 為什麼這一段要存在：草稿一直都寫進 `draft_replies`，但在這之前沒有任何
+ * 路徑讀得回來（`repo.latest_draft()` 寫好了、零呼叫者）。於是重新整理、
+ * 切回收件匣再點進來、或隔天再開，畫面都是空的——**看起來像草稿沒了，
+ * 實際上它在資料庫裡**（本機實測 53 筆）。
+ *
+ * 兩件事一樣重要：讀得回來，以及**讀回來的那份要看得出是舊的**。後者不做
+ * 的話它與剛產生的長得一模一樣，而它可能是好幾天前、用當時的設定產的，
+ * 直接送出去就是送出過期的回覆。
+ */
+describe('讀回既有草稿', () => {
+  const STORED = {
+    draft_id: 80,
+    mention_id: 45,
+    content_md: '### ✍️ 建議回話\n這是三天前存下來的版本。',
+    generation_config: {
+      provider: 'claude_cli',
+      model: 'claude-cli:opus',
+      persona_id: 1,
+      persona_name: '羅振宇（羅胖）',
+      sepia: true,
+      polished: true,
+      polisher: 'sepia',
+      polish_model: 'claude-cli:opus',
+    },
+    created_at: '2026-09-08T01:20:41Z',
+    sent_at: null,
+  }
+
+  /** 清成「什麼都還沒有」，才看得出來是讀回來的。 */
+  function seedEmptyDraft() {
+    useDraftStore.setState({ raw: '', replyText: '', mentionId: null, meta: null, polish: null })
+  }
+
+  function renderWith(mention: Mention) {
+    return render(
+      <RouterProvider>
+        <DraftReplyWorkspace mention={mention} />
+      </RouterProvider>,
+    )
+  }
+
+  it('**has_draft 的 Mention 一掛載就把草稿讀回來**', async () => {
+    seedEmptyDraft()
+    const loadStored = vi.fn(async (id: number) => {
+      useDraftStore.setState({
+        raw: STORED.content_md,
+        replyText: STORED.content_md,
+        mentionId: id,
+        restored: true,
+        restoredAt: STORED.created_at,
+      })
+      return true
+    })
+    useDraftStore.setState({ loadStored })
+
+    renderWith({ ...MENTION, has_draft: true })
+
+    await waitFor(() => expect(loadStored).toHaveBeenCalledWith(45))
+    expect(await screen.findByText(/這是三天前存下來的版本/)).toBeInTheDocument()
+  })
+
+  it('正對照：沒有 has_draft 就不去讀（多數 Mention 都沒有草稿）', async () => {
+    seedEmptyDraft()
+    const loadStored = vi.fn(async () => false)
+    useDraftStore.setState({ loadStored })
+
+    renderWith({ ...MENTION, has_draft: false })
+
+    await waitFor(() => expect(screen.getByText(/勾好 Reference Space/)).toBeInTheDocument())
+    expect(loadStored).not.toHaveBeenCalled()
+  })
+
+  it('**還原的草稿要看得出是舊的，並說出產生時間**', () => {
+    useDraftStore.setState({
+      raw: STORED.content_md,
+      replyText: STORED.content_md,
+      mentionId: 45,
+      restored: true,
+      restoredAt: STORED.created_at,
+    })
+    renderWith(MENTION)
+
+    expect(screen.getByText('這是先前存下來的草稿')).toBeInTheDocument()
+    expect(screen.getByText(/產生於/)).toBeInTheDocument()
+    // 必須明講缺了什麼——半套的證據看起來像完整的才是最危險的
+    expect(screen.getByText(/脈絡證據沒有保存/)).toBeInTheDocument()
+  })
+
+  it('正對照：剛產生的草稿沒有那塊提示', () => {
+    useDraftStore.setState({
+      raw: STORED.content_md,
+      replyText: STORED.content_md,
+      mentionId: 45,
+      restored: false,
+      restoredAt: null,
+    })
+    renderWith(MENTION)
+
+    expect(screen.queryByText('這是先前存下來的草稿')).toBeNull()
+  })
+})

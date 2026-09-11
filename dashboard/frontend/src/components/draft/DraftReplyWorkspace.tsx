@@ -28,6 +28,7 @@ interface DraftReplyWorkspaceProps {
  */
 export function DraftReplyWorkspace({ mention, active = true }: DraftReplyWorkspaceProps) {
   const reset = useDraftStore((s) => s.reset)
+  const loadStored = useDraftStore((s) => s.loadStored)
   // store 記著「目前這份草稿是誰的」，用它判斷要不要清空，元件自己不必追蹤
   const streamedMentionId = useDraftStore((s) => s.mentionId)
 
@@ -44,6 +45,22 @@ export function DraftReplyWorkspace({ mention, active = true }: DraftReplyWorksp
       reset()
     }
   }, [mention?.id, streamedMentionId, reset])
+
+  // 這一則如果有**存下來**的草稿就讀回來。
+  //
+  // 在這之前草稿只活在串流那一次的記憶體裡：重新整理、切回收件匣再點進來、
+  // 或隔天再開，畫面都是空的，看起來像草稿沒了——實際上它一直在
+  // `draft_replies` 裡（本機實測 53 筆）。
+  //
+  // 安全性靠 `loadStored` 自己的三道守衛：正在串流不讀、同一則已經有內容
+  // 不讀、404 安靜略過。所以這個 effect 重複觸發是無害的。
+  // 只在 active 時讀：背景那一半的 pane 仍然掛載著（`app/Pane.tsx`），
+  // 不 gate 的話每次切頁籤都會為看不見的那一半多打一次。
+  useEffect(() => {
+    const id = mention?.id ?? null
+    if (!active || id === null || !mention?.has_draft) return
+    void loadStored(id)
+  }, [active, mention?.id, mention?.has_draft, loadStored])
 
   // 這裡刻意**不**在卸載時 abort。
   //

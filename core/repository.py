@@ -508,6 +508,27 @@ def latest_draft(mention_id: int) -> Optional[Dict[str, Any]]:
     )
 
 
+def mention_ids_with_drafts(viewer_id: int) -> set:
+    """這個 Viewer 的哪些 Mention 已經有存下來的草稿。
+
+    一次查完再由呼叫端貼回清單，而不是每列各查一次——收件匣一次就是
+    200 列（`list_mentions` 的預設上限）。
+
+    只回 id 集合、不回內容：清單不需要草稿全文，而 `content_md` 動輒
+    一兩千字，200 列全帶會讓那個端點的回應大上一個量級。
+    """
+    rows = db.query_all(
+        """
+        SELECT DISTINCT d.mention_id AS mention_id
+          FROM draft_replies d
+          JOIN mentions m ON m.id = d.mention_id
+         WHERE m.viewer_id = ?
+        """,
+        (viewer_id,),
+    )
+    return {row["mention_id"] for row in rows}
+
+
 # --------------------------------------------------------------------------
 # 採集器水位
 # --------------------------------------------------------------------------

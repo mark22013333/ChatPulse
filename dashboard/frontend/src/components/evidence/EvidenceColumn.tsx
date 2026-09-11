@@ -21,6 +21,7 @@ export function useEvidenceBundle(origin: 'summary' | 'draft') {
   const draftMeta = useDraftStore((state) => state.meta)
   const draftPolish = useDraftStore((state) => state.polish)
   const draftStreaming = useDraftStore((state) => state.streaming)
+  const draftRestored = useDraftStore((state) => state.restored)
 
   const summaryMeta = useSummaryStore((state) => state.meta)
   const summaryStreaming = useSummaryStore((state) => state.streaming)
@@ -36,11 +37,13 @@ export function useEvidenceBundle(origin: 'summary' | 'draft') {
         polish: isDraft ? draftPolish : null,
         streaming,
         providerLabel: (name: string) => providerLabel(providers, name),
+        // 還原的草稿缺的那幾列要說對理由（「沒有保存」而不是「伺服器沒回報」）
+        restored: isDraft && draftRestored,
       }),
       streaming,
       isDraft,
     }),
-    [origin, isDraft, draftMeta, summaryMeta, draftPolish, streaming, providers],
+    [origin, isDraft, draftMeta, summaryMeta, draftPolish, streaming, providers, draftRestored],
   )
 }
 

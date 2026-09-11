@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { AlertCircleIcon, CompassIcon } from 'lucide-react'
 import { Markdown } from '@/components/Markdown'
 import { DraftReplyEditor } from '@/components/draft/DraftReplyEditor'
+import { formatDateTime } from '@/lib/format'
 import { splitDraft, useDraftStore } from '@/store/draft'
 
 interface DraftOutputPaneProps {
@@ -23,6 +24,8 @@ export function DraftOutputPane({ active, onRequestSend }: DraftOutputPaneProps)
   const streaming = useDraftStore((s) => s.streaming)
   const error = useDraftStore((s) => s.error)
   const polish = useDraftStore((s) => s.polish)
+  const restored = useDraftStore((s) => s.restored)
+  const restoredAt = useDraftStore((s) => s.restoredAt)
 
   const sections = useMemo(() => splitDraft(raw), [raw])
 
@@ -43,6 +46,24 @@ export function DraftOutputPane({ active, onRequestSend }: DraftOutputPaneProps)
 
       {raw || streaming ? (
         <div className="space-y-4">
+          {/*
+            還原的草稿要**在內容上方**講清楚它是舊的。
+            不講的話它與剛產生的長得一模一樣，而兩者差很多：這一份可能是
+            好幾天前、用當時的設定與當時的對話內容產的，直接送出去會送出
+            過期的回覆。放在內容上方而不是證據欄，是因為看內容的人不一定
+            會展開證據欄。
+          */}
+          {restored ? (
+            <div className="rounded border border-line-evidence bg-muted/40 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+              <span className="font-medium text-foreground">這是先前存下來的草稿</span>
+              {restoredAt ? <span className="ml-1">產生於 {formatDateTime(restoredAt)}</span> : null}
+              <span className="ml-1">
+                產生當下的脈絡證據沒有保存，證據欄只看得到生成、回話設定與潤稿。
+                要拿到完整證據請重新產生。
+              </span>
+            </div>
+          ) : null}
+
           {/*
             潤稿被退回時要明說原因。只放一個琥珀 badge 不夠——
             使用者需要知道「是哪個事實被改動了」，那是判斷「模型在亂改」

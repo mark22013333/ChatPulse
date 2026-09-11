@@ -20,6 +20,7 @@ import type {
   ReplyToneConfig,
   SepiaRulesInfo,
   SpacesResponse,
+  StoredDraft,
   StylesResponse,
   SummariesResponse,
   SummaryStyleValue,
@@ -269,6 +270,13 @@ export const api = {
   updateMention: (id: number, state: MentionState) =>
     request<Mention>(`/mentions/${id}`, { method: 'PATCH', body: JSON.stringify({ state }) }),
   refreshMentions: () => post<MentionRefreshResponse>('/mentions/refresh'),
+  /**
+   * 讀回這一則**已經存下來**的最新草稿。
+   *
+   * 沒有草稿時後端回 404 `DRAFT_NOT_FOUND`，那是**正常狀態**不是錯誤
+   * （多數 Mention 本來就沒產過草稿），呼叫端要自己吞掉。
+   */
+  storedDraft: (id: number) => request<StoredDraft>(`/mentions/${id}/draft`),
   sendReply: (
     id: number,
     body: { text: string; draft_id?: number | null; merge_mention_ids?: number[] },
