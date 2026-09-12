@@ -210,6 +210,27 @@ class NoItemIsCutMidSentenceTest(unittest.TestCase):
                         )
 
 
+class EveryRealSampleGetsADescriptionTest(unittest.TestCase):
+    """簡介是使用者在設定頁挑 persona 時唯一的辨識線索，不可以是空的。
+
+    `mrbeast-skill` 正是實測中簡介被清空的那一類：整段 frontmatter 命中
+    `impersonation`，而它乾淨的第一句跟著一起被丟掉。
+    """
+
+    def test_no_sample_ends_up_without_a_description(self):
+        for name in SAMPLES:
+            with self.subTest(sample=name):
+                profile = personas.normalize_persona(load(name), name_hint=name)
+                self.assertTrue(profile.description.strip(), "簡介是空的")
+
+    def test_the_mrbeast_frontmatter_really_is_the_hostile_shape(self):
+        """正對照。整段命中指令特徵、但第一句乾淨——這才是這條測試要守的形態。"""
+        fields, _body = personas._parse_frontmatter(load("mrbeast-skill"))
+        raw_description = fields.get("description", "")
+        self.assertIsNotNone(personas._is_instruction_like(raw_description))
+        self.assertTrue(len(raw_description) > 200)
+
+
 class FieldBudgetsHoldOnRealFilesTest(unittest.TestCase):
     """條數放寬到 8 之後，**總表達量**在真實檔案上仍然沒有變大。"""
 

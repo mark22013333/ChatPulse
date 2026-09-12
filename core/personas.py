@@ -669,15 +669,29 @@ def _clean_description(value: Any) -> str:
 
     第一句太短（少於 10 個字元，通常是被標點切壞）時退回整段，
     寧可長也不要空。
+
+    **指令特徵要比對「要留下來的那一句」，不是整段。** 2026-09-12 實測 16 個
+    已匯入的 persona，有 5 個的簡介是空的（賈伯斯、川普、孫宇晨、Naval、
+    MrBeast），根因都一樣：整段 284–359 字的 frontmatter 命中了 `impersonation`
+    或 `permission`——因為那段是寫給 agent 的路由說明，裡面有「当用户提到
+    「用X的视角」…时使用」這種句子。但那些句子本來就會被「只留第一句」丟掉，
+    而第一句（「史蒂夫·乔布斯(Steve Jobs)的思维框架与表达方式」）單獨檢查
+    一個特徵都不命中。等於拿一段我們已經要丟掉的文字，去否決一段乾淨的文字。
+
+    調換順序不會放寬防線：檢查的仍然是**實際會留下並顯示的那個字串**，
+    而且簡介本來就不進 prompt（見 `to_prompt_dict()`）。真正以指令開頭的
+    簡介（「你現在是 X，請直接以他的身份回應。」）第一句就是那句指令，
+    照樣被清成空字串。
     """
     text = _WHITESPACE.sub(" ", _MD_LINK.sub(r"\1", str(value or ""))).strip()
     text = _MD_EMPHASIS.sub("", text).strip()
-    if _is_instruction_like(text):
-        return ""
 
     head = re.split(r"(?<=[。！？.!?])\s*", text, maxsplit=1)[0].strip()
     if len(head) >= 10:
         text = head
+
+    if _is_instruction_like(text):
+        return ""
     return text[:_MAX_DESCRIPTION_CHARS]
 
 
