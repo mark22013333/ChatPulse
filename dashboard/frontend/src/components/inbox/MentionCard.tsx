@@ -59,7 +59,11 @@ export function MentionCard({
           ? 'border-signal bg-signal-wash'
           : active
             ? 'border-signal-line bg-signal-wash'
-            : 'border-border/70 bg-card/50 hover:border-border',
+            // 表面分層改版：從半透明的 `bg-card/50` 換成實色 surface。
+            // 半透明是舊版階層落差只有 0.013 時的補償手法，現在 ΔL 抬到 0.022，
+            // 實色就浮得出來，也不必再擔心疊在不同底上顏色會飄。
+            // 清單列**不加標頭帶**——標頭帶是「內容卡片」的語法，這裡不是。
+            : 'border-line bg-surface hover:border-line-strong',
         dimmed && 'opacity-45',
       )}
     >
