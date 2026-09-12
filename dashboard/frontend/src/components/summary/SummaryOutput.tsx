@@ -89,15 +89,35 @@ export function SummaryOutput({ space, active }: SummaryOutputProps) {
 
       {text || streaming ? (
         <div className="space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
+          {/*
+            摘要是一張卡片，不是一段浮在背景上的文字。
+
+            改版前這裡是「一列 meta ＋ 下方一個半透明框」，兩者之間沒有從屬關係；
+            現在來源標記與動作收進卡片的標頭，內容在下方——「這些標記描述的是
+            這一份產出」變成版面本身講得出來的事，不必靠閱讀順序推斷。
+
+            標頭用同色 ＋ 一條細線，不用 muted 填色帶：選定的 v1 方向是輕卡片，
+            階層靠邊框與一階填色差撐起來，不再往上疊第三種底色。
+          */}
+          <section className="overflow-hidden rounded-xl border border-border bg-surface">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-2">
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <span className="rounded border border-signal-line bg-signal-wash px-2 py-0.5 font-medium text-signal">
                 {styleItems[style] ?? style}
               </span>
+              {/* 分隔用細豎線不用中點：`·` 在設計原則裡是禁用的，
+                  而且它與等寬數字擠在一起時很難一眼切開欄位 */}
               {meta ? (
-                <span className="font-mono">
-                  {meta.space} · 讀取 {meta.message_count} 則
-                  {meta.image_count !== undefined ? ` · 圖片 ${meta.image_count} 張` : ''}
+                <span className="flex flex-wrap items-center gap-2 font-mono">
+                  <span>{meta.space}</span>
+                  <span aria-hidden className="h-3 w-px bg-line-strong" />
+                  <span>讀取 {meta.message_count} 則</span>
+                  {meta.image_count !== undefined ? (
+                    <>
+                      <span aria-hidden className="h-3 w-px bg-line-strong" />
+                      <span>圖片 {meta.image_count} 張</span>
+                    </>
+                  ) : null}
                 </span>
               ) : (
                 <span>正在準備…</span>
@@ -107,9 +127,14 @@ export function SummaryOutput({ space, active }: SummaryOutputProps) {
                   那一列的可見內容（§5.7），這裡不再掛 tooltip——badge 本身
                   顯示的就是供應商與模型（§10.3）。 */}
               {meta?.provider ? (
-                <span className="rounded border border-line bg-muted px-2 py-0.5 font-medium text-provenance">
+                <span className="inline-flex items-center gap-1.5 rounded border border-line bg-muted px-2 py-0.5 font-medium text-provenance">
                   {providerLabel(providers, meta.provider)}
-                  {meta.model ? <span className="ml-1 metric">· {meta.model}</span> : null}
+                  {meta.model ? (
+                    <>
+                      <span aria-hidden className="h-3 w-px bg-line-strong" />
+                      <span className="metric">{meta.model}</span>
+                    </>
+                  ) : null}
                 </span>
               ) : null}
               {streaming ? (
@@ -136,12 +161,12 @@ export function SummaryOutput({ space, active }: SummaryOutputProps) {
             </div>
           </div>
 
-          <Markdown
-            source={text}
-            typing={streaming}
-            active={active}
-            className="rounded-xl border border-border bg-card/60 p-5"
-          />
+          {/* 卡片外框已經負責邊框與底色，內容只要負責內距。
+              原本這裡是 `bg-card/60`（半透明的 surface）——那是舊版
+              階層落差只有 0.013 時的補償手法，現在 ΔL 抬到 0.022，
+              用實色就浮得出來，也不必再擔心疊在不同底上顏色會飄。 */}
+          <Markdown source={text} typing={streaming} active={active} className="p-5" />
+          </section>
 
           {!streaming && text ? <ActionItems markdown={text} /> : null}
         </div>

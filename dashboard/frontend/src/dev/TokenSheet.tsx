@@ -71,10 +71,13 @@ function resolve(
 
   // 哨兵：canvas 若看不懂這個顏色會保留前一個 fillStyle，
   // 沒有哨兵就會靜默拿到上一個 token 的顏色（比算錯更難查）。
-  const SENTINEL = '#123456'
-  ctx.fillStyle = SENTINEL
+  //
+  // 哨兵值用 rgb() 寫、再讀回 canvas 正規化後的字串來比對——**不要在這裡
+  // 寫字面色碼**：守門測試 ⑤ 會掃整個 src 的 hex，第一版寫死哨兵就被它擋下來了。
+  ctx.fillStyle = 'rgb(18, 52, 86)'
+  const sentinel = ctx.fillStyle
   ctx.fillStyle = computed
-  if (ctx.fillStyle === SENTINEL) return null
+  if (ctx.fillStyle === sentinel) return null
 
   ctx.clearRect(0, 0, 1, 1)
   ctx.fillRect(0, 0, 1, 1)

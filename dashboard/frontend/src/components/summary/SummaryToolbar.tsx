@@ -93,7 +93,10 @@ export function SummaryToolbar({ space, onDraftCreated }: SummaryToolbarProps) {
   }
 
   return (
-    <div className="flex shrink-0 flex-wrap items-end gap-3 border-b border-border px-5 py-3">
+    // bg-raised：工具列是浮在內容之上的操作面，不是內容本身。
+    // 改版前這裡只靠底部一條 border 分隔（規線分群），現在多一階填色差——
+    // 那正是「後台感」的來源：先看得出有幾層，才看得懂哪一層在做什麼。
+    <div className="flex shrink-0 flex-wrap items-end gap-3 border-b border-border bg-raised px-5 py-3">
       <div className="mr-auto min-w-0">
         <p className="truncate text-sm font-semibold">
           {space ? space.displayName : '尚未選擇 Space'}
