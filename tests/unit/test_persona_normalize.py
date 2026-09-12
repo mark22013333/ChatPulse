@@ -797,5 +797,38 @@ class TestDescribeUnusableNamesTheActualProblem(unittest.TestCase):
         self.assertIn("可用的章節名", msg)
 
 
+class TestSectionPreamblesAreNotItems(unittest.TestCase):
+    """以冒號結尾的行是在**宣告接下來是什麼**，它本身不是內容。
+
+    實測 14 份人物 skill，`## 表达DNA` 底下第一行是
+    `当以X视角输出时，遵循以下风格规则：`，五份都有，而且都排在
+    `communication_style` 的第一條——擠掉一個真正的風格條目。
+
+    它一直漏進來的原因是 `_clean_item()` 最後的 `strip(" 　:：…")` 會把冒號
+    剝掉，剝完就看不出它原本是引言，所以判定必須排在那個 strip 之前。
+    """
+
+    def test_a_colon_terminated_line_is_dropped(self):
+        self.assertIsNone(personas._clean_item("当以费曼视角输出时，遵循以下风格规则："))
+
+    def test_a_half_width_colon_counts_too(self):
+        self.assertIsNone(personas._clean_item("Follow these style rules:"))
+
+    def test_a_colon_in_the_middle_is_still_content(self):
+        """正對照。風格條目大量使用「句式：短句为主」這種寫法，不可以一起丟掉。"""
+        kept = personas._clean_item("- 句式：短句为主，语速快，信息密度高")
+        self.assertEqual(kept, "句式：短句为主，语速快，信息密度高")
+
+    def test_the_preamble_does_not_reach_the_profile(self):
+        doc = (
+            "# 人格\n\n## 表达DNA\n\n"
+            "当以費曼視角輸出時，遵循以下风格规则：\n\n"
+            "### 句式\n- 短句錨定，長句展開，制造錘子落下的效果\n"
+        )
+        profile = personas.normalize_persona(doc, name_hint="x")
+        self.assertEqual(len(profile.communication_style), 1)
+        self.assertNotIn("遵循以下", profile.communication_style[0])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

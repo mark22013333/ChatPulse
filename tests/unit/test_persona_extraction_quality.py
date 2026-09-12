@@ -173,6 +173,27 @@ class NoQuotationsSurviveTest(unittest.TestCase):
         )
 
 
+class NoSectionPreambleSurvivesTest(unittest.TestCase):
+    """章節引言句（「…遵循以下风格规则：」）不是風格描述。
+
+    這類句子原本排在 `communication_style` 的第一條，擠掉一個真正的條目——
+    它是使用者最先看到、也最先被模型讀到的那一條。
+    """
+
+    def test_no_item_announces_what_follows(self):
+        for name in SAMPLES:
+            profile = personas.normalize_persona(load(name), name_hint=name)
+            for field in PROMPT_FIELDS:
+                for item in getattr(profile, field):
+                    with self.subTest(sample=name, field=field, item=item[:24]):
+                        self.assertNotIn("遵循以下", item)
+                        self.assertFalse(item.endswith(("：", ":")))
+
+    def test_the_sample_really_does_contain_such_a_preamble(self):
+        """正對照。沒有這一條，上面那條在「語料裡本來就沒有引言」時也會綠。"""
+        self.assertIn("遵循以下风格规则：", load("feynman-skill"))
+
+
 class NoItemIsCutMidSentenceTest(unittest.TestCase):
     """驗收條件 3：條目不可以停在半句話。"""
 
