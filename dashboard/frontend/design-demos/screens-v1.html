@@ -1,0 +1,1592 @@
+<!DOCTYPE html>
+<!--
+  ChatPulse — 另外四個畫面的設計稿（v1 表面分層語彙推廣版）
+  ==================================================================
+  四個畫面：① Mention 收件匣 ② 草稿回覆工作區 ③ 證據欄 ④ 設定中心
+  語彙來源：design-demos/VOCABULARY.md（從已實作並驗證過的摘要工作台提煉）
+  文案來源：design-demos/CONTENT-INVENTORY.md（{變數} 槽位以樣本資料填入，
+            樣本 Space 名稱沿用 v1-restrained.html 的同一批，避免看起來像另一個產品）
+
+  各畫面的卡片策略（刻意不一致，理由寫在各畫面上方的註解裡）：
+   ① 收件匣：清單項目升級成一致卡片語彙，但**不加標頭帶**（標頭帶是內容卡片的語法）
+   ② 草稿區：來源卡與兩個產出區＝標準卡片；設定側欄＝整欄 raised 的操作面，內部只有水平帶
+   ③ 證據欄：**一張卡片都不加**。它的規線本身承載語意，不能被裝飾框吃掉
+   ④ 設定中心：右側每個 <h2> 分節＝標準卡片；左 nav 的 active 維持圓角塊
+
+  技術約束：零外部資源（離線可雙擊開啟）、顏色一律 oklch 自訂屬性（不出現十六進位或 sRGB／HSL 函式寫法）、
+  無中點分隔符（一律細豎線 .vrule）、零漸層、零裝飾性陰影、最大字級 22px 且只給計量值。
+  為 1440×900 設計；所有欄寬為固定 px，主區 flex 伸縮，因此不會產生水平捲軸。
+-->
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>ChatPulse 四畫面設計稿（收件匣／草稿／證據欄／設定）</title>
+<style>
+/* ==================================================================
+   1. 色彩 token — 四個表面 ＋ 四層前景 ＋ 三種規線 ＋ 三個語意色
+   ================================================================== */
+:root {
+  color-scheme: light;
+
+  --background: oklch(0.962 0.004 75);
+  --surface:    oklch(0.984 0.003 75);
+  --raised:     oklch(0.995 0.003 75);
+  --muted:      oklch(0.940 0.006 75);
+
+  --foreground:   oklch(0.220 0.012 60);
+  --fg-dim:       oklch(0.480 0.012 60);
+  --fg-subtle:    oklch(0.521 0.010 60);
+  --disabled-fg:  oklch(0.660 0.008 60);
+
+  --line:          oklch(0.905 0.006 70);
+  --line-strong:   oklch(0.820 0.008 70);
+  --line-evidence: oklch(0.620 0.012 70);
+
+  --signal:      oklch(0.520 0.125 50);
+  --signal-on:   oklch(0.990 0 0);
+  --signal-wash: oklch(0.520 0.125 50 / 0.08);
+  --signal-line: oklch(0.520 0.125 50 / 0.32);
+
+  --caution:      oklch(0.470 0.055 75);
+  --caution-line: oklch(0.470 0.055 75 / 0.45);
+  --destructive:  oklch(0.505 0.175 24);
+
+  /* 語意別名：證據欄的「已核對」與「來源標記」不另給新顏色 */
+  --verified:   var(--signal);
+  --provenance: var(--fg-subtle);
+
+  --font-sans: 'PingFang TC', 'Hiragino Sans CNS', 'Noto Sans TC', system-ui, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', Menlo, monospace;
+
+  /* 證據欄三欄 grid 的數值欄寬。所有列共用它 → 右緣必然對齊 */
+  --container-metric: 4rem;
+}
+
+html.dark {
+  color-scheme: dark;
+
+  --background: oklch(0.222 0.010 75);
+  --surface:    oklch(0.256 0.010 75);
+  --raised:     oklch(0.290 0.011 75);
+  --muted:      oklch(0.282 0.010 75);
+
+  --foreground:   oklch(0.918 0.005 80);
+  --fg-dim:       oklch(0.752 0.007 80);
+  --fg-subtle:    oklch(0.672 0.007 80);
+  --disabled-fg:  oklch(0.505 0.007 80);
+
+  --line:          oklch(0.338 0.010 80);
+  --line-strong:   oklch(0.418 0.010 80);
+  --line-evidence: oklch(0.564 0.012 80);
+
+  --signal:      oklch(0.780 0.115 50);
+  --signal-on:   oklch(0.200 0.010 75);
+  --signal-wash: oklch(0.780 0.115 50 / 0.10);
+  --signal-line: oklch(0.780 0.115 50 / 0.34);
+
+  --caution:      oklch(0.800 0.072 78);
+  --caution-line: oklch(0.800 0.072 78 / 0.45);
+  --destructive:  oklch(0.702 0.165 22);
+}
+
+/* ==================================================================
+   2. 基礎
+   ================================================================== */
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--foreground);
+  background: var(--background);
+  -webkit-font-smoothing: antialiased;
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; background: none; border: none; padding: 0; }
+ul, ol { margin: 0; padding: 0; list-style: none; }
+dl, dt, dd { margin: 0; }
+p { margin: 0; }
+h1, h2, h3 { margin: 0; font-size: 13px; font-weight: 600; }
+table { border-collapse: collapse; width: 100%; }
+svg { display: block; flex: none; }
+:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; border-radius: 3px; }
+
+.mono { font-family: var(--font-mono); font-size: 11.5px; letter-spacing: -0.01em; }
+.tnum { font-variant-numeric: tabular-nums; }
+.t-dim { color: var(--fg-dim); }
+.t-sub { color: var(--fg-subtle); }
+.t-caution { color: var(--caution); }
+.t-signal { color: var(--signal); }
+.t-verified { color: var(--verified); }
+.t-prov { color: var(--provenance); }
+.t-off { color: var(--disabled-fg); }
+.f10 { font-size: 10px; }
+.f11 { font-size: 11px; }
+.f115 { font-size: 11.5px; }
+.f12 { font-size: 12px; }
+.f125 { font-size: 12.5px; }
+.f13 { font-size: 13px; }
+.sb { font-weight: 600; }
+.lh15 { line-height: 1.55; }
+.row { display: flex; align-items: center; gap: 8px; }
+.rowt { display: flex; align-items: flex-start; gap: 8px; }
+.between { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.grow { flex: 1; min-width: 0; }
+.mt2 { margin-top: 2px; } .mt4 { margin-top: 4px; } .mt6 { margin-top: 6px; }
+.mt8 { margin-top: 8px; } .mt10 { margin-top: 10px; } .mt14 { margin-top: 14px; }
+.ell { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.clamp3 { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+
+/* 分隔符：細豎線，全檔不使用中點 */
+.vrule { display: inline-block; width: 1px; height: 11px; background: var(--line-strong); flex: none; }
+
+/* ==================================================================
+   3. 設計稿外殼（示範用，不是產品介面的一部分）
+   ================================================================== */
+.demobar {
+  position: sticky; top: 0; z-index: 9;
+  display: flex; align-items: center; gap: 10px;
+  height: 44px; padding: 0 16px;
+  background: var(--raised);
+  border-bottom: 1px solid var(--line-strong);
+}
+.demobar .brand { font-size: 12.5px; font-weight: 600; }
+.demobar .spacer { flex: 1; }
+.switcher { display: flex; gap: 4px; }
+.swbtn {
+  height: 28px; padding: 0 12px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--background);
+  color: var(--fg-dim); font-size: 12px;
+}
+.swbtn:hover { border-color: var(--line-strong); color: var(--foreground); }
+.swbtn.on { background: var(--signal-wash); border-color: var(--signal-line); color: var(--signal); font-weight: 600; }
+.caption {
+  padding: 6px 16px;
+  font-size: 11.5px; line-height: 1.5;
+  color: var(--fg-subtle);
+  background: var(--background);
+  border-bottom: 1px solid var(--line);
+}
+.caption b { color: var(--fg-dim); font-weight: 600; }
+.screen { display: none; }
+.screen.on { display: block; }
+.frame {
+  display: flex;
+  width: 100%;
+  height: 818px;   /* 44(切換列) + 30(說明列) + 818 = 892，1440×900 下整頁不需捲動 */
+  overflow: hidden;
+  background: var(--background);
+  border-bottom: 1px solid var(--line-strong);
+}
+/* 相鄰欄位示意：結構是真的，只是壓低存在感 */
+.ghost { display: flex; flex-direction: column; min-width: 0; }
+.ghost-tag {
+  flex: none; text-align: center;
+  padding: 3px 6px;
+  font-size: 9.5px; letter-spacing: 0.08em; line-height: 1.4;
+  color: var(--fg-subtle); background: var(--muted);
+  border-bottom: 1px dashed var(--line-strong);
+}
+.ghost-in { flex: 1; min-height: 0; opacity: 0.42; overflow: hidden; display: flex; flex-direction: column; }
+
+/* ==================================================================
+   4. 共用語彙 — 卡片、工具列、chip、凹陷項目、按鈕、欄位
+   ================================================================== */
+
+/* 4.1 卡片＝標頭帶 ＋ 內容區。標頭用同色 ＋ 一條細線，不用 muted 填色帶 */
+.card {
+  overflow: hidden;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+.card-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 7px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.card-title { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 600; }
+.card-body { padding: 16px; }
+.card-body.prose { padding: 20px; }
+.stack { display: flex; flex-direction: column; gap: 16px; }
+/* 捲動容器裡的 flex 直列不得壓縮子項，否則卡片會互相疊上去 */
+.stack > *, .inbox-list > *, .splist > * { flex: none; }
+
+/* 4.2 凹陷的項目／欄位：一律 background，不用 muted */
+.sunken {
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--background);
+  padding: 8px 10px;
+}
+.sunken.click:hover { border-color: var(--line-strong); }
+
+/* 4.3 chip 三種 */
+.chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  border-radius: 4px; padding: 1px 8px;
+  font-size: 11.5px; font-weight: 500; line-height: 1.55;
+  border: 1px solid transparent;
+}
+.chip-signal { border-color: var(--signal-line); background: var(--signal-wash); color: var(--signal); }
+.chip-src    { border-color: var(--line); background: var(--muted); color: var(--provenance); }
+.chip-person { background: var(--signal-wash); color: var(--verified); padding: 1px 6px; }
+.chip-caution{ border-color: var(--caution-line); color: var(--caution); }
+
+/* 4.4 按鈕 */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: 28px; padding: 0 10px;
+  border-radius: 6px; border: 1px solid transparent;
+  font-size: 12px; line-height: 1; white-space: nowrap;
+}
+.btn-ghost { color: var(--fg-dim); }
+.btn-ghost:hover { background: var(--muted); color: var(--foreground); }
+.btn-outline { border-color: var(--line); background: var(--raised); color: var(--fg-dim); }
+.btn-outline:hover { border-color: var(--line-strong); color: var(--foreground); }
+.btn-primary { background: var(--signal); color: var(--signal-on); font-weight: 600; }
+.btn-primary[disabled] { background: var(--muted); color: var(--disabled-fg); border-color: var(--line); cursor: default; font-weight: 500; }
+.btn-block { width: 100%; }
+.btn-lg { height: 32px; padding: 0 14px; font-size: 12.5px; }
+.btn-sm { height: 24px; padding: 0 8px; font-size: 11.5px; }
+
+/* 4.5 表單欄位 */
+.field {
+  display: flex; align-items: center; gap: 7px;
+  height: 28px; padding: 0 9px;
+  border-radius: 6px; border: 1px solid var(--line);
+  background: var(--background); color: var(--fg-subtle);
+}
+.field input {
+  flex: 1; min-width: 0; border: none; background: none; outline: none;
+  font-size: 12.5px; color: var(--foreground);
+}
+.field input::placeholder { color: var(--fg-subtle); }
+.sel {
+  width: 100%; height: 28px; padding: 0 8px;
+  border-radius: 6px; border: 1px solid var(--line);
+  background: var(--background); color: var(--foreground); font-size: 12.5px;
+}
+.ta {
+  width: 100%; padding: 9px 10px;
+  border-radius: 8px; border: 1px solid var(--line);
+  background: var(--background); color: var(--foreground);
+  font-size: 12.5px; line-height: 1.7; resize: none; outline: none;
+}
+.ta::placeholder { color: var(--fg-subtle); }
+.cbx {
+  width: 14px; height: 14px; flex: none; margin-top: 2px;
+  border-radius: 3px; border: 1px solid var(--line-strong);
+  background: var(--raised); color: var(--signal-on);
+  display: flex; align-items: center; justify-content: center;
+}
+.cbx.on { background: var(--signal); border-color: var(--signal); }
+.radio {
+  display: flex; align-items: flex-start; gap: 8px;
+  border-radius: 8px; border: 1px solid var(--line);
+  background: var(--background); padding: 7px 9px;
+}
+.radio + .radio { margin-top: 5px; }
+.radio.on { border-color: var(--signal); background: var(--signal-wash); }
+.rdot {
+  width: 13px; height: 13px; flex: none; margin-top: 2px;
+  border-radius: 50%; border: 1px solid var(--line-strong);
+  display: flex; align-items: center; justify-content: center;
+}
+.radio.on .rdot { border-color: var(--signal); }
+.radio.on .rdot::after { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--signal); }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: var(--background); }
+.seg button { height: 26px; padding: 0 11px; font-size: 12px; color: var(--fg-dim); border-right: 1px solid var(--line); }
+.seg button:last-child { border-right: none; }
+.seg button.on { background: var(--signal-wash); color: var(--signal); font-weight: 600; }
+.tbl th {
+  text-align: right; font-weight: 500; font-size: 11.5px; color: var(--fg-subtle);
+  padding: 6px 0; border-bottom: 1px solid var(--line-strong);
+}
+.tbl th:first-child { text-align: left; }
+.tbl td {
+  text-align: right; padding: 6px 0; border-bottom: 1px solid var(--line);
+  font-family: var(--font-mono); font-size: 11.5px; font-variant-numeric: tabular-nums; color: var(--fg-dim);
+}
+.tbl td:first-child { text-align: left; font-family: var(--font-sans); font-size: 12px; color: var(--foreground); }
+/* 全站最大字級，只給計量值 */
+.metric {
+  font-family: var(--font-mono); font-size: 22px; font-weight: 600;
+  line-height: 1; letter-spacing: -0.02em; font-variant-numeric: tabular-nums;
+}
+
+/* ==================================================================
+   5. 版面骨架：icon rail 56 ／ 收件匣 288 ／ 主區 flex ／ 證據欄 320
+   ================================================================== */
+.colwrap { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.panes { flex: 1; min-height: 0; display: flex; }
+
+.rail {
+  width: 56px; flex: none;
+  background: var(--background); border-right: 1px solid var(--line);
+  display: flex; flex-direction: column; padding-bottom: 8px;
+}
+.rail-mark {
+  height: 48px; display: flex; align-items: center; justify-content: center;
+  border-bottom: 1px solid var(--line); color: var(--signal);
+}
+.rail-nav { padding-top: 10px; display: flex; flex-direction: column; }
+.rail-item {
+  position: relative; width: 100%;
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  padding: 8px 0 7px; color: var(--fg-dim);
+}
+.rail-label { font-size: 10px; line-height: 1.1; letter-spacing: 0.02em; }
+.rail-item:hover { color: var(--foreground); background: var(--muted); }
+.rail-item.cur { color: var(--signal); background: var(--signal-wash); }
+.rail-item.cur::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--signal); }
+.rail-item.cur .rail-label { font-weight: 600; }
+.rail-badge {
+  position: absolute; top: 4px; left: 50%; margin-left: 5px;
+  min-width: 15px; height: 15px; padding: 0 3px; border-radius: 8px;
+  background: var(--signal); color: var(--signal-on);
+  font-size: 9.5px; font-weight: 600; line-height: 15px; text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.rail-soon { margin: 9px 5px 0; padding-bottom: 3px; border: 1px dashed var(--line-strong); border-radius: 4px; }
+.rail-soon-head {
+  display: block; text-align: center; padding: 3px 0;
+  border-bottom: 1px dashed var(--line-strong);
+  font-size: 9px; line-height: 1.3; color: var(--fg-subtle);
+}
+.rail-soon .rail-item { color: var(--disabled-fg); cursor: default; padding: 6px 0 4px; }
+.rail-soon .rail-item:hover { background: none; color: var(--disabled-fg); }
+.rail-soon .rail-label { border-bottom: 1px dotted var(--disabled-fg); padding-bottom: 1px; }
+.rail-foot { margin-top: auto; display: flex; flex-direction: column; align-items: center; gap: 6px; padding-top: 10px; }
+.rail-avatar {
+  width: 26px; height: 26px; border-radius: 50%;
+  border: 1px solid var(--line-strong); background: var(--muted); color: var(--fg-dim);
+  font-size: 11px; font-weight: 600;
+  display: flex; align-items: center; justify-content: center;
+}
+
+.topbar {
+  height: 48px; flex: none;
+  display: flex; align-items: center; gap: 10px;
+  padding: 0 14px 0 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--background);
+}
+.crumb { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--fg-subtle); }
+.crumb b { color: var(--foreground); font-weight: 600; }
+
+/* ==================================================================
+   6. 畫面① Mention 收件匣（左欄 288）
+   整欄維持 background：它與 Space 清單同級，是清單欄不是內容面。
+   ================================================================== */
+.inbox {
+  width: 288px; flex: none; min-height: 0;
+  display: flex; flex-direction: column;
+  background: var(--background);
+  border-right: 1px solid var(--line);
+}
+.inbox-head {
+  flex: none; display: flex; align-items: center; gap: 8px;
+  height: 38px; padding: 0 8px 0 12px;
+  border-bottom: 1px solid var(--line);
+}
+.inbox-tabs { flex: none; display: flex; gap: 3px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 26px; padding: 0 9px; border-radius: 6px;
+  font-size: 12px; color: var(--fg-dim);
+}
+.tab:hover { background: var(--muted); }
+.tab.on { background: var(--signal-wash); color: var(--signal); font-weight: 600; }
+.tab-count {
+  min-width: 17px; height: 17px; padding: 0 4px; border-radius: 9px;
+  font-size: 10px; font-weight: 600; line-height: 17px; text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.tab-count.sig { background: var(--signal); color: var(--signal-on); }
+.tab-count.dim { background: var(--muted); color: var(--fg-subtle); border: 1px solid var(--line); line-height: 15px; }
+/* 合併列是操作面 → raised，與摘要工作台的工具列同一種東西 */
+.mergebar { flex: none; background: var(--raised); border-bottom: 1px solid var(--line); padding: 8px 12px 10px; }
+.errbar {
+  flex: none; padding: 6px 12px; font-size: 11.5px; line-height: 1.5;
+  color: var(--destructive); border-bottom: 1px solid var(--line);
+  border-left: 3px solid var(--destructive);
+}
+.inbox-list { flex: 1; min-height: 0; overflow: auto; overflow-x: hidden; padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+/* 清單項目＝卡片語彙，但沒有標頭帶（標頭帶只給內容卡片） */
+.mcard {
+  border-radius: 8px; border: 1px solid var(--line);
+  background: var(--surface); padding: 10px;
+}
+.mcard:hover { border-color: var(--line-strong); }
+/* 選中＝較輕的 signal-line；勾選＝實的 signal。兩者都用 signal-wash 當底，不改成填色塊 */
+.mcard.cur { border-color: var(--signal-line); background: var(--signal-wash); }
+.mcard.checked { border-color: var(--signal); background: var(--signal-wash); }
+.mcard.blocked { opacity: 0.45; }
+.mcard-foot { display: flex; justify-content: flex-end; margin-top: 6px; }
+
+/* ==================================================================
+   7. 畫面② 草稿回覆工作區（主區）
+   ================================================================== */
+.draft { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--background); }
+.draft-top { flex: none; padding: 14px 16px; }
+.draft-grid { flex: 1; min-height: 0; display: flex; border-top: 1px solid var(--line); }
+/* 設定側欄：整欄 raised 的操作面。齊頂齊底、無圓角 → 讀成「面」而不是卡片 */
+.setup { width: 280px; flex: none; display: flex; flex-direction: column; background: var(--raised); border-right: 1px solid var(--line); }
+.setup-scroll { flex: 1; min-height: 0; overflow: auto; overflow-x: hidden; }
+.band { padding: 10px 12px 11px; border-top: 1px solid var(--line); }
+.band:first-child { border-top: none; }
+.band-head { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; }
+.band-head .grow { flex: 1; }
+.band-note { margin-top: 4px; font-size: 11px; line-height: 1.5; color: var(--fg-subtle); }
+.band-sub { margin-top: 8px; font-size: 11px; font-weight: 600; color: var(--fg-dim); }
+.setup-foot { flex: none; padding: 10px 12px; border-top: 1px solid var(--line-strong); background: var(--raised); }
+.splist { height: 256px; overflow: auto; overflow-x: hidden; margin-top: 6px; display: flex; flex-direction: column; gap: 4px; }
+.output { flex: 1; min-width: 0; overflow: auto; overflow-x: hidden; padding: 14px 16px 18px; }
+.notice {
+  display: flex; align-items: flex-start; gap: 8px;
+  border-radius: 8px; border: 1px solid var(--line); background: var(--muted);
+  padding: 8px 10px; font-size: 11.5px; line-height: 1.55; color: var(--fg-dim);
+}
+.notice.caution { border-color: var(--caution-line); color: var(--caution); background: var(--background); }
+.prose p + p { margin-top: 10px; }
+.prose { font-size: 12.5px; line-height: 1.8; color: var(--foreground); }
+
+/* ==================================================================
+   8. 畫面③ 證據欄（右欄 320）— 全欄零卡片
+   「一個獨立的面」由四件事做出來，全部不靠卡片：
+     (a) 整欄 bg-surface 對上主區的 bg-background，一階填色差把它從版面切出來
+     (b) 左緣一條 --line 從頂到底不中斷；上緣是 --line-strong 的標頭規線
+     (c) 所有列齊左齊右頂到欄的內距，沒有內縮圓角 → 掃視時只有一條左緣一條右緣
+     (d) 內部分段只用 --line-strong 橫檔，語意線 --line-evidence 因此不會和裝飾框打架
+   ================================================================== */
+.ev {
+  width: 320px; flex: none; min-height: 0;
+  display: flex; flex-direction: column;
+  background: var(--surface);
+  border-left: 1px solid var(--line);
+}
+.ev-head {
+  flex: none; display: flex; align-items: center; gap: 7px;
+  height: 40px; padding: 0 14px;
+  border-bottom: 1px solid var(--line-strong);
+}
+.ev-scroll { flex: 1; min-height: 0; overflow: auto; overflow-x: hidden; }
+.ev-row {
+  display: grid;
+  grid-template-columns: 1fr var(--container-metric) 1.75rem;
+  column-gap: 8px; align-items: baseline;
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--line-evidence);
+}
+.ev-row.degraded { border-bottom-style: dashed; border-bottom-color: var(--caution-line); }
+.ev-row.missing  { border-bottom-style: dotted; }
+.ev-label { font-size: 12.5px; line-height: 1.45; color: var(--foreground); min-width: 0; }
+.ev-val {
+  text-align: right; font-family: var(--font-mono); font-size: 12.5px;
+  font-variant-numeric: tabular-nums; color: var(--foreground);
+}
+.ev-unit { font-size: 11px; color: var(--fg-subtle); }
+.ev-sub { grid-column: 1 / 4; margin-top: 3px; font-size: 11px; line-height: 1.5; color: var(--fg-subtle); }
+.ev-sub.caution { color: var(--caution); }
+.ev-text {
+  grid-column: 2 / 4; text-align: right; white-space: nowrap;
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-dim);
+}
+.ev-text.sans { font-family: var(--font-sans); font-size: 11.5px; }
+.ev-fold { grid-column: 1 / 4; margin-top: 5px; font-size: 11px; color: var(--fg-subtle); }
+/* 明細沿用同一組欄寬 → 子列與主列共用同一個右緣 */
+.ev-detail {
+  grid-column: 1 / 4; margin-top: 5px;
+  display: grid; grid-template-columns: 1fr var(--container-metric) 1.75rem;
+  column-gap: 8px; row-gap: 4px; align-items: baseline;
+}
+.ev-dt { font-size: 11px; color: var(--fg-subtle); padding-left: 12px; }
+.ev-dd { grid-column: 2 / 4; text-align: right; font-size: 11px; color: var(--fg-dim); }
+.ev-pending { display: inline-block; width: 3px; height: 12px; background: var(--signal); animation: evblink 1.1s ease-in-out infinite; }
+@keyframes evblink { 0%, 100% { opacity: 1; } 50% { opacity: 0.22; } }
+@media (prefers-reduced-motion: reduce) { .ev-pending { animation: none; } }
+.ev-total {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 9px 14px;
+  border-top: 1px solid var(--line-strong); border-bottom: 1px solid var(--line);
+  font-size: 12px; color: var(--fg-dim);
+}
+.ev-sec {
+  display: flex; align-items: center; justify-content: space-between;
+  height: 32px; padding: 0 14px;
+  border-top: 1px solid var(--line-strong); border-bottom: 1px solid var(--line);
+  font-size: 12px; font-weight: 600;
+}
+.ev-legend { border-top: 1px solid var(--line-strong); padding: 8px 14px 10px; }
+.ev-legend-t { font-size: 10px; letter-spacing: 0.06em; color: var(--fg-subtle); margin-bottom: 2px; }
+/* 標註區用較窄的數值欄，它是說明不是資料，不需要跟上面的列共用右緣 */
+.lg-grid { display: grid; grid-template-columns: 1fr 1fr; column-gap: 14px; --container-metric: 2.2rem; }
+.lg-row {
+  display: grid; grid-template-columns: 1fr var(--container-metric) 1.75rem;
+  column-gap: 8px; align-items: baseline;
+  padding: 6px 0; font-size: 11.5px;
+  border-bottom: 1px solid var(--line-evidence);
+}
+.lg-row.degraded { border-bottom-style: dashed; border-bottom-color: var(--caution-line); }
+.lg-row.missing  { border-bottom-style: dotted; }
+.hs-row { padding: 8px 14px; border-bottom: 1px solid var(--line); }
+.hs-row:hover { background: var(--muted); }
+.ev-empty { padding: 14px; font-size: 11.5px; line-height: 1.7; color: var(--fg-subtle); }
+
+/* ==================================================================
+   9. 畫面④ 設定中心（全螢幕覆蓋層）
+   ================================================================== */
+.set { display: flex; flex-direction: column; width: 100%; height: 100%; background: var(--background); }
+.set-top {
+  height: 48px; flex: none; display: flex; align-items: center; gap: 12px;
+  padding: 0 14px 0 20px; border-bottom: 1px solid var(--line);
+}
+.set-body { flex: 1; min-height: 0; display: flex; }
+.set-nav { width: 288px; flex: none; border-right: 1px solid var(--line); padding: 10px 8px; overflow: auto; overflow-x: hidden; }
+.set-navitem { display: block; width: 100%; text-align: left; padding: 7px 10px; border-radius: 8px; }
+.set-navitem:hover { background: var(--muted); }
+.set-navitem.on { background: var(--signal-wash); }
+.set-navname { display: block; font-size: 12.5px; font-weight: 600; color: var(--foreground); }
+.set-navsub { display: block; }
+.set-navitem.on .set-navname { color: var(--signal); }
+.set-navsub { font-size: 11px; line-height: 1.45; color: var(--fg-subtle); margin-top: 1px; }
+.set-main { flex: 1; min-width: 0; overflow: auto; overflow-x: hidden; padding: 20px 24px 32px; }
+.set-inner { max-width: 768px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+.set-page { display: none; }
+.set-page.on { display: flex; flex-direction: column; gap: 16px; }
+/* 頁內標題一律 13px/600（盤點發現六頁分兩派，設計稿在此統一） */
+.pg-title { font-size: 13px; font-weight: 600; }
+.set-foot { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding-top: 2px; }
+</style>
+</head>
+<body>
+
+<!-- ============================ 設計稿外殼 ============================ -->
+<div class="demobar">
+  <span class="brand">ChatPulse 設計稿</span>
+  <span class="t-sub f115 row">表面分層語彙<span class="vrule" aria-hidden="true"></span>四畫面</span>
+  <span class="spacer"></span>
+  <div class="switcher" id="switcher">
+    <button class="swbtn on" data-screen="inbox">① 收件匣</button>
+    <button class="swbtn" data-screen="draft">② 草稿</button>
+    <button class="swbtn" data-screen="evidence">③ 證據欄</button>
+    <button class="swbtn" data-screen="settings">④ 設定</button>
+  </div>
+  <button class="btn btn-outline" id="themeBtn" style="margin-left:10px">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"/></svg>
+    <span id="themeLabel">深色</span>
+  </button>
+</div>
+
+<!-- ============================================================
+     畫面① Mention 收件匣
+     卡片策略：清單項目升級成一致的卡片語彙（rounded-lg / border-line /
+     bg-surface / p-2.5），但刻意**不加標頭帶** —— 標頭帶是「內容卡片」的語法，
+     清單列不是內容卡片。整欄底色維持 background（與 Space 清單同級）。
+     ============================================================ -->
+<section class="screen on" id="screen-inbox">
+  <div class="caption"><b>① Mention 收件匣</b>　清單項目＝卡片語彙但無標頭帶；整欄維持 background；合併列是操作面所以浮起成 raised；選取／勾選沿用 border-signal ＋ bg-signal-wash，不改成填色塊。</div>
+  <div class="frame">
+
+    <!-- icon rail -->
+    <nav class="rail" aria-label="主導覽">
+      <div class="rail-mark" aria-hidden="true">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h3l2.5-7 4 14 2.5-7H21"/></svg>
+      </div>
+      <div class="rail-nav">
+        <button class="rail-item">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6"/><path d="M9 17h4"/></svg>
+          <span class="rail-label">摘要</span>
+        </button>
+        <button class="rail-item cur" aria-current="page">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
+          <span class="rail-label">收件</span>
+          <span class="rail-badge">6</span>
+        </button>
+        <div class="rail-soon">
+          <span class="rail-soon-head">即將推出</span>
+          <span class="rail-item" aria-disabled="true">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M3 20h18"/></svg>
+            <span class="rail-label">統計</span>
+          </span>
+          <span class="rail-item" aria-disabled="true">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18"/><path d="M8 3v4"/><path d="M16 3v4"/><path d="M7 14h4"/><path d="M7 17h7"/></svg>
+            <span class="rail-label">排程</span>
+          </span>
+        </div>
+      </div>
+      <div class="rail-foot">
+        <button class="rail-item">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M1 14h6"/><path d="M9 8h6"/><path d="M17 16h6"/></svg>
+          <span class="rail-label">設定</span>
+        </button>
+        <span class="rail-avatar">MC</span>
+      </div>
+    </nav>
+
+    <div class="colwrap">
+      <div class="topbar">
+        <div class="crumb"><span>ChatPulse</span><span class="vrule" aria-hidden="true"></span><b>Mention 收件匣</b></div>
+        <span class="grow"></span>
+        <button class="btn btn-outline">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          搜尋
+        </button>
+        <span class="f125 t-dim row"><span class="vrule" aria-hidden="true"></span>Mark Cheng</span>
+      </div>
+
+      <div class="panes">
+
+        <!-- ===== 焦點：Mention 收件匣 288 ===== -->
+        <aside class="inbox" aria-label="Mention 收件匣">
+          <div class="inbox-head">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="color:var(--fg-dim)"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
+            <span class="f125 sb grow">Mention 收件匣</span>
+            <button class="btn btn-ghost btn-sm">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+              立即檢查
+            </button>
+          </div>
+
+          <div class="inbox-tabs">
+            <button class="tab on">待處理<span class="tab-count sig">6</span></button>
+            <button class="tab">已處理<span class="tab-count dim">12</span></button>
+          </div>
+
+          <!-- 合併列：只有勾選時出現。操作面 → raised -->
+          <div class="mergebar">
+            <div class="between">
+              <span class="f12 sb">已選 2 則，一起回成一則</span>
+              <button class="btn btn-ghost btn-sm">取消</button>
+            </div>
+            <button class="btn btn-primary btn-block mt8" style="height:30px">合併產生草稿（2 則）</button>
+            <p class="f11 t-sub lh15 mt6">回話會送到「1.BU2-PG」，送出後這 2 則會一起標成已處理。</p>
+          </div>
+
+          <div class="inbox-list">
+
+            <!-- 勾選 ＋ 當前選中 -->
+            <article class="mcard cur">
+              <div class="rowt">
+                <span class="cbx on" aria-hidden="true">
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+                </span>
+                <span class="f12 sb grow ell">1.BU2-PG</span>
+                <span class="f11 t-sub" style="white-space:nowrap">3 小時前</span>
+              </div>
+              <p class="f115 mt6"><span class="chip chip-person">張曼媜</span> 提到你</p>
+              <p class="f115 t-dim lh15 mt4 clamp3">@Mark 這個推播重試的問題，UAT 上還是會重複送兩次。我看 09-11 的 log，訊息 ID 一樣、送出時間差 30 秒，麻煩你這邊幫忙看一下。</p>
+              <div class="mcard-foot"><button class="btn btn-ghost btn-sm">標記已處理</button></div>
+            </article>
+
+            <!-- 勾選但非當前 -->
+            <article class="mcard checked">
+              <div class="rowt">
+                <span class="cbx on" aria-hidden="true">
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+                </span>
+                <span class="f12 sb grow ell">1.BU2-PG</span>
+                <span class="f11 t-sub" style="white-space:nowrap">5 小時前</span>
+              </div>
+              <p class="f115 mt6"><span class="chip chip-person">李姿誼Sica Lee</span> 提到你</p>
+              <p class="f115 t-dim lh15 mt4 clamp3">@Mark 補充一下，重複送出的那幾筆我截圖放在上面了，使用者端是真的有收到兩次。</p>
+              <div class="mcard-foot"><button class="btn btn-ghost btn-sm">標記已處理</button></div>
+            </article>
+
+            <!-- 不可勾：不同聊天室 -->
+            <article class="mcard blocked">
+              <div class="rowt">
+                <span class="cbx" aria-hidden="true"></span>
+                <span class="f12 sb grow ell">WCS內部小群組</span>
+                <span class="f11 t-sub" style="white-space:nowrap">昨天 18:24</span>
+              </div>
+              <p class="f115 mt6"><span class="chip chip-person">王凱文</span> 提到你</p>
+              <p class="f115 t-dim lh15 mt4 clamp3">@Mark 之前我們是不是也遇過一次同樣的症狀？那時候好像是排程沒讀到成功回寫。</p>
+              <p class="f11 t-caution lh15 mt6">不同的聊天室，沒辦法用一則回話回完</p>
+              <div class="mcard-foot"><button class="btn btn-ghost btn-sm">標記已處理</button></div>
+            </article>
+
+            <!-- 不可勾：同室不同串 -->
+            <article class="mcard blocked">
+              <div class="rowt">
+                <span class="cbx" aria-hidden="true"></span>
+                <span class="f12 sb grow ell">1.BU2-PG</span>
+                <span class="f11 t-sub" style="white-space:nowrap">昨天 11:02</span>
+              </div>
+              <p class="f115 mt6"><span class="chip chip-person">張曼媜</span> 提到你</p>
+              <p class="f115 t-dim lh15 mt4 clamp3">@Mark 另外那份整篩 API 的網域，北市府問什麼時候會換過去，他們要排上版時間。</p>
+              <p class="f11 t-caution lh15 mt6">同一個聊天室但不同討論串——回話只會送到其中一串，另一串看不到</p>
+              <div class="mcard-foot"><button class="btn btn-ghost btn-sm">標記已處理</button></div>
+            </article>
+
+            <!-- 取不到內容 -->
+            <article class="mcard">
+              <div class="rowt">
+                <span class="cbx" aria-hidden="true"></span>
+                <span class="f12 sb grow ell">TPE01P2601 北市府新案</span>
+                <span class="f11 t-sub" style="white-space:nowrap">2 天前</span>
+              </div>
+              <p class="f115 mt6"><span class="chip chip-person">陳建豪</span> 提到你</p>
+              <p class="f115 t-sub lh15 mt4">（訊息內容取不到）</p>
+              <div class="mcard-foot"><button class="btn btn-ghost btn-sm">標記已處理</button></div>
+            </article>
+
+            <article class="mcard">
+              <div class="rowt">
+                <span class="cbx" aria-hidden="true"></span>
+                <span class="f12 sb grow ell">彰銀Line BC預留 - 9月3日</span>
+                <span class="f11 t-sub" style="white-space:nowrap">3 天前</span>
+              </div>
+              <p class="f115 mt6"><span class="chip chip-person">達駿</span> 提到你</p>
+              <p class="f115 t-dim lh15 mt4 clamp3">@Mark 這邊的推播樣板還要不要沿用舊的？如果要改，我需要新的欄位對照表。</p>
+              <div class="mcard-foot"><button class="btn btn-ghost btn-sm">標記已處理</button></div>
+            </article>
+
+          </div>
+        </aside>
+
+        <!-- ===== 相鄰欄位示意：草稿工作區 ===== -->
+        <div class="ghost grow">
+          <span class="ghost-tag">相鄰欄位示意　草稿回覆工作區</span>
+          <div class="ghost-in">
+            <div style="padding:14px 16px">
+              <section class="card">
+                <div class="card-head"><span class="card-title">1.BU2-PG</span><span class="chip chip-signal">待處理</span></div>
+                <div class="card-body"><div class="sunken f115 t-dim lh15">@Mark 這個推播重試的問題，UAT 上還是會重複送兩次。</div></div>
+              </section>
+            </div>
+            <div style="display:flex;flex:1;min-height:0;border-top:1px solid var(--line)">
+              <div style="width:280px;flex:none;background:var(--raised);border-right:1px solid var(--line)">
+                <div class="band"><div class="band-head">Reference Space</div><p class="band-note">預設一個都不勾。</p></div>
+                <div class="band"><div class="band-head">回覆設定</div></div>
+                <div class="band"><div class="band-head">參考專案</div></div>
+              </div>
+              <div style="flex:1;min-width:0;padding:14px 16px" class="stack">
+                <section class="card"><div class="card-head"><span class="card-title">脈絡分析</span></div><div class="card-body" style="height:96px"></div></section>
+                <section class="card"><div class="card-head"><span class="card-title">建議回話</span></div><div class="card-body" style="height:130px"></div></section>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== 相鄰欄位示意：證據欄 ===== -->
+        <div class="ghost" style="width:320px;flex:none">
+          <span class="ghost-tag">相鄰欄位示意　證據欄</span>
+          <div class="ghost-in" style="background:var(--surface);border-left:1px solid var(--line)">
+            <div class="ev-head"><span class="f125 sb">證據</span></div>
+            <div class="ev-row"><span class="ev-label">脈絡</span><span class="ev-val">18</span><span class="ev-unit">則</span></div>
+            <div class="ev-row"><span class="ev-label">回覆對象</span><span class="ev-val">2</span><span class="ev-unit">則</span></div>
+            <div class="ev-row degraded"><span class="ev-label">附件</span><span class="ev-val">3</span><span class="ev-unit">張</span></div>
+            <div class="ev-row"><span class="ev-label">參考 Space</span><span class="ev-val">2</span><span class="ev-unit">個</span></div>
+            <div class="ev-row missing"><span class="ev-label">參考專案</span><span class="ev-val">—</span><span class="ev-unit"></span></div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     畫面② 草稿回覆工作區
+     卡片策略：
+       ・來源卡 → 標準卡片（標頭帶＝{space_name} ＋ 狀態 badge；內文仍是 background 的凹陷框）
+       ・設定側欄 → 整欄 bg-raised 的**操作面**，齊頂齊底無圓角；內部只有水平帶，
+         不把每一區包成卡片（那是設定分組，包起來會變成盒子套盒子）
+       ・產出區 →〈脈絡分析〉與〈建議回話〉各一張標準卡片，標題進標頭帶
+         （現況是標題浮在框外、與摘要工作台不一致，這正是本畫面要修的）
+       ・產生鈕釘在側欄底部，在捲動區之外
+     註：CONTENT-INVENTORY 記的來源卡內文框是 bg-muted/40，這裡改用 bg-background——
+         VOCABULARY §1 的警告：muted 在淺色比 surface 暗、在深色比 surface 亮，
+         拿它當「凹進去」兩個主題方向會相反。
+     ============================================================ -->
+<section class="screen" id="screen-draft">
+  <div class="caption"><b>② 草稿回覆工作區</b>　來源卡與兩個產出區＝標準卡片（標題進標頭帶）；設定側欄＝整欄 raised 操作面、內部只有水平帶；產生鈕釘在捲動區外。欄寬為真實比例：主區在 1440 下只有約 760px。</div>
+  <div class="frame">
+
+    <nav class="rail" aria-label="主導覽">
+      <div class="rail-mark" aria-hidden="true">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h3l2.5-7 4 14 2.5-7H21"/></svg>
+      </div>
+      <div class="rail-nav">
+        <button class="rail-item">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6"/><path d="M9 17h4"/></svg>
+          <span class="rail-label">摘要</span>
+        </button>
+        <button class="rail-item cur" aria-current="page">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
+          <span class="rail-label">收件</span>
+          <span class="rail-badge">6</span>
+        </button>
+        <div class="rail-soon">
+          <span class="rail-soon-head">即將推出</span>
+          <span class="rail-item" aria-disabled="true">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M3 20h18"/></svg>
+            <span class="rail-label">統計</span>
+          </span>
+          <span class="rail-item" aria-disabled="true">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18"/><path d="M8 3v4"/><path d="M16 3v4"/><path d="M7 14h4"/><path d="M7 17h7"/></svg>
+            <span class="rail-label">排程</span>
+          </span>
+        </div>
+      </div>
+      <div class="rail-foot">
+        <button class="rail-item">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M1 14h6"/><path d="M9 8h6"/><path d="M17 16h6"/></svg>
+          <span class="rail-label">設定</span>
+        </button>
+        <span class="rail-avatar">MC</span>
+      </div>
+    </nav>
+
+    <div class="colwrap">
+      <div class="topbar">
+        <div class="crumb"><span>ChatPulse</span><span class="vrule" aria-hidden="true"></span><span>Mention 收件匣</span><span class="vrule" aria-hidden="true"></span><b>草稿回覆</b></div>
+        <span class="grow"></span>
+        <span class="f125 t-dim">Mark Cheng</span>
+      </div>
+
+      <div class="panes">
+
+        <!-- 相鄰欄位示意：收件匣 -->
+        <div class="ghost" style="width:288px;flex:none">
+          <span class="ghost-tag">相鄰欄位示意　Mention 收件匣</span>
+          <div class="ghost-in" style="border-right:1px solid var(--line)">
+            <div class="inbox-tabs"><button class="tab on">待處理<span class="tab-count sig">6</span></button><button class="tab">已處理<span class="tab-count dim">12</span></button></div>
+            <div class="inbox-list">
+              <article class="mcard cur"><div class="rowt"><span class="cbx on"></span><span class="f12 sb grow ell">1.BU2-PG</span><span class="f11 t-sub">3 小時前</span></div><p class="f115 mt6">張曼媜 提到你</p></article>
+              <article class="mcard checked"><div class="rowt"><span class="cbx on"></span><span class="f12 sb grow ell">1.BU2-PG</span><span class="f11 t-sub">5 小時前</span></div><p class="f115 mt6">李姿誼Sica Lee 提到你</p></article>
+              <article class="mcard blocked"><div class="rowt"><span class="cbx"></span><span class="f12 sb grow ell">WCS內部小群組</span><span class="f11 t-sub">昨天</span></div><p class="f115 mt6">王凱文 提到你</p></article>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== 焦點：草稿回覆工作區 ===== -->
+        <main class="draft" aria-label="草稿回覆工作區">
+
+          <!-- A. 來源卡（全寬頂帶）＝ 標準卡片 -->
+          <div class="draft-top">
+            <section class="card">
+              <div class="card-head">
+                <span class="card-title">1.BU2-PG</span>
+                <span class="chip chip-signal">待處理</span>
+              </div>
+              <div class="card-body">
+                <div class="row f11 t-sub">
+                  <span class="chip chip-person">張曼媜</span>
+                  <span class="vrule" aria-hidden="true"></span>
+                  <span class="mono">2026-09-12 14:32</span>
+                </div>
+                <div class="sunken mt8 f125 t-dim lh15">@Mark 這個推播重試的問題，UAT 上還是會重複送兩次。我看 09-11 的 log，訊息 ID 一樣、送出時間差 30 秒，麻煩你這邊幫忙看一下。</div>
+              </div>
+            </section>
+          </div>
+
+          <div class="draft-grid">
+
+            <!-- B. 設定側欄 280：整欄 raised，內部只有水平帶 -->
+            <aside class="setup" aria-label="草稿設定">
+              <div class="setup-scroll">
+
+                <!-- Reference Space -->
+                <div class="band">
+                  <div class="band-head">
+                    <span class="grow">Reference Space</span>
+                    <span class="f11 t-sub">已勾選 2</span>
+                    <button class="btn btn-ghost btn-sm">清空</button>
+                  </div>
+                  <p class="band-note">預設一個都不勾。勾選的 Space 近期訊息會一併送進脈絡。</p>
+                  <div class="field mt8">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+                    <input type="text" placeholder="搜尋 Space 名稱…">
+                  </div>
+                  <div class="between mt8">
+                    <label class="f11 t-dim">每群抓取則數（1~1000）</label>
+                    <input class="sel mono" style="width:64px;text-align:right" value="50">
+                  </div>
+                  <div class="between mt6">
+                    <label class="f11 t-dim">供應商</label>
+                    <select class="sel mono" style="width:150px">
+                      <option>claude-cli:opus</option>
+                      <option>gemini-cli:pro</option>
+                    </select>
+                  </div>
+                </div>
+
+                <!-- 回覆設定（預設展開、可收合） -->
+                <div class="band">
+                  <div class="band-head">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+                    <span class="grow">回覆設定</span>
+                  </div>
+
+                  <p class="band-sub">口氣</p>
+                  <div class="mt4">
+                    <label class="radio">
+                      <span class="rdot" aria-hidden="true"></span>
+                      <span><span class="f12">跟隨預設（直接）</span><span class="f11 t-sub lh15" style="display:block">不指定口氣，沿用你的偏好或系統預設。</span></span>
+                    </label>
+                    <label class="radio on">
+                      <span class="rdot" aria-hidden="true"></span>
+                      <span>
+                        <span class="f12 sb">直接</span>
+                        <span class="f11 t-sub lh15" style="display:block">先講結論，再補必要的細節。</span>
+                        <span class="f11 t-signal lh15" style="display:block">例：這個問題出在 retryCount 沒有重設，我今天會修。</span>
+                      </span>
+                    </label>
+                    <label class="radio">
+                      <span class="rdot" aria-hidden="true"></span>
+                      <span>
+                        <span class="f12">客氣</span>
+                        <span class="f11 t-sub lh15" style="display:block">保留對方的餘地，語氣放軟。</span>
+                        <span class="f11 t-signal lh15" style="display:block">例：不好意思，這邊想再跟您確認一下時程。</span>
+                      </span>
+                    </label>
+                  </div>
+
+                  <div class="between band-sub">
+                    <span>Persona</span>
+                    <button class="btn btn-ghost btn-sm">管理</button>
+                  </div>
+                  <select class="sel mt4">
+                    <option>跟隨預設</option>
+                    <option>不使用 Persona</option>
+                    <option selected>luozhenyu</option>
+                  </select>
+                  <!-- PersonaNotice：不是卡片，是凹陷的說明欄位 -->
+                  <div class="sunken mt6">
+                    <div class="row f11 t-prov">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+                      <span class="mono ell">fxp/persona-distill-skills</span>
+                    </div>
+                    <p class="f11 t-sub mt4">最後更新 2026-08-30</p>
+                    <p class="f11 t-caution lh15 mt4">Persona 是「借用某個人的思考框架與表達習慣來寫回覆」，不是扮演那個人。</p>
+                  </div>
+
+                  <div class="between band-sub">
+                    <span>自訂提示</span>
+                    <button class="btn btn-ghost btn-sm">管理</button>
+                  </div>
+                  <select class="sel mt4">
+                    <option>跟隨預設</option>
+                    <option>不套用</option>
+                    <option selected>我的工程師回覆</option>
+                  </select>
+                  <textarea class="ta mt6" rows="3" placeholder="例如：不要太客套，直接說目前卡在哪裡；如果需要對方補資料，就列出需要的資訊。"></textarea>
+
+                  <p class="band-sub">Sepia 潤稿</p>
+                  <label class="rowt mt4">
+                    <span class="cbx on" aria-hidden="true">
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+                    </span>
+                    <span>
+                      <span class="row f12">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="color:var(--provenance)"><path d="m12 3 1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M18 16v4"/><path d="M16 18h4"/></svg>
+                        使用 Sepia 潤稿
+                      </span>
+                      <span class="f11 t-sub lh15" style="display:block">只調整〈建議回話〉的自然度與節奏，不會改動事實、數字或程式碼佐證。</span>
+                    </span>
+                  </label>
+                </div>
+
+                <!-- Space 清單（固定 h-64） -->
+                <div class="band">
+                  <div class="band-head"><span class="grow">一起當作參考的 Space</span></div>
+                  <div class="splist">
+                    <label class="sunken click rowt" style="padding:6px 8px">
+                      <span class="cbx on" aria-hidden="true"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+                      <span class="f12 ell grow">WCS內部小群組</span>
+                    </label>
+                    <label class="sunken click rowt" style="padding:6px 8px">
+                      <span class="cbx on" aria-hidden="true"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+                      <span class="f12 ell grow">工作紀錄簿</span>
+                    </label>
+                    <label class="sunken click rowt" style="padding:6px 8px"><span class="cbx" aria-hidden="true"></span><span class="f12 ell grow">碩網團隊ALL</span></label>
+                    <label class="sunken click rowt" style="padding:6px 8px"><span class="cbx" aria-hidden="true"></span><span class="f12 ell grow">TPE01P2601 北市府新案</span></label>
+                    <label class="sunken click rowt" style="padding:6px 8px"><span class="cbx" aria-hidden="true"></span><span class="f12 ell grow">P.S.公部門夥伴</span></label>
+                    <label class="sunken click rowt" style="padding:6px 8px"><span class="cbx" aria-hidden="true"></span><span class="f12 ell grow">北富銀-內部討論</span></label>
+                    <label class="sunken click rowt" style="padding:6px 8px"><span class="cbx" aria-hidden="true"></span><span class="f12 ell grow">彰銀Line BC預留 - 9月3日</span></label>
+                    <label class="sunken click rowt" style="padding:6px 8px"><span class="cbx" aria-hidden="true"></span><span class="f12 ell grow">ILOOP2601 - 勞動部勞動及職業安全…</span></label>
+                  </div>
+                </div>
+
+                <!-- 參考專案 -->
+                <div class="band">
+                  <div class="band-head">
+                    <span class="grow">參考專案</span>
+                    <span class="f11 t-sub">已勾選 1</span>
+                    <button class="btn btn-ghost btn-sm">清空</button>
+                  </div>
+                  <p class="band-note">同一個專案可同時勾正式與 UAT，草稿會分開講兩邊的差異。</p>
+                  <label class="sunken click rowt mt8" style="padding:7px 8px">
+                    <span class="cbx on" aria-hidden="true"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+                    <span class="grow">
+                      <span class="f12 sb">ChatPulse</span>
+                      <span class="row mt4" style="flex-wrap:wrap;gap:5px">
+                        <span class="chip chip-signal">正式 <span class="mono">main</span></span>
+                        <span class="chip chip-src">UAT <span class="mono">uat</span></span>
+                      </span>
+                    </span>
+                  </label>
+                  <p class="band-sub">自己指定檢索關鍵字（選填）</p>
+                  <div class="field mt4"><input type="text" value="sendPush retryCount" placeholder="例：sendPush retryCount"></div>
+                  <p class="band-note">會用這 2 個關鍵字搜，取代系統自動抽的：sendPush、retryCount</p>
+                </div>
+
+              </div>
+
+              <!-- 產生鈕：釘在欄底，捲動區外 -->
+              <div class="setup-foot">
+                <button class="btn btn-primary btn-block btn-lg">重新產生 Draft Reply（合併 2 則）</button>
+              </div>
+            </aside>
+
+            <!-- C. 產出區：兩張標準卡片 -->
+            <div class="output">
+              <div class="notice">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="margin-top:2px"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+                <span>
+                  <b class="sb">這是先前存下來的草稿</b>
+                  <span class="row t-sub" style="display:inline-flex;margin-left:6px"><span class="vrule" aria-hidden="true"></span><span class="mono" style="margin-left:6px">產生於 2026-09-12 14:05</span></span>
+                  <span style="display:block">證據欄是產生當下記錄的完整內容。</span>
+                </span>
+              </div>
+
+              <div class="stack mt14">
+                <section class="card">
+                  <div class="card-head">
+                    <span class="card-title">
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="color:var(--signal)"><circle cx="12" cy="12" r="10"/><path d="m16.24 7.76-2.12 6.36-6.36 2.12 2.12-6.36z"/></svg>
+                      脈絡分析
+                    </span>
+                  </div>
+                  <div class="card-body prose">
+                    <p>張曼媜問的是 UAT 上推播重複送兩次。討論串裡她貼了 09-11 的 log，訊息 ID 相同、送出時間差 30 秒。</p>
+                    <p>王凱文在「WCS內部小群組」提過同一個症狀，當時的結論是重試排程沒有讀到成功回寫，不過那次沒有留下修復紀錄。</p>
+                    <p>參考專案 ChatPulse 的 <span class="mono">uat</span> 分支命中 <span class="mono">PushRetryScheduler.java</span> 與 <span class="mono">PushLogDao.java</span>：送出成功的分支沒有把 retryCount 歸零，與她描述的症狀相符。</p>
+                  </div>
+                </section>
+
+                <section class="card">
+                  <div class="card-head">
+                    <span class="card-title">建議回話 <span class="f11 t-sub" style="font-weight:400">（可直接編輯）</span></span>
+                    <button class="btn btn-primary">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg>
+                      送出回話
+                    </button>
+                  </div>
+                  <div class="card-body">
+                    <textarea class="ta" rows="9" placeholder="建議回話會串流到這裡，你可以直接修改。">曼媜你好，09-11 的 log 我看過了。
+
+重複送兩次的原因是重試排程在送出成功之後沒有把 retryCount 歸零，下一輪掃描又把同一筆撈了出來，所以會隔 30 秒再送一次。
+
+這個我今天會修，修好先上 UAT 讓你和 Sica 確認過再排正式。
+
+另外要跟你確認一件事：這批重複的推播有沒有實際發到使用者端？如果有，我需要那幾筆的訊息 ID，才能把影響範圍撈出來。</textarea>
+                  </div>
+                </section>
+              </div>
+            </div>
+
+          </div>
+        </main>
+
+        <!-- 相鄰欄位示意：證據欄 -->
+        <div class="ghost" style="width:320px;flex:none">
+          <span class="ghost-tag">相鄰欄位示意　證據欄</span>
+          <div class="ghost-in" style="background:var(--surface);border-left:1px solid var(--line)">
+            <div class="ev-head"><span class="f125 sb grow">證據</span><span class="f11 t-caution">† 需要看一眼 1 項</span></div>
+            <div class="ev-row"><span class="ev-label">脈絡</span><span class="ev-val">18</span><span class="ev-unit">則</span></div>
+            <div class="ev-row"><span class="ev-label">回覆對象</span><span class="ev-val">2</span><span class="ev-unit">則</span></div>
+            <div class="ev-row degraded"><span class="ev-label">附件</span><span class="ev-val">3</span><span class="ev-unit">張</span></div>
+            <div class="ev-row"><span class="ev-label">參考 Space</span><span class="ev-val">2</span><span class="ev-unit">個</span></div>
+            <div class="ev-row missing"><span class="ev-label">參考專案</span><span class="ev-val">—</span><span class="ev-unit"></span></div>
+            <div class="ev-row"><span class="ev-label">生成</span><span class="ev-text">claude-cli:opus</span></div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     畫面③ 證據欄 —— 這個畫面刻意一張卡片都不加
+     ------------------------------------------------------------
+     為什麼不加卡片：
+       1. 它的規線**本身承載語意**：實線＝完整、虛線＝降級、點線＝缺值，
+          而 --line-evidence 受 WCAG 1.4.11 管（非文字對比 ≥3:1）。
+          卡片的裝飾邊框會和語意線型混在同一個視覺頻道裡，讀者無從分辨
+          「這條線是在說狀態，還是只是框」。
+       2.「所有列共用同一個右緣」是它的識別特徵。切成卡片之後每張卡各自
+          有內距與圓角，右緣就散了，掃一眼比較數值的能力直接消失。
+     那它怎麼仍然是「一個獨立的面」？四件事，全部不靠卡片：
+       (a) 整欄 bg-surface，對上主區的 bg-background —— 淺色 ΔL 0.022、深色 0.034，
+           一階填色差就足以把它從版面切出來，這是「面」最主要的訊號；
+       (b) 左緣一條 --line 從頂到底不中斷，右緣是視窗邊，上緣是 --line-strong 的標頭規線
+           —— 四條邊都在，只是邊界由版面提供，不是由卡片提供；
+       (c) 所有列齊左齊右頂到欄的內距（14px），沒有任何內縮圓角，
+           掃視時整欄只有一條左緣、一條右緣 → 讀成單一平面；
+       (d) 內部分段只用三條 --line-strong 橫檔（標頭下、小計上、歷史 Summary 上），
+           其餘一律是 --line-evidence 的語意線 → 語意線不會和裝飾線打架。
+     另註：明細（.ev-detail）沿用與主列**完全相同**的三欄模板，所以展開後子列
+           仍與主列共用同一個右緣。critical 的列不可收合，此處的「回覆對象」即是。
+           degraded 的 † reason 放在自己的一行而不是塞進數值欄，是為了保住右緣對齊。
+     ============================================================ -->
+<section class="screen" id="screen-evidence">
+  <div class="caption"><b>③ 證據欄</b>　零卡片。整欄改用 surface 與主區的 background 分離；規線＝語意（實線完整／虛線降級／點線缺值／閃動豎條等待中）；三欄 grid 讓所有列共用同一個右緣，展開的明細也沿用同一組欄寬。</div>
+  <div class="frame">
+
+    <nav class="rail" aria-label="主導覽">
+      <div class="rail-mark" aria-hidden="true">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h3l2.5-7 4 14 2.5-7H21"/></svg>
+      </div>
+      <div class="rail-nav">
+        <button class="rail-item">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6"/><path d="M9 17h4"/></svg>
+          <span class="rail-label">摘要</span>
+        </button>
+        <button class="rail-item cur" aria-current="page">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
+          <span class="rail-label">收件</span>
+          <span class="rail-badge">6</span>
+        </button>
+        <div class="rail-soon">
+          <span class="rail-soon-head">即將推出</span>
+          <span class="rail-item" aria-disabled="true">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M3 20h18"/></svg>
+            <span class="rail-label">統計</span>
+          </span>
+          <span class="rail-item" aria-disabled="true">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18"/><path d="M8 3v4"/><path d="M16 3v4"/><path d="M7 14h4"/><path d="M7 17h7"/></svg>
+            <span class="rail-label">排程</span>
+          </span>
+        </div>
+      </div>
+      <div class="rail-foot">
+        <button class="rail-item">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M1 14h6"/><path d="M9 8h6"/><path d="M17 16h6"/></svg>
+          <span class="rail-label">設定</span>
+        </button>
+        <span class="rail-avatar">MC</span>
+      </div>
+    </nav>
+
+    <div class="colwrap">
+      <div class="topbar">
+        <div class="crumb"><span>ChatPulse</span><span class="vrule" aria-hidden="true"></span><span>Mention 收件匣</span><span class="vrule" aria-hidden="true"></span><b>草稿回覆</b></div>
+        <span class="grow"></span>
+        <span class="f125 t-dim">Mark Cheng</span>
+      </div>
+
+      <div class="panes">
+
+        <div class="ghost" style="width:288px;flex:none">
+          <span class="ghost-tag">相鄰欄位示意　Mention 收件匣</span>
+          <div class="ghost-in" style="border-right:1px solid var(--line)">
+            <div class="inbox-tabs"><button class="tab on">待處理<span class="tab-count sig">6</span></button><button class="tab">已處理<span class="tab-count dim">12</span></button></div>
+            <div class="inbox-list">
+              <article class="mcard cur"><div class="rowt"><span class="cbx on"></span><span class="f12 sb grow ell">1.BU2-PG</span><span class="f11 t-sub">3 小時前</span></div><p class="f115 mt6">張曼媜 提到你</p></article>
+              <article class="mcard checked"><div class="rowt"><span class="cbx on"></span><span class="f12 sb grow ell">1.BU2-PG</span><span class="f11 t-sub">5 小時前</span></div><p class="f115 mt6">李姿誼Sica Lee 提到你</p></article>
+            </div>
+          </div>
+        </div>
+
+        <div class="ghost grow">
+          <span class="ghost-tag">相鄰欄位示意　草稿回覆工作區</span>
+          <div class="ghost-in">
+            <div style="padding:14px 16px">
+              <section class="card">
+                <div class="card-head"><span class="card-title">1.BU2-PG</span><span class="chip chip-signal">待處理</span></div>
+                <div class="card-body"><div class="sunken f115 t-dim lh15">@Mark 這個推播重試的問題，UAT 上還是會重複送兩次。</div></div>
+              </section>
+            </div>
+            <div style="display:flex;flex:1;min-height:0;border-top:1px solid var(--line)">
+              <div style="width:280px;flex:none;background:var(--raised);border-right:1px solid var(--line)">
+                <div class="band"><div class="band-head">Reference Space</div></div>
+                <div class="band"><div class="band-head">回覆設定</div></div>
+                <div class="band"><div class="band-head">參考專案</div></div>
+              </div>
+              <div style="flex:1;min-width:0;padding:14px 16px" class="stack">
+                <section class="card"><div class="card-head"><span class="card-title">脈絡分析</span></div><div class="card-body" style="height:110px"></div></section>
+                <section class="card"><div class="card-head"><span class="card-title">建議回話</span></div><div class="card-body" style="height:150px"></div></section>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== 焦點：證據欄 320，全欄零卡片 ===== -->
+        <aside class="ev" aria-label="證據">
+          <div class="ev-head">
+            <span class="f125 sb grow">證據</span>
+            <span class="f115 t-caution">† 需要看一眼 1 項</span>
+          </div>
+
+          <div class="ev-scroll">
+            <dl>
+              <!-- ok：實線 --line-evidence -->
+              <div class="ev-row">
+                <dt class="ev-label">脈絡</dt>
+                <dd class="ev-val">18</dd>
+                <dd class="ev-unit">則</dd>
+                <dd class="ev-sub">討論串＋鄰近</dd>
+              </div>
+
+              <!-- critical：不可收合 -->
+              <div class="ev-row">
+                <dt class="ev-label">回覆對象</dt>
+                <dd class="ev-val">2</dd>
+                <dd class="ev-unit">則</dd>
+                <dd class="ev-sub">送出後這 2 則會一起標記為已處理</dd>
+              </div>
+
+              <!-- degraded：虛線 --caution-line。斷掉的脈絡畫成斷線 -->
+              <div class="ev-row degraded">
+                <dt class="ev-label">附件</dt>
+                <dd class="ev-val">3</dd>
+                <dd class="ev-unit">張</dd>
+                <dd class="ev-sub caution">† 有 1 張沒有送進模型</dd>
+                <dd class="ev-fold">▸ 明細</dd>
+              </div>
+
+              <div class="ev-row">
+                <dt class="ev-label">參考 Space</dt>
+                <dd class="ev-val">2</dd>
+                <dd class="ev-unit">個</dd>
+              </div>
+
+              <!-- missing：點線 ＋ 數值欄破折號 -->
+              <div class="ev-row missing">
+                <dt class="ev-label">參考專案　<span class="t-sub f11">ChatPulse　正式</span></dt>
+                <dd class="ev-val">—</dd>
+                <dd class="ev-unit"></dd>
+                <dd class="ev-sub">這個分支沒有找到相符的程式碼<span class="t-signal" style="margin-left:6px;border-bottom:1px solid var(--signal-line)">檢查分支設定</span></dd>
+              </div>
+
+              <div class="ev-row">
+                <dt class="ev-label">生成</dt>
+                <dd class="ev-text">claude-cli:opus</dd>
+              </div>
+
+              <!-- 明細展開：沿用同一組欄寬 → 子列與主列共用右緣 -->
+              <div class="ev-row">
+                <dt class="ev-label">回話設定</dt>
+                <dd class="ev-text sans">已套用</dd>
+                <dd class="ev-fold">▾ 明細</dd>
+                <dd class="ev-detail">
+                  <span class="ev-dt">口氣</span><span class="ev-dd">直接</span>
+                  <span class="ev-dt">Persona</span><span class="ev-dd mono">luozhenyu</span>
+                  <span class="ev-dt">自訂提示</span><span class="ev-dd">已套用</span>
+                </dd>
+              </div>
+
+              <div class="ev-row">
+                <dt class="ev-label">潤稿</dt>
+                <dd class="ev-text sans t-verified">✓ Sepia 已核對</dd>
+              </div>
+            </dl>
+
+            <!-- 底部小計（非空且非串流時才出現） -->
+            <div class="ev-total">
+              <span>證據 8 項</span>
+              <span class="t-caution">降級 1 項</span>
+            </div>
+
+            <!-- 線型語意對照（設計稿標註，不是產品介面的一部分） -->
+            <div class="ev-legend">
+              <p class="ev-legend-t">線型語意（設計稿標註）</p>
+              <div class="lg-grid">
+                <div class="lg-row"><span class="ev-label f115">完整</span><span class="ev-val f115">18</span><span class="ev-unit">則</span></div>
+                <div class="lg-row degraded"><span class="ev-label f115 t-caution">降級</span><span class="ev-val f115">3</span><span class="ev-unit">張</span></div>
+                <div class="lg-row missing"><span class="ev-label f115">缺值</span><span class="ev-val f115">—</span><span class="ev-unit"></span></div>
+                <div class="lg-row"><span class="ev-label f115">等待中</span><span class="ev-val"><span class="ev-pending" aria-hidden="true"></span></span><span class="ev-unit"></span></div>
+              </div>
+            </div>
+
+            <!-- 歷史 Summary：掛在證據欄下方，同樣不加卡片 -->
+            <div class="ev-sec">
+              <span>歷史 Summary</span>
+              <span class="f11 t-sub tnum" style="font-weight:400">8 份</span>
+            </div>
+            <div class="hs-row">
+              <div class="f125 ell">1.BU2-PG</div>
+              <div class="row f11 t-sub mt2"><span class="mono">2026-09-10 08:38</span><span class="vrule" aria-hidden="true"></span><span>技術細節</span><span class="vrule" aria-hidden="true"></span><span class="tnum">3 則</span></div>
+            </div>
+            <div class="hs-row">
+              <div class="f125 ell">WCS內部小群組</div>
+              <div class="row f11 t-sub mt2"><span class="mono">2026-09-06 22:24</span><span class="vrule" aria-hidden="true"></span><span>技術細節</span><span class="vrule" aria-hidden="true"></span><span class="tnum">3 則</span></div>
+            </div>
+          </div>
+        </aside>
+
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     畫面④ 設定中心（全螢幕覆蓋層）
+     卡片策略：頂列 ＋ 左 nav ＋ 右 main 的骨架不變；nav 的 active 維持圓角塊
+     （它是導覽不是內容，包成卡片會和右側的分節卡片搶同一個語法）。
+     右側 main 的每個 <h2> 分節包成標準卡片：標頭帶放小標與計數／動作，
+     內容區放表單或清單 —— 這樣「這一頁有幾件事要設定」用掃的就數得出來。
+     頁內標題一律 .pg-title（13px/600）：盤點發現六頁分兩派（三頁 sm、三頁 md），
+     這是既有不一致，設計稿在此統一成 sm。
+     本稿只畫「回覆預設值」（表單）與「資料」（表格＋清單）兩頁，涵蓋兩種形態。
+     ============================================================ -->
+<section class="screen" id="screen-settings">
+  <div class="caption"><b>④ 設定中心</b>　右側每個分節＝標準卡片（標頭帶放小標與計數／動作）；左 nav 的 active 維持圓角塊不改成卡片；兩頁所有標題統一 13px/600。點左側「回覆預設值」與「資料」可切換兩頁。</div>
+  <div class="frame">
+    <div class="set" role="dialog" aria-modal="true" aria-label="設定">
+
+      <div class="set-top">
+        <span class="f13 sb">設定</span>
+        <span class="vrule" aria-hidden="true"></span>
+        <span class="f12 t-sub">這裡改的是「以後每次」的預設值</span>
+        <span class="grow"></span>
+        <button class="btn btn-outline">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+          關閉
+        </button>
+      </div>
+
+      <div class="set-body">
+
+        <nav class="set-nav" aria-label="設定分頁">
+          <button class="set-navitem on" data-page="defaults">
+            <span class="set-navname">回覆預設值</span>
+            <span class="set-navsub">口氣、Persona、提示詞、潤稿</span>
+          </button>
+          <button class="set-navitem">
+            <span class="set-navname">Persona</span>
+            <span class="set-navsub">匯入、更新、看淨化掉了什麼</span>
+          </button>
+          <button class="set-navitem">
+            <span class="set-navname">常用提示詞</span>
+            <span class="set-navsub">存起來重複使用的提示</span>
+          </button>
+          <button class="set-navitem">
+            <span class="set-navname">參考專案</span>
+            <span class="set-navsub">程式碼佐證的分支對應</span>
+          </button>
+          <button class="set-navitem">
+            <span class="set-navname">Space</span>
+            <span class="set-navsub">釘選常用的、給私訊取名</span>
+          </button>
+          <button class="set-navitem" data-page="data">
+            <span class="set-navname">資料</span>
+            <span class="set-navsub">用量與歷史 Summary</span>
+          </button>
+        </nav>
+
+        <div class="set-main">
+          <div class="set-inner">
+
+            <!-- ============ 頁 A：回覆預設值（表單形態） ============ -->
+            <div class="set-page on" data-page="defaults">
+              <h1 class="pg-title">我的預設值</h1>
+
+              <section class="card">
+                <div class="card-head">
+                  <h2 class="card-title">口氣</h2>
+                  <span class="f11 t-sub">目前：直接</span>
+                </div>
+                <div class="card-body">
+                  <label class="radio">
+                    <span class="rdot" aria-hidden="true"></span>
+                    <span><span class="f12">跟隨預設（直接）</span><span class="f11 t-sub lh15" style="display:block">不指定口氣，沿用你的偏好或系統預設。</span></span>
+                  </label>
+                  <label class="radio on">
+                    <span class="rdot" aria-hidden="true"></span>
+                    <span>
+                      <span class="f12 sb">直接</span>
+                      <span class="f11 t-sub lh15" style="display:block">先講結論，再補必要的細節。</span>
+                      <span class="f11 t-signal lh15" style="display:block">例：這個問題出在 retryCount 沒有重設，我今天會修。</span>
+                    </span>
+                  </label>
+                  <label class="radio">
+                    <span class="rdot" aria-hidden="true"></span>
+                    <span>
+                      <span class="f12">客氣</span>
+                      <span class="f11 t-sub lh15" style="display:block">保留對方的餘地，語氣放軟。</span>
+                      <span class="f11 t-signal lh15" style="display:block">例：不好意思，這邊想再跟您確認一下時程。</span>
+                    </span>
+                  </label>
+                </div>
+              </section>
+
+              <section class="card">
+                <div class="card-head">
+                  <h2 class="card-title">Persona</h2>
+                  <button class="btn btn-ghost btn-sm">管理</button>
+                </div>
+                <div class="card-body">
+                  <select class="sel" style="max-width:320px">
+                    <option>跟隨預設</option>
+                    <option>不使用 Persona</option>
+                    <option selected>luozhenyu</option>
+                  </select>
+                  <div class="sunken mt8">
+                    <div class="row f11 t-prov">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+                      <span class="mono">fxp/persona-distill-skills</span>
+                      <span class="vrule" aria-hidden="true"></span>
+                      <span>最後更新 2026-08-30</span>
+                    </div>
+                    <p class="f11 t-caution lh15 mt4">Persona 是「借用某個人的思考框架與表達習慣來寫回覆」，不是扮演那個人。匯入時會固定版本（記下 commit），遠端之後改了也不會影響已產生的回話。</p>
+                  </div>
+                </div>
+              </section>
+
+              <section class="card">
+                <div class="card-head">
+                  <h2 class="card-title">自訂提示</h2>
+                  <button class="btn btn-ghost btn-sm">管理</button>
+                </div>
+                <div class="card-body">
+                  <select class="sel" style="max-width:320px">
+                    <option>跟隨預設</option>
+                    <option>不套用</option>
+                    <option selected>我的工程師回覆</option>
+                  </select>
+                  <textarea class="ta mt8" rows="3" placeholder="例如：不要太客套，直接說目前卡在哪裡；如果需要對方補資料，就列出需要的資訊。">回覆不要太正式。直接告訴對方目前問題在哪，如果需要他補資料，就明確列出需要哪些資料。</textarea>
+                </div>
+              </section>
+
+              <section class="card">
+                <div class="card-head">
+                  <h2 class="card-title">Sepia 潤稿</h2>
+                </div>
+                <div class="card-body">
+                  <label class="rowt">
+                    <span class="cbx on" aria-hidden="true">
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+                    </span>
+                    <span>
+                      <span class="row f12">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="color:var(--provenance)"><path d="m12 3 1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M18 16v4"/><path d="M16 18h4"/></svg>
+                        使用 Sepia 潤稿
+                      </span>
+                      <span class="f11 t-sub lh15" style="display:block">只調整〈建議回話〉的自然度與節奏，不會改動事實、數字或程式碼佐證。</span>
+                    </span>
+                  </label>
+                </div>
+              </section>
+
+              <div class="set-foot">
+                <p class="f115 t-sub lh15" style="max-width:440px">這裡設定的是<span class="sb" style="color:var(--fg-dim)">以後每次</span>的預設值。只想改這一次的話，在草稿工作區的回覆設定改就好。</p>
+                <button class="btn btn-primary btn-lg">儲存為我的預設</button>
+              </div>
+            </div>
+
+            <!-- ============ 頁 B：資料（表格＋清單形態） ============ -->
+            <div class="set-page" data-page="data">
+
+              <section class="card">
+                <div class="card-head">
+                  <h2 class="card-title">Token 用量</h2>
+                  <div class="seg" role="group" aria-label="統計範圍">
+                    <button>7 天</button>
+                    <button class="on">14 天</button>
+                    <button>30 天</button>
+                  </div>
+                </div>
+                <div class="card-body">
+                  <div class="between">
+                    <span class="f12 t-dim">合計</span>
+                    <span class="metric">1,284,096</span>
+                  </div>
+                  <p class="f11 t-sub lh15 mt8">以每天、每個模型分開計。這裡選的天數會同步套用到右欄的用量面板。</p>
+                  <p class="f11 t-dim mt10">統計範圍<span class="t-sub" style="margin-left:6px">最近 14 天</span></p>
+                  <table class="tbl mt6">
+                    <thead>
+                      <tr><th>日期</th><th style="text-align:left">模型</th><th>輸入</th><th>輸出</th><th>合計</th></tr>
+                    </thead>
+                    <tbody>
+                      <tr><td>2026-09-12</td><td style="text-align:left">claude-cli:opus</td><td>186,402</td><td>24,118</td><td>210,520</td></tr>
+                      <tr><td>2026-09-12</td><td style="text-align:left">gemini-cli:pro</td><td>41,980</td><td>6,204</td><td>48,184</td></tr>
+                      <tr><td>2026-09-11</td><td style="text-align:left">claude-cli:opus</td><td>302,551</td><td>38,907</td><td>341,458</td></tr>
+                      <tr><td>2026-09-10</td><td style="text-align:left">claude-cli:opus</td><td>158,220</td><td>19,664</td><td>177,884</td></tr>
+                      <tr><td>2026-09-09</td><td style="text-align:left">claude-cli:opus</td><td>221,905</td><td>28,331</td><td>250,236</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+
+              <section class="card">
+                <div class="card-head">
+                  <h2 class="card-title">歷史 Summary</h2>
+                  <span class="f11 t-sub">目前有 8 份。</span>
+                </div>
+                <div class="card-body">
+                  <div class="stack" style="gap:6px">
+                    <div class="sunken click between">
+                      <span class="f125 ell">1.BU2-PG</span>
+                      <span class="row f11 t-sub"><span class="mono">2026-09-10 08:38</span><span class="vrule" aria-hidden="true"></span><span>技術細節</span><span class="vrule" aria-hidden="true"></span><span class="tnum">3 則</span></span>
+                    </div>
+                    <div class="sunken click between">
+                      <span class="f125 ell">WCS內部小群組</span>
+                      <span class="row f11 t-sub"><span class="mono">2026-09-06 22:24</span><span class="vrule" aria-hidden="true"></span><span>技術細節</span><span class="vrule" aria-hidden="true"></span><span class="tnum">3 則</span></span>
+                    </div>
+                    <div class="sunken click between">
+                      <span class="f125 ell">TPE01P2601 北市府新案</span>
+                      <span class="row f11 t-sub"><span class="mono">2026-09-06 19:56</span><span class="vrule" aria-hidden="true"></span><span>通用</span><span class="vrule" aria-hidden="true"></span><span class="tnum">10 則</span></span>
+                    </div>
+                    <div class="sunken click between">
+                      <span class="f125 ell">碩網團隊ALL</span>
+                      <span class="row f11 t-sub"><span class="mono">2026-09-06 00:47</span><span class="vrule" aria-hidden="true"></span><span>只要待辦</span><span class="vrule" aria-hidden="true"></span><span class="tnum">10 則</span></span>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+            </div>
+
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</section>
+
+<script>
+(function () {
+  var switcher = document.getElementById('switcher');
+  switcher.addEventListener('click', function (e) {
+    var btn = e.target.closest('.swbtn');
+    if (!btn) return;
+    var id = btn.dataset.screen;
+    Array.prototype.forEach.call(switcher.querySelectorAll('.swbtn'), function (b) {
+      b.classList.toggle('on', b === btn);
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('.screen'), function (s) {
+      s.classList.toggle('on', s.id === 'screen-' + id);
+    });
+    window.scrollTo(0, 0);
+  });
+
+  var themeBtn = document.getElementById('themeBtn');
+  var themeLabel = document.getElementById('themeLabel');
+  themeBtn.addEventListener('click', function () {
+    var dark = document.documentElement.classList.toggle('dark');
+    themeLabel.textContent = dark ? '淺色' : '深色';
+  });
+
+  document.addEventListener('click', function (e) {
+    var nav = e.target.closest('.set-navitem[data-page]');
+    if (!nav) return;
+    var page = nav.dataset.page;
+    Array.prototype.forEach.call(document.querySelectorAll('.set-navitem[data-page]'), function (n) {
+      n.classList.toggle('on', n === nav);
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('.set-page'), function (p) {
+      p.classList.toggle('on', p.dataset.page === page);
+    });
+  });
+})();
+</script>
+</body>
+</html>
