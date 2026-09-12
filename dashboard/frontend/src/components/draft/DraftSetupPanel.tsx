@@ -28,7 +28,15 @@ export function DraftSetupPanel({ mention }: { mention: Mention }) {
   const candidates = useMemo(() => filterSpaces(spaces, referenceSearch), [spaces, referenceSearch])
 
   return (
-    <div className="flex min-h-0 flex-col border-b border-border xl:border-r xl:border-b-0">
+    /*
+      **整欄是一個 raised 的操作面**（底色與邊界由 `DraftReplyWorkspace` 的側欄
+      容器一次宣告，這裡只負責堆疊）。內部一律是水平帶：Reference Space、
+      回覆設定、Space 清單、參考專案各佔一條，彼此用一條細線隔開。
+
+      **不要把每一區包成卡片**——它們是同一組設定的分組，不是四份各自獨立的
+      產出；包起來就變成盒子套盒子，而且會和產出區真正的卡片搶同一個視覺頻道。
+    */
+    <div className="flex min-h-0 flex-1 flex-col">
       {/*
         設定堆疊自己要有捲軸（2026-09-10 使用者實機回報的 bug）。
 

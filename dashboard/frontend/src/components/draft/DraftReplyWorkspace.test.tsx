@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DraftReplyWorkspace } from '@/components/draft/DraftReplyWorkspace'
@@ -574,5 +574,83 @@ describe('還原提示要說對「證據全不全」', () => {
 
     expect(screen.getByText(/脈絡證據沒有保存/)).toBeInTheDocument()
     expect(screen.queryByText(/完整內容/)).toBeNull()
+  })
+})
+
+/**
+ * 產生完就把設定側欄收起來。
+ *
+ * 1440 下主區只有約 760px（導覽 56 ＋ 收件匣 288 ＋ 證據欄 320 是固定的），
+ * 再扣掉 280px 的側欄，產出卡片剩不到 440px，程式碼檔名會折行。設定是
+ * 「產生前」的事，看草稿時不需要它一直佔著。
+ *
+ * 這一組守的是**收合的時機**：自動行為不可以推翻使用者剛剛做的決定，
+ * 也不可以在他沒按過產生的情況下（讀回舊草稿）突然把側欄收走。
+ * 收合與否看得出來的訊號是「展開設定」這顆鈕在不在。
+ */
+describe('設定側欄的自動收合', () => {
+  const expandButton = () => screen.queryByRole('button', { name: '展開設定' })
+
+  /** 串流結束：streaming 由 true 翻成 false，同時帶進產出內容。 */
+  function finishStreaming(raw = '### ✍️ 建議回話\n產好了') {
+    act(() => {
+      useDraftStore.setState({ streaming: false, raw })
+    })
+  }
+
+  function renderStreaming() {
+    useDraftStore.setState({ streaming: true, raw: '' })
+    return renderWorkspace()
+  }
+
+  it('**串流結束且有內容時自動收合**，而且收合那一條仍講得出目前的設定', () => {
+    renderStreaming()
+    expect(expandButton()).toBeNull()
+
+    finishStreaming()
+
+    expect(expandButton()).toBeInTheDocument()
+    // 收合不等於把設定藏起來：看不到摘要的人會以為自己沒設定過
+    expect(screen.getByText('參考 Space 0 個')).toBeInTheDocument()
+  })
+
+  it('正對照：串流結束卻沒有產出內容（中途停掉）時不收合', () => {
+    renderStreaming()
+
+    finishStreaming('')
+
+    expect(expandButton()).toBeNull()
+  })
+
+  it('**讀回既有草稿不會被收合突襲**——那不是使用者剛按下產生', () => {
+    // seedStores 的狀態就是「有內容、沒有串流」，也就是讀回來的那一份
+    renderWorkspace()
+
+    expect(expandButton()).toBeNull()
+  })
+
+  it('**使用者手動操作過之後就不再自動收合**', async () => {
+    renderStreaming()
+
+    await userEvent.click(screen.getByRole('button', { name: '收合設定' }))
+    expect(expandButton()).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '展開設定' }))
+    expect(expandButton()).toBeNull()
+
+    finishStreaming()
+
+    // 他剛剛才親手展開，串流結束不該再把它收回去
+    expect(expandButton()).toBeNull()
+  })
+
+  it('收合與展開都帶 aria-expanded', async () => {
+    renderStreaming()
+
+    const collapse = screen.getByRole('button', { name: '收合設定' })
+    expect(collapse).toHaveAttribute('aria-expanded', 'true')
+
+    await userEvent.click(collapse)
+
+    expect(expandButton()).toHaveAttribute('aria-expanded', 'false')
   })
 })

@@ -93,16 +93,27 @@ export function DraftOutputPane({ active, onRequestSend }: DraftOutputPaneProps)
             </div>
           ) : null}
 
-          <section>
-            <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold">
-              <CompassIcon className="size-4 text-signal" />
-              脈絡分析
-            </h3>
+          {/*
+            標題**在標頭帶裡**，不是浮在框外。
+
+            改版前這裡是「一行 h3 ＋ 下面一個框」，兩者之間沒有從屬關係，
+            與摘要工作台的產出卡也對不起來。收進標頭帶之後，這一頁有幾個
+            區塊用掃的就數得出來——那正是卡片語法存在的理由。
+          */}
+          <section className="overflow-hidden rounded-xl border border-border bg-surface">
+            <div className="flex items-center justify-between gap-2 border-b border-line px-4 py-2">
+              <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+                <CompassIcon className="size-4 text-signal" />
+                脈絡分析
+              </h3>
+            </div>
+            {/* 卡片外框已經負責邊框與底色，內容只要負責內距（Markdown 類用 p-5）。
+                原本的 `bg-card/60` 是階層落差還只有 0.013 時的補償手法。 */}
             <Markdown
               source={sections.context}
               typing={streaming && !sections.replyStarted}
               active={active}
-              className="rounded-xl border border-border bg-card/60 p-4"
+              className="p-5"
             />
           </section>
 
