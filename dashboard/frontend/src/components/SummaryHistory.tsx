@@ -19,8 +19,12 @@ export function SummaryHistory() {
   const [opened, setOpened] = useState<SummaryRecord | null>(null)
 
   return (
-    <section className="flex min-h-0 flex-1 flex-col">
-      <div className="flex shrink-0 items-center gap-2 px-3 py-2">
+    // 與上方的 EvidenceColumn 共用同一個 bg-surface 的面（設計規格 §5.2）；
+    // 兩者疊在一起才是完整的「一個獨立的面」，不是各自獨立的卡片。
+    <section className="bg-surface flex min-h-0 flex-1 flex-col">
+      {/* border-t 是三條結構線之一（標頭下／小計上／歷史 Summary 上），
+          把這一段從證據內容裡切出來，不靠卡片 */}
+      <div className="border-line-strong flex shrink-0 items-center gap-2 border-t px-3 py-2">
         <HistoryIcon className="size-3.5 text-muted-foreground" />
         <h3 className="text-xs font-semibold">歷史 Summary</h3>
         {loading ? <Loader2Icon className="size-3 animate-spin text-muted-foreground" /> : null}
@@ -43,9 +47,13 @@ export function SummaryHistory() {
                 className="w-full rounded-lg border border-transparent px-2 py-1.5 text-left transition-colors hover:border-border hover:bg-accent/50"
               >
                 <span className="block truncate text-xs font-medium">{record.space_name}</span>
-                <span className="mt-0.5 block truncate text-2xs text-muted-foreground">
-                  {formatDateTime(record.created_at)} · {STYLE_LABEL[record.style] ?? record.style} ·{' '}
-                  {record.message_count} 則
+                {/* 分隔用細豎線不用中點：`·` 在設計原則裡是禁用的（VOCABULARY §6） */}
+                <span className="mt-0.5 flex flex-wrap items-center gap-1.5 text-2xs text-muted-foreground">
+                  <span>{formatDateTime(record.created_at)}</span>
+                  <span aria-hidden className="h-3 w-px bg-line-strong" />
+                  <span>{STYLE_LABEL[record.style] ?? record.style}</span>
+                  <span aria-hidden className="h-3 w-px bg-line-strong" />
+                  <span>{record.message_count} 則</span>
                 </span>
               </button>
             </li>
@@ -58,9 +66,15 @@ export function SummaryHistory() {
           <DialogHeader>
             <DialogTitle>{opened?.space_name ?? ''}</DialogTitle>
             <DialogDescription>
-              {opened
-                ? `${formatDateTime(opened.created_at)} · ${STYLE_LABEL[opened.style] ?? opened.style} · ${opened.message_count} 則`
-                : ''}
+              {opened ? (
+                <span className="flex flex-wrap items-center gap-1.5">
+                  <span>{formatDateTime(opened.created_at)}</span>
+                  <span aria-hidden className="h-3 w-px bg-line-strong" />
+                  <span>{STYLE_LABEL[opened.style] ?? opened.style}</span>
+                  <span aria-hidden className="h-3 w-px bg-line-strong" />
+                  <span>{opened.message_count} 則</span>
+                </span>
+              ) : null}
             </DialogDescription>
           </DialogHeader>
           <Markdown

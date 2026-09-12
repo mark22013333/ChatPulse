@@ -65,8 +65,10 @@ export function EvidenceColumn({ origin }: EvidenceColumnProps) {
   const empty = bundle.items.length === 0
 
   return (
-    <section aria-labelledby="evidence-heading" className="flex min-h-0 flex-col">
-      <div className="border-line flex shrink-0 items-center gap-2 border-b px-gutter-tight py-2.5">
+    <section aria-labelledby="evidence-heading" className="bg-surface flex min-h-0 flex-col">
+      {/* 標頭下用 --line-strong（結構線），不是語意線 --line-evidence——
+          兩者是不同頻道（設計規格 §5.2 之 (d)） */}
+      <div className="border-line-strong flex shrink-0 items-center gap-2 border-b px-gutter-tight py-2.5">
         <h2 id="evidence-heading" className="text-xs font-semibold tracking-wide">
           證據
         </h2>
@@ -95,7 +97,8 @@ export function EvidenceColumn({ origin }: EvidenceColumnProps) {
       </div>
 
       {!empty && !streaming ? (
-        <div className="border-line-evidence text-2xs flex shrink-0 justify-between border-t px-gutter-tight py-2">
+        // 小計上同樣是結構線 --line-strong，不是語意線——見上方標頭的註解
+        <div className="border-line-strong text-2xs flex shrink-0 justify-between border-t px-gutter-tight py-2">
           <span className="text-fg-dim">證據 {bundle.items.length} 項</span>
           <span className={bundle.attentionCount > 0 ? 'text-caution' : 'text-fg-dim'}>
             降級 {bundle.attentionCount} 項
