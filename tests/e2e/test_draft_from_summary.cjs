@@ -73,12 +73,12 @@ function installFakeDraftStream() {
 
     const importBtn = page.getByRole('button', { name: '匯入既有憑證' })
     if (await importBtn.isVisible().catch(() => false)) await importBtn.click()
-    await page.locator('nav button', { hasText: '摘要工作台' }).waitFor({ timeout: 20000 })
+    await page.locator('nav[aria-label="主導覽"] a[href^="#/summary"]').waitFor({ timeout: 20000 })
     await page.waitForTimeout(2000)
 
     // 記下收件匣現在的未讀數，最後要確認沒被影響
     const badgeBefore = (
-      await page.locator('nav button', { hasText: 'Mention 收件匣' }).innerText()
+      await page.locator('nav[aria-label="主導覽"] a[href^="#/mentions"]').innerText()
     ).replace(/\D/g, '')
     console.log(`\n【1】起始狀態（收件匣未讀 ${badgeBefore || 0}）`)
     check('儀表板載入', true)
@@ -107,8 +107,20 @@ function installFakeDraftStream() {
 
     console.log('\n【4】應該已經切到草稿工作區')
     await page.waitForTimeout(600)
-    const activeTab = await page.locator('nav button.bg-background').innerText()
-    check('已切到 Mention 收件匣頁籤', activeTab.includes('Mention'), `目前在「${activeTab.trim()}」`)
+    // 用 `aria-current="page"` 認當前項，不要認 class——class 會隨改版變
+    // （舊版是 `bg-background`，現在是 `bg-muted`），而 aria-current 是規格 §10.2
+    // 要求的語意標記，不會因為換了視覺就失效。
+    //
+    // 判準也從「文字含 Mention」改成「href 指向 #/mentions」：導覽收合時
+    // 顯示的是兩字短標籤「收件」，innerText 裡根本沒有「Mention」這個字。
+    const activeHref = await page
+      .locator('nav[aria-label="主導覽"] [aria-current="page"]')
+      .getAttribute('href')
+    check(
+      '已切到 Mention 收件匣',
+      (activeHref ?? '').startsWith('#/mentions'),
+      `當前導覽項指向「${activeHref}」`,
+    )
 
     await page.evaluate(() => window.__push({ type: 'meta', provider: 'fake', model: 'fake' }))
     for (const n of [1, 2, 3]) {

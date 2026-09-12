@@ -1,0 +1,1106 @@
+<!--
+  ============================================================================
+  ChatPulse 後台介面改版 — mockup v3「密實」(v3-dense)
+  ----------------------------------------------------------------------------
+  三個差異參數的取值：
+    1. 主導覽      = icon rail 56px 收合態（主畫面）
+                     另在頁面下方附「hover 浮出成 200px 疊在內容上」的靜態示意
+    2. 卡片強度    = 重
+                     --surface 與 --background 的 ΔL = 0.040（明暗兩主題皆同）
+                     每張卡片有自己的標頭列（--muted 底，左右 padding 10px 與內容齊）
+                     間距較常規縮 20%（4/8/12/16 → 3/6/10/13）
+                     Token 用量與 Action Items 是真正的 <table>（有 thead、斑馬列）
+    3. accent 色相 = 赤陶 h40
+                     --signal      light oklch(0.470 0.126 40) / dark oklch(0.740 0.108 42)
+                     --destructive light oklch(0.508 0.206 25) / dark oklch(0.638 0.202 25)
+                     兩者只差 15~17 度，靠「彩度差 1.6~1.9 倍」＋「線型與字符」拉開，
+                     說明見頁底 <details> 的「h40 與 h24 怎麼分」一節
+  ----------------------------------------------------------------------------
+  零外部資源：無 CDN、無外部字型／CSS／JS，可離線雙擊開啟。
+  全檔零 hex、零 rgb()、零 hsl()，所有顏色皆為 oklch() 寫成的 CSS 自訂屬性。
+  設計視窗 1440×900。
+  ============================================================================
+-->
+<meta charset="utf-8">
+<meta name="viewport" content="width=1440">
+<title>ChatPulse 摘要工作台（v3 密實）</title>
+<style>
+/* ==========================================================================
+   1. Token
+   ========================================================================== */
+:root{
+  color-scheme: light;
+
+  --sans: 'PingFang TC', 'Hiragino Sans CNS', 'Noto Sans TC', system-ui, sans-serif;
+  --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  /* 密實版間距階：常規 4/8/12/16/20 各縮 20% */
+  --sp1: 3px;
+  --sp2: 6px;
+  --sp3: 10px;
+  --sp4: 13px;
+  --sp5: 16px;
+
+  /* --- 四個表面（由低到高）。ΔL(surface-background) = 0.040 --- */
+  --background: oklch(0.928 0.006 68);
+  --surface:    oklch(0.968 0.004 68);
+  --raised:     oklch(0.995 0.002 68);
+  --muted:      oklch(0.906 0.008 68);
+
+  /* --- 前景 --- */
+  --foreground:  oklch(0.235 0.012 62);
+  --fg-dim:      oklch(0.430 0.014 62);
+  --fg-subtle:   oklch(0.492 0.013 62);
+  --fg-disabled: oklch(0.678 0.008 62);
+
+  /* --- 規線 --- */
+  --line:          oklch(0.866 0.008 68);
+  --line-strong:   oklch(0.782 0.010 68);
+  --line-evidence: oklch(0.520 0.022 62);
+
+  /* --- 語意色：只有三個 --- */
+  --signal:      oklch(0.470 0.126 40);
+  --signal-ink:  oklch(0.430 0.118 40);
+  --signal-bg:   oklch(0.930 0.030 40);
+  --signal-fg:   oklch(0.992 0.003 68);
+  --caution:     oklch(0.548 0.098 88);
+  --destructive: oklch(0.508 0.206 25);
+
+  --overlay-shadow: oklch(0.200 0.014 62 / 0.22);
+}
+
+html.dark{
+  color-scheme: dark;
+
+  --background: oklch(0.170 0.008 65);
+  --surface:    oklch(0.210 0.009 65);
+  --raised:     oklch(0.255 0.010 65);
+  --muted:      oklch(0.186 0.008 65);
+
+  --foreground:  oklch(0.948 0.004 68);
+  --fg-dim:      oklch(0.762 0.008 68);
+  --fg-subtle:   oklch(0.648 0.010 68);
+  --fg-disabled: oklch(0.448 0.008 68);
+
+  --line:          oklch(0.302 0.010 65);
+  --line-strong:   oklch(0.396 0.012 65);
+  --line-evidence: oklch(0.672 0.020 68);
+
+  --signal:      oklch(0.740 0.108 42);
+  --signal-ink:  oklch(0.792 0.100 42);
+  --signal-bg:   oklch(0.302 0.048 40);
+  --signal-fg:   oklch(0.172 0.020 42);
+  --caution:     oklch(0.812 0.108 88);
+  --destructive: oklch(0.638 0.202 25);
+
+  --overlay-shadow: oklch(0.060 0.010 65 / 0.55);
+}
+
+/* ==========================================================================
+   2. Reset / base
+   ========================================================================== */
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--background);
+  color:var(--foreground);
+  font-family:var(--sans);
+  font-size:13px;
+  line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+}
+a{color:inherit;text-decoration:none}
+button,select,input{font-family:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--signal);outline-offset:1px;border-radius:2px}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.vr{display:inline-block;width:1px;height:11px;background:var(--line-strong);vertical-align:-1px}
+
+.ic{width:17px;height:17px;flex:none;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+.ic-sm{width:13px;height:13px}
+.ic-lg{width:19px;height:19px}
+
+/* ==========================================================================
+   3. App shell
+   ========================================================================== */
+.app{
+  display:grid;
+  grid-template-columns:56px minmax(0,1fr);
+  height:100vh;
+  min-height:840px;
+  overflow:hidden;
+  border-bottom:1px solid var(--line-strong);
+}
+
+/* ---- 主導覽 rail ---- */
+.rail{
+  width:56px;
+  background:var(--surface);
+  border-right:1px solid var(--line-strong);
+  display:flex;flex-direction:column;align-items:center;
+  padding:var(--sp2) 0;
+}
+.rail-mark{
+  width:30px;height:30px;border-radius:5px;
+  background:var(--signal);color:var(--signal-fg);
+  display:grid;place-items:center;font-weight:700;font-size:13px;
+  margin-bottom:var(--sp3);
+}
+.rail-list{display:flex;flex-direction:column;gap:var(--sp1);width:100%;align-items:center}
+.rail-item{
+  position:relative;
+  width:48px;padding:5px 0 4px;
+  display:flex;flex-direction:column;align-items:center;gap:2px;
+  border-radius:4px;color:var(--fg-dim);
+  border-left:3px solid transparent;
+  background:transparent;cursor:pointer;font-family:inherit;
+}
+button.rail-item{border-top:0;border-right:0;border-bottom:0}
+.rail-item .lbl{font-size:10px;line-height:1.1;letter-spacing:.02em}
+.rail-item:hover{background:var(--muted);color:var(--foreground)}
+.rail-item[aria-current="page"]{
+  background:var(--raised);
+  color:var(--signal-ink);
+  border-left-color:var(--signal);
+  font-weight:600;
+}
+.rail-item[aria-disabled="true"]{color:var(--fg-disabled);pointer-events:none}
+.rail-badge{
+  position:absolute;top:1px;right:4px;
+  min-width:15px;height:15px;padding:0 3px;border-radius:8px;
+  background:var(--signal);color:var(--signal-fg);
+  font-size:9.5px;font-weight:700;line-height:15px;text-align:center;
+  font-family:var(--mono);
+}
+.rail-lock{position:absolute;top:3px;right:6px;width:10px;height:10px;stroke-width:2.2}
+.rail-spacer{flex:1}
+.rail-foot{display:flex;flex-direction:column;gap:var(--sp1);width:100%;align-items:center;
+  border-top:1px solid var(--line);padding-top:var(--sp2)}
+
+/* ---- TopBar ---- */
+.shell{display:flex;flex-direction:column;min-width:0}
+.topbar{
+  height:48px;flex:none;
+  background:var(--surface);
+  border-bottom:1px solid var(--line-strong);
+  display:flex;align-items:center;gap:var(--sp3);
+  padding:0 var(--sp4) 0 var(--sp4);
+}
+.crumb{display:flex;align-items:center;gap:var(--sp2);font-size:12.5px;color:var(--fg-dim)}
+.crumb b{font-weight:650;color:var(--foreground);font-size:13.5px}
+.crumb .ic{color:var(--fg-subtle)}
+.topbar .grow{flex:1}
+.tb-btn{
+  height:27px;padding:0 var(--sp2);border-radius:3px;
+  border:1px solid var(--line-strong);background:var(--raised);
+  display:inline-flex;align-items:center;gap:5px;
+  font-size:12px;color:var(--fg-dim);cursor:pointer;
+}
+.tb-btn:hover{color:var(--foreground);border-color:var(--signal)}
+.tb-kbd{font-family:var(--mono);font-size:11px;color:var(--fg-subtle)}
+.tb-user{
+  display:inline-flex;align-items:center;gap:var(--sp2);
+  padding-left:var(--sp3);border-left:1px solid var(--line);
+  font-size:12.5px;
+}
+.tb-avatar{
+  width:23px;height:23px;border-radius:4px;
+  background:var(--muted);border:1px solid var(--line-strong);
+  display:grid;place-items:center;font-size:11px;font-weight:650;color:var(--fg-dim);
+}
+
+/* ---- 三欄 ---- */
+.workspace{
+  display:grid;
+  grid-template-columns:288px minmax(0,1fr) 320px;
+  flex:1;min-height:0;
+}
+.col{min-width:0;display:flex;flex-direction:column;min-height:0}
+.col-ctx{background:var(--surface);border-right:1px solid var(--line-strong)}
+.col-main{background:var(--background);overflow-y:auto;padding:var(--sp3)}
+.col-ev{background:var(--surface);border-left:1px solid var(--line-strong);overflow-y:auto}
+
+/* ==========================================================================
+   4. 卡片（v3：每張卡片都有自己的標頭列）
+   ========================================================================== */
+.card{
+  background:var(--surface);
+  border:1px solid var(--line-strong);
+  border-radius:4px;
+  overflow:hidden;
+}
+.card + .card{margin-top:var(--sp2)}
+.card-head{
+  display:flex;align-items:center;gap:var(--sp2);
+  min-height:29px;padding:0 var(--sp3);
+  background:var(--muted);
+  border-bottom:1px solid var(--line-strong);
+}
+.card-head h2,.card-head h3{font-size:12.5px;font-weight:650;letter-spacing:.01em}
+.card-head .grow{flex:1}
+.card-head .note{font-size:11.5px;color:var(--fg-subtle)}
+.card-head.sect-top{border-top:1px solid var(--line-strong)}
+.card-head.metric-head{min-height:44px}
+.metric-v{font-size:22px;line-height:1.15;font-weight:650;letter-spacing:-.01em}
+.card-body{padding:var(--sp3)}
+.card-foot{
+  display:flex;align-items:center;gap:var(--sp2);
+  padding:var(--sp2) var(--sp3);
+  border-top:1px solid var(--line);
+  background:var(--surface);
+}
+
+/* ---- 按鈕 ---- */
+.btn{
+  height:26px;padding:0 9px;border-radius:3px;
+  border:1px solid var(--line-strong);background:var(--raised);
+  display:inline-flex;align-items:center;gap:5px;
+  font-size:12px;cursor:pointer;white-space:nowrap;
+}
+.btn:hover{border-color:var(--signal);color:var(--signal-ink)}
+.btn-primary{
+  background:var(--signal);border-color:var(--signal);color:var(--signal-fg);font-weight:650;
+}
+.btn-primary:hover{color:var(--signal-fg);background:var(--signal-ink);border-color:var(--signal-ink)}
+.btn-xs{height:22px;padding:0 7px;font-size:11.5px}
+
+/* ---- 表單 ---- */
+.field{display:flex;flex-direction:column;gap:2px;min-width:0}
+.field-label{font-size:11px;color:var(--fg-dim);letter-spacing:.01em}
+.control{
+  height:26px;border-radius:3px;
+  border:1px solid var(--line-strong);background:var(--raised);
+  font-size:12px;padding:0 var(--sp2);
+  display:flex;align-items:center;gap:var(--sp2);
+}
+select.control,input.control{appearance:none;-webkit-appearance:none;width:100%}
+select.control{padding-right:22px;text-overflow:ellipsis}
+input[type="number"]{-moz-appearance:textfield}
+.select-wrap{position:relative}
+.select-wrap .ic{position:absolute;right:6px;top:50%;transform:translateY(-50%);pointer-events:none;color:var(--fg-subtle)}
+
+/* ==========================================================================
+   5. 內容區塊
+   ========================================================================== */
+
+/* ---- 5.1 上下文欄：Space 清單 ---- */
+.ctx-search{padding:var(--sp2) var(--sp3);border-bottom:1px solid var(--line);flex:none}
+.ctx-search .control{width:100%;padding-left:var(--sp2)}
+.ctx-search .control .ic{color:var(--fg-subtle)}
+.ctx-search input{border:0;background:transparent;outline:none;height:100%;width:100%;font-size:12px;padding:0}
+.ctx-search input::placeholder{color:var(--fg-subtle)}
+.ctx-list{flex:1;overflow-y:auto;min-height:0}
+.space{
+  display:grid;grid-template-columns:16px minmax(0,1fr);gap:var(--sp2);
+  align-items:start;
+  padding:5px var(--sp3) 5px 7px;
+  border-left:3px solid transparent;
+  border-bottom:1px solid var(--line);
+}
+.space .ic{color:var(--fg-subtle);margin-top:2px}
+.space .nm{font-size:12.5px;font-weight:500;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.space .sub{font-size:11px;line-height:1.4;color:var(--fg-subtle);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  display:flex;align-items:center;gap:5px}
+.space:hover{background:var(--muted)}
+.space[aria-current="true"]{background:var(--raised);border-left-color:var(--signal)}
+.space[aria-current="true"] .nm{font-weight:650;color:var(--signal-ink)}
+.space[aria-current="true"] .ic{color:var(--signal)}
+.ctx-foot{
+  height:26px;flex:none;display:flex;align-items:center;gap:var(--sp2);
+  padding:0 var(--sp3);border-top:1px solid var(--line-strong);
+  background:var(--muted);font-size:11px;color:var(--fg-subtle);
+}
+.ctx-foot .grow{flex:1}
+.ctx-foot .live{display:inline-flex;align-items:center;gap:4px;color:var(--fg-dim)}
+.pulse{width:7px;height:7px;border-radius:50%;background:var(--signal);flex:none}
+
+/* ---- 5.2 主內容區 ---- */
+.page-head{display:flex;align-items:center;gap:var(--sp2);padding:0 2px var(--sp2)}
+.page-head h1{font-size:15px;font-weight:650;line-height:1.3}
+.page-head .sid{font-size:11.5px;color:var(--fg-subtle)}
+.page-head .grow{flex:1}
+
+.tool-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.35fr) 130px;gap:var(--sp2)}
+
+.recent{
+  display:flex;align-items:center;gap:var(--sp2);
+  padding:var(--sp2) var(--sp3);border-top:1px solid var(--line);
+}
+.recent .tog{display:inline-flex;align-items:center;gap:4px;border:0;background:transparent;cursor:pointer;
+  font-size:12px;font-weight:600;padding:0}
+.recent .grow{flex:1}
+.recent .unit{font-size:11.5px;color:var(--fg-subtle)}
+.seg{display:inline-flex;border:1px solid var(--line-strong);border-radius:3px;overflow:hidden;background:var(--raised)}
+.seg button{height:22px;min-width:34px;padding:0 7px;border:0;background:transparent;cursor:pointer;
+  font-family:var(--mono);font-size:11.5px;color:var(--fg-dim)}
+.seg button + button{border-left:1px solid var(--line-strong)}
+.seg button[aria-pressed="true"]{background:var(--signal);color:var(--signal-fg);font-weight:700}
+
+/* meta 列：緊貼卡片標頭下方，滿版、左右 padding 與內容齊 */
+.meta{
+  display:flex;align-items:center;flex-wrap:wrap;gap:var(--sp2);
+  padding:5px var(--sp3);border-bottom:1px solid var(--line);
+  font-size:11.5px;color:var(--fg-dim);line-height:1.7;
+}
+.meta .mono{color:var(--foreground)}
+
+/* 摘要正文：狀態的第一區分是線型 + 字符，顏色只是冗餘 */
+.legend{display:flex;align-items:center;gap:var(--sp3);font-size:10.5px;color:var(--fg-dim)}
+.legend span{display:inline-flex;align-items:center;gap:4px}
+.legend i{width:14px;height:0;border-top:2px var(--line-evidence);display:inline-block}
+.legend .s{border-top-style:solid}
+.legend .d{border-top-style:dashed}
+.legend .o{border-top-style:dotted}
+
+.sum{display:flex;flex-direction:column;gap:var(--sp3)}
+.sum section{padding-left:var(--sp3);border-left:2px var(--line-evidence)}
+.sum section[data-state="full"]{border-left-style:solid}
+.sum section[data-state="partial"]{border-left-style:dashed}
+.sum section[data-state="empty"]{border-left-style:dotted}
+.sum h3{font-size:12.5px;font-weight:650;display:flex;align-items:center;gap:var(--sp2);margin-bottom:3px}
+.sum h3 .tag{
+  font-family:var(--mono);font-size:10px;font-weight:500;letter-spacing:.04em;
+  color:var(--fg-dim);background:var(--muted);
+  border:1px solid var(--line-strong);border-radius:2px;padding:0 4px;line-height:15px;
+}
+.sum p{font-size:13px;line-height:1.65}
+.sum p.dim{color:var(--fg-dim)}
+.sum ul{margin-top:4px;padding-left:var(--sp4);font-size:13px;line-height:1.65}
+.sum li{margin-top:2px}
+.sum .ai{font-size:13px;line-height:1.65;margin-top:3px}
+
+/* ---- 5.3 表格（v3：Action Items 與 Token 用量都是真表格）---- */
+table{width:100%;border-collapse:collapse;font-size:12px}
+thead th{
+  text-align:left;font-weight:600;font-size:11px;color:var(--fg-dim);
+  background:var(--surface);padding:4px var(--sp3);white-space:nowrap;
+  border-bottom:1px solid var(--line-strong);
+}
+tbody td{padding:6px var(--sp3);border-bottom:1px solid var(--line);vertical-align:top;line-height:1.6}
+tbody tr:nth-child(even){background:var(--muted)}
+tbody tr:last-child td{border-bottom:0}
+.num{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+th.num{text-align:right}
+.chip{
+  display:inline-flex;align-items:center;gap:4px;height:19px;padding:0 6px;
+  border-radius:2px;background:var(--raised);border:1px solid var(--line-strong);
+  font-size:11.5px;color:var(--fg-dim);white-space:nowrap;
+}
+input[type="checkbox"]{width:14px;height:14px;accent-color:var(--signal);cursor:pointer;margin-top:2px}
+td.cbc{width:28px;padding-right:0}
+
+/* ---- 5.4 證據欄 ---- */
+.ev-item{
+  display:block;padding:5px var(--sp3) 5px 7px;
+  border-left:3px solid transparent;border-bottom:1px solid var(--line);
+}
+.ev-item:hover{background:var(--muted);border-left-color:var(--line-strong)}
+.ev-item .t{font-size:12px;font-weight:500;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ev-item .m{display:flex;align-items:center;gap:6px;margin-top:1px;font-size:11px;color:var(--fg-subtle);line-height:1.4}
+.col-ev .ev-list{flex:none}
+.col-ev > table{flex:none}
+
+/* ==========================================================================
+   6. 頁底：浮出態示意 + 對比表
+   ========================================================================== */
+.below{padding:var(--sp5) var(--sp5) var(--sp4);max-width:1180px}
+.below h2{font-size:15px;font-weight:650;margin-bottom:var(--sp2)}
+.below p{font-size:12.5px;color:var(--fg-dim);line-height:1.75;max-width:74ch}
+.below p + p{margin-top:var(--sp2)}
+
+.demo{
+  position:relative;height:286px;width:820px;margin:var(--sp3) 0;
+  border:1px solid var(--line-strong);border-radius:4px;
+  background:var(--background);overflow:hidden;
+}
+.demo-topbar{position:absolute;left:56px;right:0;top:0;height:36px;background:var(--surface);
+  border-bottom:1px solid var(--line-strong)}
+.demo-rail{position:absolute;left:0;top:0;bottom:0;width:56px;background:var(--surface);
+  border-right:1px solid var(--line-strong)}
+.demo-canvas{position:absolute;left:56px;right:0;top:36px;bottom:0;padding:var(--sp3);display:flex;gap:var(--sp2);flex-direction:column}
+.ghost{height:11px;border-radius:2px;background:var(--muted);border:1px solid var(--line)}
+.ghost.w1{width:62%}.ghost.w2{width:88%}.ghost.w3{width:44%}.ghost.w4{width:74%}
+.ghost.tall{height:74px}
+.demo-flyout{
+  position:absolute;left:0;top:0;bottom:0;width:200px;z-index:2;
+  background:var(--raised);border-right:1px solid var(--line-strong);
+  box-shadow:8px 0 22px -8px var(--overlay-shadow);
+  padding:var(--sp2) 0;display:flex;flex-direction:column;
+}
+.fly-item{
+  display:grid;grid-template-columns:20px minmax(0,1fr) auto;align-items:center;gap:var(--sp2);
+  height:34px;padding:0 var(--sp3) 0 15px;
+  border-left:3px solid transparent;color:var(--fg-dim);font-size:12.5px;
+}
+.fly-item .ic{justify-self:center}
+.fly-item[aria-current="page"]{background:var(--signal-bg);color:var(--signal-ink);border-left-color:var(--signal);font-weight:650}
+.fly-item[aria-disabled="true"]{color:var(--fg-disabled)}
+.fly-item .soon{font-size:10px;color:var(--fg-disabled);font-weight:400}
+.fly-badge{min-width:17px;height:16px;padding:0 4px;border-radius:8px;background:var(--signal);color:var(--signal-fg);
+  font-family:var(--mono);font-size:10px;font-weight:700;line-height:16px;text-align:center}
+.fly-sep{height:1px;background:var(--line);margin:var(--sp2) 0}
+.demo-anchor{position:absolute;left:0;top:0;bottom:0;width:56px;z-index:3;
+  border-right:1px dashed var(--signal);pointer-events:none}
+.demo-cap{font-size:11.5px;color:var(--fg-subtle);line-height:1.7;max-width:74ch}
+
+/* ---- 稽核區 ---- */
+details.audit{
+  margin:0 var(--sp5) 44px;max-width:1180px;
+  border:1px solid var(--line-strong);border-radius:4px;background:var(--surface);
+}
+details.audit > summary{
+  padding:var(--sp2) var(--sp3);background:var(--muted);cursor:pointer;
+  font-size:12.5px;font-weight:650;border-radius:3px 3px 0 0;list-style:none;
+  display:flex;align-items:center;gap:var(--sp2);
+}
+details.audit > summary::-webkit-details-marker{display:none}
+details.audit[open] > summary{border-bottom:1px solid var(--line-strong)}
+.audit-body{padding:var(--sp4);font-size:12px;line-height:1.75}
+.audit-body h3{font-size:12.5px;font-weight:650;margin:var(--sp4) 0 var(--sp2)}
+.audit-body h3:first-child{margin-top:0}
+.audit-body p{color:var(--fg-dim);max-width:82ch}
+.audit-body table{margin:var(--sp2) 0 var(--sp3)}
+.audit-body th,.audit-body td{border:1px solid var(--line);padding:3px var(--sp2);font-size:11.5px}
+.audit-body tbody tr:nth-child(even){background:var(--muted)}
+.audit-body tbody td{border-bottom:1px solid var(--line)}
+.audit-body .ok{color:var(--fg-dim)}
+.audit-body ul{margin:var(--sp2) 0 var(--sp3) var(--sp4);color:var(--fg-dim)}
+.audit-body li{margin-bottom:3px}
+.sw-row{display:flex;gap:var(--sp3);flex-wrap:wrap;margin:var(--sp3) 0}
+.sw{border:1px solid var(--line-strong);border-radius:3px;padding:var(--sp2) var(--sp3);background:var(--background);width:344px}
+.sw .bar{height:24px;border-radius:2px;margin-bottom:var(--sp2)}
+.sw .bar.s{background:var(--signal)}
+.sw .bar.d{background:var(--destructive)}
+.sw .cap{font-size:11px;color:var(--fg-dim);line-height:1.7}
+.sw .cap b{color:var(--foreground);font-weight:650}
+.demo-btns{display:flex;gap:var(--sp2);margin:var(--sp2) 0 0}
+.btn-danger{
+  background:var(--surface);color:var(--destructive);font-weight:650;
+  border:1px dashed var(--destructive);
+}
+</style>
+
+<!-- ===================== 圖示 sprite（lucide 風格線性圖示） ===================== -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <symbol id="i-summary" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h5"/></symbol>
+  <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></symbol>
+  <symbol id="i-chart" viewBox="0 0 24 24"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M8 17v-5M13 17V8M18 17v-3"/></symbol>
+  <symbol id="i-week" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M16 2v4M8 2v4M3 10h18M8 15h8"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 21v-6M4 11V3M12 21v-9M12 8V3M20 21v-4M20 13V3M1 15h6M9 8h6M17 17h6"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></symbol>
+  <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5M21 12H9"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></symbol>
+  <symbol id="i-hash" viewBox="0 0 24 24"><path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></symbol>
+  <symbol id="i-panel" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/></symbol>
+  <symbol id="i-command" viewBox="0 0 24 24"><path d="M18 3a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3H6a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3V6a3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3h12a3 3 0 0 0 3-3 3 3 0 0 0-3-3z"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="M22 2 11 13"/><path d="m22 2-7 20-4-9-9-4 20-7z"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v5h-5"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+  <symbol id="i-draft" viewBox="0 0 24 24"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+  <symbol id="i-dot" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/></symbol>
+</svg>
+
+<div class="app">
+  <!-- ===================== 主導覽（icon rail 56px 收合態） ===================== -->
+  <nav class="rail" aria-label="主導覽">
+    <div class="rail-mark" aria-hidden="true">C</div>
+    <div class="rail-list">
+      <a class="rail-item" href="#" aria-current="page">
+        <svg class="ic" aria-hidden="true"><use href="#i-summary"/></svg>
+        <span class="lbl">摘要</span>
+      </a>
+      <a class="rail-item" href="#">
+        <svg class="ic" aria-hidden="true"><use href="#i-inbox"/></svg>
+        <span class="lbl">收件匣</span>
+        <span class="rail-badge">6</span>
+        <span class="sr-only">待處理 6 則</span>
+      </a>
+      <a class="rail-item" href="#" aria-disabled="true">
+        <svg class="ic" aria-hidden="true"><use href="#i-chart"/></svg>
+        <span class="lbl">統計</span>
+        <svg class="ic rail-lock" aria-hidden="true"><use href="#i-lock"/></svg>
+        <span class="sr-only">即將推出</span>
+      </a>
+      <a class="rail-item" href="#" aria-disabled="true">
+        <svg class="ic" aria-hidden="true"><use href="#i-week"/></svg>
+        <span class="lbl">週報</span>
+        <svg class="ic rail-lock" aria-hidden="true"><use href="#i-lock"/></svg>
+        <span class="sr-only">即將推出</span>
+      </a>
+      <a class="rail-item" href="#">
+        <svg class="ic" aria-hidden="true"><use href="#i-settings"/></svg>
+        <span class="lbl">設定</span>
+      </a>
+    </div>
+    <div class="rail-spacer"></div>
+    <div class="rail-foot">
+      <button class="rail-item" type="button" data-theme-toggle>
+        <svg class="ic" aria-hidden="true"><use href="#i-moon" data-theme-icon/></svg>
+        <span class="lbl" data-theme-label>深色</span>
+      </button>
+      <a class="rail-item" href="#">
+        <svg class="ic" aria-hidden="true"><use href="#i-logout"/></svg>
+        <span class="lbl">登出</span>
+      </a>
+    </div>
+  </nav>
+
+  <div class="shell">
+    <!-- ===================== TopBar 48px ===================== -->
+    <header class="topbar">
+      <div class="crumb">
+        <span>摘要工作台</span>
+        <svg class="ic ic-sm" aria-hidden="true"><use href="#i-right"/></svg>
+        <b>李姿誼Sica Lee</b>
+      </div>
+      <div class="grow"></div>
+      <button class="tb-btn" type="button">
+        <svg class="ic ic-sm" aria-hidden="true"><use href="#i-command"/></svg>
+        命令面板
+        <span class="tb-kbd">⌘K</span>
+      </button>
+      <button class="tb-btn" type="button" aria-pressed="true">
+        <svg class="ic ic-sm" aria-hidden="true"><use href="#i-panel"/></svg>
+        證據欄
+      </button>
+      <button class="tb-btn" type="button" data-theme-toggle>
+        <svg class="ic ic-sm" aria-hidden="true"><use href="#i-moon" data-theme-icon/></svg>
+        <span data-theme-label>深色</span>
+      </button>
+      <span class="tb-user">
+        <span class="tb-avatar" aria-hidden="true">鄭</span>
+        鄭浩宇
+      </span>
+    </header>
+    <div class="workspace">
+      <!-- ===================== 上下文欄 288px ===================== -->
+      <div class="col col-ctx">
+        <div class="ctx-search">
+          <div class="control">
+            <svg class="ic ic-sm" aria-hidden="true"><use href="#i-search"/></svg>
+            <input type="search" placeholder="搜尋 436 個 Space 名稱…" aria-label="搜尋 Space">
+          </div>
+        </div>
+        <div class="ctx-list" role="list">
+          <a class="space" href="#" role="listitem">
+            <svg class="ic ic-sm" aria-hidden="true"><use href="#i-hash"/></svg>
+            <span><span class="nm">1.BU2-PG</span><span class="sub">群組<span class="vr"></span>最後活動 27 分鐘前</span></span>
+          </a>
+          <a class="space" href="#" role="listitem">
+            <svg class="ic ic-sm" aria-hidden="true"><use href="#i-users"/></svg>
+            <span><span class="nm">ILOOP2601 - 勞動部勞動及職業安全…</span><span class="sub">多人對話<span class="vr"></span>最後活動 10 小時前</span></span>
+          </a>
+          <a class="space" href="#" role="listitem" aria-current="true">
+            <svg class="ic ic-sm" aria-hidden="true"><use href="#i-user"/></svg>
+            <span><span class="nm">李姿誼Sica Lee</span><span class="sub">私訊<span class="vr"></span>最後活動 13 小時前</span></span>
+          </a>
+          <a class="space" href="#" role="listitem">
+            <svg class="ic ic-sm" aria-hidden="true"><use href="#i-user"/></svg>
+            <span><span class="nm">（私訊）</span><span class="sub">私訊<span class="vr"></span>最後活動 13 小時前</span></span>
+          </a>
+          <a class="space" href="#" role="listitem">
+            <svg class="ic ic-sm" aria-hidden="true"><use href="#i-user"/></svg>
+            <span><span class="nm">張曼媜</span><span class="sub">私訊<span class="vr"></span>最後活動 13 小時前</span></span>
+          </a>
+          <a class="space" href="#" role="listitem">
+            <svg class="ic ic-sm" aria-hidden="true"><use href="#i-users"/></svg>
+            <span><span class="nm">WCS內部小群組</span><span class="sub">多人對話<span class="vr"></span>最後活動 17 小時前</span></span>
+          </a>
+          <a class="space" href="#" role="listitem">
+            <svg class="ic ic-sm" aria-hidden="true"><use href="#i-users"/></svg>
+            <span><span class="nm">（未命名空間）</span><span class="sub">多人對話<span class="vr"></span>最後活動 1 天前</span></span>
+          </a>
+          <a class="space" href="#" role="listitem">
+            <svg class="ic ic-sm" aria-hidden="true"><use href="#i-hash"/></svg>
+            <span><span class="nm">彰銀Line BC預留 - 9月3日</span><span class="sub">群組<span class="vr"></span>最後活動 1 天前</span></span>
+          </a>
+          <a class="space" href="#" role="listitem">
+            <svg class="ic ic-sm" aria-hidden="true"><use href="#i-hash"/></svg>
+            <span><span class="nm">碩網團隊ALL</span><span class="sub">群組<span class="vr"></span>最後活動 1 天前</span></span>
+          </a>
+          <a class="space" href="#" role="listitem">
+            <svg class="ic ic-sm" aria-hidden="true"><use href="#i-hash"/></svg>
+            <span><span class="nm">P.S.公部門夥伴</span><span class="sub">群組<span class="vr"></span>最後活動 2 天前</span></span>
+          </a>
+          <a class="space" href="#" role="listitem">
+            <svg class="ic ic-sm" aria-hidden="true"><use href="#i-hash"/></svg>
+            <span><span class="nm">TPE01P2601 北市府新案</span><span class="sub">群組<span class="vr"></span>最後活動 2 天前</span></span>
+          </a>
+          <a class="space" href="#" role="listitem">
+            <svg class="ic ic-sm" aria-hidden="true"><use href="#i-hash"/></svg>
+            <span><span class="nm">工作紀錄簿</span><span class="sub">群組<span class="vr"></span>最後活動 4 天前</span></span>
+          </a>
+          <a class="space" href="#" role="listitem">
+            <svg class="ic ic-sm" aria-hidden="true"><use href="#i-hash"/></svg>
+            <span><span class="nm">北富銀-內部討論</span><span class="sub">群組<span class="vr"></span>最後活動 4 天前</span></span>
+          </a>
+          <a class="space" href="#" role="listitem">
+            <svg class="ic ic-sm" aria-hidden="true"><use href="#i-hash"/></svg>
+            <span><span class="nm">達駿</span><span class="sub">群組<span class="vr"></span>最後活動 4 天前</span></span>
+          </a>
+        </div>
+        <div class="ctx-foot">
+          <span>顯示 <span class="mono">436</span> / <span class="mono">436</span></span>
+          <span class="grow"></span>
+          <span class="live"><span class="pulse" aria-hidden="true"></span>即時資料</span>
+        </div>
+      </div>
+      <!-- ===================== 主內容區 ===================== -->
+      <div class="col col-main">
+
+        <div class="page-head">
+          <h1>李姿誼Sica Lee</h1>
+          <span class="sid mono">spaces/5hp2VyAAAAE</span>
+          <span class="grow"></span>
+          <button class="btn" type="button">
+            <svg class="ic ic-sm" aria-hidden="true"><use href="#i-draft"/></svg>產生回覆草稿
+          </button>
+          <button class="btn btn-primary" type="button">
+            <svg class="ic ic-sm" aria-hidden="true"><use href="#i-refresh"/></svg>重新摘要
+          </button>
+        </div>
+
+        <!-- 卡片 1：摘要設定 -->
+        <section class="card">
+          <div class="card-head"><h2>摘要設定</h2></div>
+          <div class="card-body">
+            <div class="tool-grid">
+              <label class="field">
+                <span class="field-label">摘要風格</span>
+                <span class="select-wrap">
+                  <select class="control">
+                    <option>技術細節</option><option>通用</option><option>只要待辦</option>
+                  </select>
+                  <svg class="ic ic-sm" aria-hidden="true"><use href="#i-down"/></svg>
+                </span>
+              </label>
+              <label class="field">
+                <span class="field-label">AI 供應商</span>
+                <span class="select-wrap">
+                  <select class="control">
+                    <option>自動（伺服器預設：claude）</option>
+                  </select>
+                  <svg class="ic ic-sm" aria-hidden="true"><use href="#i-down"/></svg>
+                </span>
+              </label>
+              <label class="field">
+                <span class="field-label">抓取則數（1~1000）</span>
+                <input class="control mono" type="number" value="3" min="1" max="1000">
+              </label>
+            </div>
+          </div>
+          <div class="recent">
+            <button class="tog" type="button" aria-expanded="true">
+              <svg class="ic ic-sm" aria-hidden="true"><use href="#i-down"/></svg>最近訊息
+            </button>
+            <div class="seg" role="group" aria-label="抓取則數">
+              <button type="button" aria-pressed="false">10</button>
+              <button type="button" aria-pressed="true">20</button>
+              <button type="button" aria-pressed="false">30</button>
+            </div>
+            <span class="unit">則</span>
+            <span class="grow"></span>
+            <button class="btn btn-xs" type="button">
+              <svg class="ic ic-sm" aria-hidden="true"><use href="#i-refresh"/></svg>重新讀取
+            </button>
+          </div>
+        </section>
+
+        <!-- 卡片 2：摘要 -->
+        <section class="card">
+          <div class="card-head">
+            <h2>摘要</h2>
+            <div class="grow"></div>
+            <div class="legend" aria-hidden="true">
+              <span><i class="s"></i>完整</span>
+              <span><i class="d"></i>降級</span>
+              <span><i class="o"></i>缺值</span>
+            </div>
+          </div>
+          <div class="meta">
+            <span>技術細節</span><span class="vr"></span>
+            <span>李姿誼Sica Lee</span><span class="vr"></span>
+            <span>讀取 3 則</span><span class="vr"></span>
+            <span>圖片 0 張</span><span class="vr"></span>
+            <span>Claude Code（本機 CLI，用你現有的訂閱）</span><span class="vr"></span>
+            <span class="mono">claude-cli:opus</span>
+          </div>
+          <div class="card-body">
+            <div class="sum">
+              <section data-state="empty">
+                <h3>🔧 技術問題與症狀 <span class="tag">缺值</span></h3>
+                <p class="dim">本次對話中未出現（僅提及需處理「北市府」相關工作，未描述任何錯誤訊息、發生條件或影響範圍）。</p>
+              </section>
+              <section data-state="empty">
+                <h3>🧪 已排除的假設與排查過程 <span class="tag">缺值</span></h3>
+                <p class="dim">本次對話中未出現。</p>
+              </section>
+              <section data-state="empty">
+                <h3>🛠 技術方案與取捨 <span class="tag">缺值</span></h3>
+                <p class="dim">本次對話中未出現。</p>
+              </section>
+              <section data-state="partial">
+                <h3>⚠️ 未解的技術問題 <span class="tag">降級</span></h3>
+                <p>本次對話中未出現技術細節。接手者若要判斷狀況，仍缺少以下資訊：</p>
+                <ul>
+                  <li>「北市府」所指的專案／系統與具體處理項目</li>
+                  <li>是否有對應的錯誤訊息、環境（正式／測試）與影響範圍</li>
+                  <li>李姿誼所「記錄」的內容為何（來源不在本段對話中）</li>
+                </ul>
+              </section>
+              <section data-state="full">
+                <h3>🎯 待辦事項與追蹤 (Action Items) <span class="tag">完整</span></h3>
+                <p class="ai">[鄭浩宇] 於 2026-09-09 加班處理北市府相關工作（對話中未說明具體項目）</p>
+                <p class="ai">[李姿誼Sica Lee] 記錄前述事項（記錄標的內容未在本段對話中出現）</p>
+              </section>
+            </div>
+          </div>
+          <div class="card-foot">
+            <button class="btn btn-xs" type="button">
+              <svg class="ic ic-sm" aria-hidden="true"><use href="#i-copy"/></svg>複製 Markdown
+            </button>
+            <button class="btn btn-xs" type="button">
+              <svg class="ic ic-sm" aria-hidden="true"><use href="#i-send"/></svg>推播回 Google Chat
+            </button>
+          </div>
+        </section>
+
+        <!-- 卡片 3：Action Items（真表格：thead + 斑馬列） -->
+        <section class="card">
+          <div class="card-head">
+            <h2>Action Items</h2>
+            <span class="note">（<span class="mono">0</span>/<span class="mono">2</span> 已勾選）</span>
+            <div class="grow"></div>
+            <button class="btn btn-xs" type="button">
+              <svg class="ic ic-sm" aria-hidden="true"><use href="#i-copy"/></svg>複製為 Markdown
+            </button>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th class="cbc"><span class="sr-only">勾選</span></th>
+                <th style="width:118px">負責人</th>
+                <th>待辦事項</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="cbc"><input type="checkbox" aria-label="勾選：鄭浩宇的待辦"></td>
+                <td><span class="chip"><svg class="ic ic-sm" aria-hidden="true"><use href="#i-user"/></svg>鄭浩宇</span></td>
+                <td>於 2026-09-09 加班處理北市府相關工作（對話中未說明具體項目）</td>
+              </tr>
+              <tr>
+                <td class="cbc"><input type="checkbox" aria-label="勾選：李姿誼Sica Lee 的待辦"></td>
+                <td><span class="chip"><svg class="ic ic-sm" aria-hidden="true"><use href="#i-user"/></svg>李姿誼Sica Lee</span></td>
+                <td>記錄前述事項（記錄標的內容未在本段對話中出現）</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+      </div>
+      <!-- ===================== 證據欄 320px ===================== -->
+      <div class="col col-ev">
+
+        <div class="card-head">
+          <h2>歷史 Summary</h2>
+          <div class="grow"></div>
+          <span class="note"><span class="mono">28</span> 份</span>
+        </div>
+        <div class="ev-list" role="list">
+          <a class="ev-item" href="#" role="listitem">
+            <span class="t">李姿誼Sica Lee</span>
+            <span class="m"><span class="mono">2026-09-10 08:38</span><span class="vr"></span>技術細節<span class="vr"></span><span class="mono">3</span> 則</span>
+          </a>
+          <a class="ev-item" href="#" role="listitem">
+            <span class="t">李姿誼</span>
+            <span class="m"><span class="mono">2026-09-06 22:24</span><span class="vr"></span>技術細節<span class="vr"></span><span class="mono">3</span> 則</span>
+          </a>
+          <a class="ev-item" href="#" role="listitem">
+            <span class="t">（私訊／未命名空間）</span>
+            <span class="m"><span class="mono">2026-09-06 19:56</span><span class="vr"></span>通用<span class="vr"></span><span class="mono">10</span> 則</span>
+          </a>
+          <a class="ev-item" href="#" role="listitem">
+            <span class="t">（私訊／未命名空間）</span>
+            <span class="m"><span class="mono">2026-09-06 19:55</span><span class="vr"></span>通用<span class="vr"></span><span class="mono">3</span> 則</span>
+          </a>
+          <a class="ev-item" href="#" role="listitem">
+            <span class="t">（私訊／未命名空間）</span>
+            <span class="m"><span class="mono">2026-09-06 19:55</span><span class="vr"></span>技術細節<span class="vr"></span><span class="mono">3</span> 則</span>
+          </a>
+          <a class="ev-item" href="#" role="listitem">
+            <span class="t">0.暫存</span>
+            <span class="m"><span class="mono">2026-09-06 00:47</span><span class="vr"></span>只要待辦<span class="vr"></span><span class="mono">10</span> 則</span>
+          </a>
+          <a class="ev-item" href="#" role="listitem">
+            <span class="t">0.暫存</span>
+            <span class="m"><span class="mono">2026-09-06 00:30</span><span class="vr"></span>只要待辦<span class="vr"></span><span class="mono">10</span> 則</span>
+          </a>
+          <a class="ev-item" href="#" role="listitem">
+            <span class="t">0.暫存</span>
+            <span class="m"><span class="mono">2026-09-05 12:10</span><span class="vr"></span>只要待辦<span class="vr"></span><span class="mono">10</span> 則</span>
+          </a>
+        </div>
+
+        <div class="card-head metric-head sect-top">
+          <h2>Token 用量（近 14 天）</h2>
+          <div class="grow"></div>
+          <span class="metric-v mono">240,275</span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>日期</th>
+              <th class="num">輸入</th>
+              <th class="num">輸出</th>
+              <th class="num">次數</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td class="mono">2026-09-07</td><td class="num">15,695</td><td class="num">10,966</td><td class="num">3</td></tr>
+            <tr><td class="mono">2026-09-06</td><td class="num">40,811</td><td class="num">26,799</td><td class="num">13</td></tr>
+            <tr><td class="mono">2026-09-05</td><td class="num">56,650</td><td class="num">10,919</td><td class="num">26</td></tr>
+            <tr><td class="mono">2026-09-04</td><td class="num">40,256</td><td class="num">6,907</td><td class="num">15</td></tr>
+          </tbody>
+        </table>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<section class="below">
+  <h2>主導覽的第二狀態：hover 時浮出成 200px，疊在內容上</h2>
+  <p>上面的主畫面是收合態（56px）。滑鼠移進 rail 時，整塊向右展開成 200px 的浮層蓋住內容，內容本身不位移、不重排——所以展開不會讓人「看到的東西跳走」。下圖是浮出態的靜態示意。</p>
+
+  <div class="demo" aria-label="主導覽浮出態示意">
+    <div class="demo-rail"></div>
+    <div class="demo-topbar"></div>
+    <div class="demo-canvas" aria-hidden="true">
+      <div class="ghost w3"></div>
+      <div class="ghost tall"></div>
+      <div class="ghost w2"></div>
+      <div class="ghost w4"></div>
+      <div class="ghost w1"></div>
+    </div>
+    <div class="demo-flyout">
+      <div class="fly-item" style="height:38px;font-weight:650;color:var(--foreground)">
+        <span class="rail-mark" style="width:20px;height:20px;margin:0;border-radius:4px;font-size:11px">C</span>
+        <span>ChatPulse</span>
+      </div>
+      <div class="fly-sep"></div>
+      <div class="fly-item" aria-current="page">
+        <svg class="ic ic-sm" aria-hidden="true"><use href="#i-summary"/></svg>
+        <span>摘要工作台</span><span></span>
+      </div>
+      <div class="fly-item">
+        <svg class="ic ic-sm" aria-hidden="true"><use href="#i-inbox"/></svg>
+        <span>Mention 收件匣</span><span class="fly-badge">6</span>
+      </div>
+      <div class="fly-item" aria-disabled="true">
+        <svg class="ic ic-sm" aria-hidden="true"><use href="#i-chart"/></svg>
+        <span>統計</span><span class="soon">即將推出</span>
+      </div>
+      <div class="fly-item" aria-disabled="true">
+        <svg class="ic ic-sm" aria-hidden="true"><use href="#i-week"/></svg>
+        <span>週報</span><span class="soon">即將推出</span>
+      </div>
+      <div class="fly-item">
+        <svg class="ic ic-sm" aria-hidden="true"><use href="#i-settings"/></svg>
+        <span>設定</span><span></span>
+      </div>
+      <div style="flex:1"></div>
+      <div class="fly-sep"></div>
+      <div class="fly-item">
+        <svg class="ic ic-sm" aria-hidden="true"><use href="#i-moon"/></svg>
+        <span>深色主題</span><span></span>
+      </div>
+      <div class="fly-item">
+        <svg class="ic ic-sm" aria-hidden="true"><use href="#i-logout"/></svg>
+        <span>登出</span><span></span>
+      </div>
+    </div>
+    <div class="demo-anchor"></div>
+  </div>
+  <p class="demo-cap">虛線是收合態 rail 的右緣（56px）。兩個狀態的圖示中心都落在 x=28px，所以展開時圖示原地不動、只有文字從圖示右側長出來——眼睛不必重新找位置。「即將推出」與待處理數字 6 在浮出態是寫在畫面上的文字，不是 tooltip；收合態則以鎖頭圖示與降低對比標示停用，數字 6 直接疊在圖示角落。</p>
+</section>
+
+<details class="audit">
+  <summary>設計稽核：對比驗算、色彩區分、密度與規則對照</summary>
+  <div class="audit-body">
+
+    <h3>算法</h3>
+    <p>
+      每個 oklch 值先用 Björn Ottosson 的 OKLab 反轉矩陣換成<b>線性</b> sRGB（oklch → OKLab → LMS，各分量取三次方 → 線性 RGB），
+      再直接套 WCAG 2.x 的相對亮度 Y = 0.2126×R + 0.7152×G + 0.0722×B（WCAG 的 R/G/B 本來就是 gamma 解碼後的線性值，所以不再做 sRGB 編碼），
+      對比 = (Y<sub>亮</sub> + 0.05) / (Y<sub>暗</sub> + 0.05)。
+      每個值都檢查過是否落在 sRGB 色域內：把 &lt;style&gt; 區塊裡的 oklch 字面全部抽出來跑過一遍，
+      <b>36 個相異顏色值全部落在色域內，沒有任何一個發生截斷</b>，所以下面沒有因夾擠而失真的數字。
+      計算用 Python 實作，不是估的。
+    </p>
+
+    <h3>明主題（light）— 前景 × 四個表面</h3>
+    <table>
+      <thead><tr><th>前景 token</th><th class="num">background<br>L 0.928</th><th class="num">surface<br>L 0.968</th><th class="num">raised<br>L 0.995</th><th class="num">muted<br>L 0.906</th><th>門檻</th><th>結果</th></tr></thead>
+      <tbody>
+        <tr><td>--foreground</td><td class="num">13.50</td><td class="num">15.22</td><td class="num">16.46</td><td class="num">12.61</td><td>≥ 7</td><td class="ok">通過</td></tr>
+        <tr><td>--fg-dim</td><td class="num">6.57</td><td class="num">7.41</td><td class="num">8.02</td><td class="num">6.14</td><td>≥ 4.6</td><td class="ok">通過</td></tr>
+        <tr><td>--fg-subtle</td><td class="num">5.03</td><td class="num">5.67</td><td class="num">6.14</td><td class="num">4.70</td><td>≥ 4.6</td><td class="ok">通過</td></tr>
+        <tr><td>--fg-disabled</td><td class="num">2.35</td><td class="num">2.65</td><td class="num">2.87</td><td class="num">2.20</td><td>≥ 2</td><td class="ok">通過</td></tr>
+        <tr><td>--line-evidence</td><td class="num">4.47</td><td class="num">5.04</td><td class="num">5.46</td><td class="num">4.18</td><td>≥ 3</td><td class="ok">通過</td></tr>
+        <tr><td>--signal</td><td class="num">5.84</td><td class="num">6.58</td><td class="num">7.12</td><td class="num">5.46</td><td>≥ 3</td><td class="ok">通過</td></tr>
+        <tr><td>--signal-ink（文字用）</td><td class="num">6.91</td><td class="num">7.79</td><td class="num">8.42</td><td class="num">6.45</td><td>≥ 4.6</td><td class="ok">通過</td></tr>
+        <tr><td>--caution</td><td class="num">3.97</td><td class="num">4.48</td><td class="num">4.84</td><td class="num">3.71</td><td>≥ 3</td><td class="ok">通過</td></tr>
+        <tr><td>--destructive</td><td class="num">5.22</td><td class="num">5.89</td><td class="num">6.37</td><td class="num">4.88</td><td>≥ 3</td><td class="ok">通過</td></tr>
+        <tr><td>--line（純裝飾）</td><td class="num">1.21</td><td class="num">1.37</td><td class="num">1.48</td><td class="num">1.13</td><td>無要求</td><td class="ok">—</td></tr>
+        <tr><td>--line-strong（純裝飾）</td><td class="num">1.61</td><td class="num">1.81</td><td class="num">1.96</td><td class="num">1.50</td><td>無要求</td><td class="ok">—</td></tr>
+      </tbody>
+    </table>
+
+    <h3>暗主題（dark）— 前景 × 四個表面</h3>
+    <table>
+      <thead><tr><th>前景 token</th><th class="num">background<br>L 0.170</th><th class="num">surface<br>L 0.210</th><th class="num">raised<br>L 0.255</th><th class="num">muted<br>L 0.186</th><th>門檻</th><th>結果</th></tr></thead>
+      <tbody>
+        <tr><td>--foreground</td><td class="num">16.43</td><td class="num">15.23</td><td class="num">13.56</td><td class="num">15.99</td><td>≥ 7</td><td class="ok">通過</td></tr>
+        <tr><td>--fg-dim</td><td class="num">8.96</td><td class="num">8.31</td><td class="num">7.40</td><td class="num">8.72</td><td>≥ 4.6</td><td class="ok">通過</td></tr>
+        <tr><td>--fg-subtle</td><td class="num">5.86</td><td class="num">5.43</td><td class="num">4.84</td><td class="num">5.70</td><td>≥ 4.6</td><td class="ok">通過</td></tr>
+        <tr><td>--fg-disabled</td><td class="num">2.55</td><td class="num">2.36</td><td class="num">2.10</td><td class="num">2.48</td><td>≥ 2</td><td class="ok">通過</td></tr>
+        <tr><td>--line-evidence</td><td class="num">6.42</td><td class="num">5.95</td><td class="num">5.30</td><td class="num">6.25</td><td>≥ 3</td><td class="ok">通過</td></tr>
+        <tr><td>--signal</td><td class="num">7.99</td><td class="num">7.41</td><td class="num">6.60</td><td class="num">7.78</td><td>≥ 3</td><td class="ok">通過</td></tr>
+        <tr><td>--signal-ink（文字用）</td><td class="num">9.65</td><td class="num">8.94</td><td class="num">7.96</td><td class="num">9.39</td><td>≥ 4.6</td><td class="ok">通過</td></tr>
+        <tr><td>--caution</td><td class="num">10.64</td><td class="num">9.86</td><td class="num">8.78</td><td class="num">10.36</td><td>≥ 3</td><td class="ok">通過</td></tr>
+        <tr><td>--destructive</td><td class="num">5.12</td><td class="num">4.75</td><td class="num">4.23</td><td class="num">4.99</td><td>≥ 3</td><td class="ok">通過</td></tr>
+        <tr><td>--line（純裝飾）</td><td class="num">1.41</td><td class="num">1.31</td><td class="num">1.16</td><td class="num">1.37</td><td>無要求</td><td class="ok">—</td></tr>
+        <tr><td>--line-strong（純裝飾）</td><td class="num">2.04</td><td class="num">1.89</td><td class="num">1.68</td><td class="num">1.98</td><td>無要求</td><td class="ok">—</td></tr>
+      </tbody>
+    </table>
+
+    <h3>語意色當底色時的搭配（四表面之外，另外算過的組合）</h3>
+    <table>
+      <thead><tr><th>組合</th><th class="num">明主題</th><th class="num">暗主題</th><th>門檻</th><th>結果</th></tr></thead>
+      <tbody>
+        <tr><td>--signal-fg 落在 --signal 上（主要按鈕、待處理數字 badge）</td><td class="num">7.06</td><td class="num">7.99</td><td>≥ 7</td><td class="ok">通過</td></tr>
+        <tr><td>--foreground 落在 --signal-bg 上</td><td class="num">13.48</td><td class="num">11.82</td><td>≥ 7</td><td class="ok">通過</td></tr>
+        <tr><td>--signal-ink 落在 --signal-bg 上（浮出態當前項）</td><td class="num">6.90</td><td class="num">6.94</td><td>≥ 4.6</td><td class="ok">通過</td></tr>
+        <tr><td>--signal 落在 --signal-bg 上（3px 左側條）</td><td class="num">5.83</td><td class="num">5.75</td><td>≥ 3</td><td class="ok">通過</td></tr>
+      </tbody>
+    </table>
+
+    <h3>未驗算（誠實標注，不編數字）</h3>
+    <ul>
+      <li>hover／focus 的瞬時狀態沒有逐一驗算——這些狀態只改邊框顏色與底色一階，不改文字色，且文字色在四個表面都已過門檻，但我沒有把「hover 後的實際底色」當成第五個表面單獨跑過一次。</li>
+      <li><code class="mono">accent-color</code> 交給瀏覽器算出的 checkbox 勾記顏色（打勾符號的白色由瀏覽器決定）未驗算。</li>
+      <li>emoji（🔧🧪🛠⚠️🎯）是系統彩色字型，其自身顏色不受 token 控制，未驗算；它們是內容不是狀態指示，狀態由左側線型與「完整／降級／缺值」字符承載。</li>
+      <li>WCAG 2.x 的相對亮度公式對「大面積暗底細字」的實際可讀性偏樂觀，這是公式本身的已知限制，不是本檔的計算誤差。</li>
+    </ul>
+
+    <h3>h40（可點）與 h24 附近（危險）怎麼分：色相只差 15 度，所以不靠色相</h3>
+    <p>
+      赤陶 h40 與危險紅 h25 在色相環上只差 15 度。如果兩者同樣是「中明度、中彩度的暖紅橘」，
+      在 3px 邊框、11px badge 這種小面積上，一般人幾乎分不出來，色覺缺陷者更是完全分不出。
+      所以本版的區分做在<b>三個彼此獨立的維度</b>上，任何一個維度單獨成立就足以判讀：
+    </p>
+    <div class="sw-row">
+      <div class="sw">
+        <div class="bar s"></div>
+        <div class="cap">
+          <b>--signal（可互動／當前選取）</b><br>
+          明 <span class="mono">oklch(0.470 0.126 40)</span><br>
+          暗 <span class="mono">oklch(0.740 0.108 42)</span><br>
+          彩度低（C 0.108~0.126），是<b>帶土味的磚紅</b>。
+        </div>
+      </div>
+      <div class="sw">
+        <div class="bar d"></div>
+        <div class="cap">
+          <b>--destructive（危險／錯誤）</b><br>
+          明 <span class="mono">oklch(0.508 0.206 25)</span><br>
+          暗 <span class="mono">oklch(0.638 0.202 25)</span><br>
+          彩度高（C 0.202~0.206），是<b>刺眼的純紅</b>。
+        </div>
+      </div>
+    </div>
+    <ul>
+      <li><b>維度一，彩度差 1.6~1.9 倍。</b>明主題 0.126 對 0.206、暗主題 0.108 對 0.202。這不是「深一點淺一點」的差別：赤陶讀起來是<b>被壓低的、接近中性的土色</b>，危險紅讀起來是<b>沒被壓過的原色</b>。在同一個畫面並排時，差異比 15 度的色相差明顯得多。</li>
+      <li><b>維度二，形狀相反，而且是硬規則。</b>signal <b>只做實心填滿</b>（主要按鈕、選中的則數、badge、3px 左側實心條），永遠不用虛線；destructive <b>只做虛線外框、永不填滿</b>，而且一定帶一個 ✕ 字符。所以就算把整個畫面轉成灰階，「實心塊」與「虛線框＋✕」仍然是兩種東西。</li>
+      <li><b>維度三，出現位置互斥。</b>signal 只出現在導覽的當前項、主要動作鈕、選取中的列與 focus 環；destructive 只出現在會刪除既有資料的動作上，而那類動作在本工作台只有一處。使用者不需要靠顏色記憶，靠位置就先分掉一半。</li>
+    </ul>
+    <p>下面是兩者在相同情境下的實際樣子——請注意即使只看形狀也分得出來：</p>
+    <div class="demo-btns">
+      <button class="btn btn-primary" type="button">
+        <svg class="ic ic-sm" aria-hidden="true"><use href="#i-refresh"/></svg>重新摘要
+      </button>
+      <button class="btn btn-danger" type="button">
+        <span aria-hidden="true">✕</span>刪除這份 Summary
+      </button>
+    </div>
+    <p style="margin-top:10px">
+      <b>另外，--caution（h88 金色）沒有跟這兩個撞。</b>它離 signal 有 48 度、離 destructive 有 63 度，
+      而且在本畫面完全沒被當成色塊用——警示狀態一律走虛線與「降級」字符。
+      這正是 spec 第 6 節第 2 條要的：色盲使用者把整頁轉成灰階也讀得懂。
+    </p>
+
+    <h3>密度處理：怎麼做到密而不亂</h3>
+    <ul>
+      <li><b>三條垂直對齊軸</b>：卡片標頭的文字、meta 列、卡片內文、表格儲存格、清單項目，左緣一律落在同一條線上（相對各自容器 10px）。清單項目與導覽項的 3px 狀態條佔掉 3px，內距補 7px，所以有沒有選中，文字都不位移。</li>
+      <li><b>每張卡片都有 --muted 標頭列</b>，深色的橫帶把畫面切成幾個明確的水平段落。掃視時先看深色帶找區塊，再進區塊找列——兩層節奏，不是一大片均勻的字。</li>
+      <li><b>表格有表頭與斑馬列</b>，眼睛沿著列走不會串行；數值欄一律等寬字、右對齊、tabular-nums，位數自動對齊，長度差異直接變成視覺上的長條圖。</li>
+      <li><b>間距縮 20%，行高反而放大。</b>間距階是 3/6/10/13/16（常規的 0.8 倍），但摘要正文與表格內文的行高是 1.65 與 1.6。省下來的是區塊<b>之間</b>的空白，不是字<b>裡面</b>的呼吸——因為摘要正文是要拿來做判斷的文字，讀得動比塞得多重要。</li>
+      <li><b>顏色幾乎不參與分層。</b>整個主畫面（1440×900）有顏色的地方一共七處，而且全部是 --signal 同一個顏色：左上品牌方塊、導覽當前項「摘要」、待處理數字 6、Space 清單當前項、選中的則數 20、主要按鈕「重新摘要」、以及底部「即時資料」的小圓點。--destructive 與 --caution 在主畫面完全沒出現。其餘分層全部靠四個表面的明度差與 1px 規線。密度高的畫面一旦多給幾個顏色，就會從「密」變成「吵」。</li>
+      <li><b>最大的字是 22px 的 240,275</b>，標題最大 15px。整頁只有一個視覺高點，眼睛有地方落。</li>
+    </ul>
+
+    <h3>spec 第 6 節十條原則的自我對照</h3>
+    <ul>
+      <li>1 顏色是稀有資源 — 只有 --signal 與 --destructive 兩個語意色會被看到，--caution 未在主畫面出現。</li>
+      <li>2 狀態先用線型與字符 — 摘要五個章節用實線／虛線／點線 + 完整／降級／缺值字符；危險動作用虛線 + ✕。</li>
+      <li>3 最大字是一個數字 — 22px 只給 240,275，標題上限 15px。</li>
+      <li>4 等寬只服務對齊 — space id、model id、日期、數值欄、則數用等寬；所有 CJK 內文不用等寬。</li>
+      <li>5 不加漸層 — 全檔沒有任何 gradient。</li>
+      <li>6 不給每張卡片灰陰影 — 全檔唯一的 box-shadow 在浮出態示意的導覽浮層上，且用 oklch 帶 alpha 寫。</li>
+      <li>7 不用 all-caps — 全檔沒有 text-transform，沒有英文全大寫標籤。</li>
+      <li>8 不用中點分隔 — 副標與 meta 列一律用 1px 豎線（.vr）加間距。</li>
+      <li>9 不用 tooltip 承載唯一資訊 — 收合態 rail 每個圖示下方都有文字縮寫，停用項有鎖頭圖示，浮出態寫明「即將推出」。</li>
+      <li>10 密度來自有內容的資訊 — 裝飾性圖示只有導覽與按鈕前綴，其餘都是資料。</li>
+    </ul>
+
+  </div>
+</details>
+
+<script>
+/* 唯一的 JS：明暗主題切換（rail 底部與 TopBar 右上兩顆鈕，切同一個 <html class="dark">） */
+(function () {
+  var root = document.documentElement;
+  var toggles = document.querySelectorAll('[data-theme-toggle]');
+
+  function apply(isDark) {
+    root.classList.toggle('dark', isDark);
+    document.querySelectorAll('[data-theme-icon]').forEach(function (u) {
+      u.setAttribute('href', isDark ? '#i-sun' : '#i-moon');
+    });
+    document.querySelectorAll('[data-theme-label]').forEach(function (el) {
+      el.textContent = isDark ? '淺色' : '深色';
+    });
+    toggles.forEach(function (b) {
+      b.setAttribute('aria-pressed', String(isDark));
+      b.setAttribute('aria-label', isDark ? '切換為淺色主題' : '切換為深色主題');
+    });
+  }
+
+  toggles.forEach(function (b) {
+    b.addEventListener('click', function () {
+      apply(!root.classList.contains('dark'));
+    });
+  });
+
+  apply(false);
+})();
+</script>

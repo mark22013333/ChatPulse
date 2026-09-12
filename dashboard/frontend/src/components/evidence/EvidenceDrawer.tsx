@@ -41,7 +41,9 @@ export function EvidenceDrawer({ open, origin, onClose }: EvidenceDrawerProps) {
       tabIndex={-1}
       role="complementary"
       aria-label="證據"
-      className="border-line bg-background shadow-overlay fixed top-12 right-0 bottom-0 z-40 flex w-rail flex-col border-l outline-none"
+      // top 必須與頂列等高。這個數字以前在這裡與 TopBar 各寫一次（都是 `12`），
+      // 改高度就得記得改兩個地方——現在一起吃 --topbar-h。
+      className="border-line bg-background shadow-overlay fixed top-(--topbar-h) right-0 bottom-0 z-40 flex w-rail flex-col border-l outline-none"
     >
       <div className="border-line flex shrink-0 items-center justify-end border-b px-gutter-tight py-1">
         <Button size="sm" variant="ghost" onClick={onClose}>

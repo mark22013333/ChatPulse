@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { Loader2Icon } from 'lucide-react'
 import { MasterDetailBack } from '@/app/MasterDetailBack'
 import { Pane } from '@/app/Pane'
+import { SideNav } from '@/app/SideNav'
 import { SmallScreenNotice } from '@/app/SmallScreenNotice'
 import { StreamLiveRegions } from '@/app/StreamLiveRegions'
 import { TopBar } from '@/app/TopBar'
@@ -11,6 +12,7 @@ import { SkipLink } from '@/components/common/SkipLink'
 import { EvidenceColumn } from '@/components/evidence/EvidenceColumn'
 import { EvidenceDrawer } from '@/components/evidence/EvidenceDrawer'
 import { DiagnosticsPage } from '@/components/settings/DiagnosticsPage'
+import { TokenSheet } from '@/dev/TokenSheet'
 import { SettingsOverlay } from '@/components/settings/SettingsOverlay'
 import { DraftReplyWorkspace } from '@/components/draft/DraftReplyWorkspace'
 import { LoginScreen } from '@/components/LoginScreen'
@@ -85,6 +87,19 @@ export function AppShell() {
     [externalMention, mentions, selectedMentionId],
   )
 
+  // 開發用的 token 對照表（規格 §16.3）。排在所有 gate 之前——它不需要任何資料，
+  // 而換配色時常常就是在還沒登入的狀態下要看。
+  //
+  // 判準讀 `window.location.hash` 而不是 `route.section`：`#/dev/tokens` 不是
+  // 產品模組，不該進模組表、也不該混進 `Section` 型別。parseHash 會把它
+  // fallback 成 summary，但 hash 字串本身還在，拿它判就好。
+  //
+  // `import.meta.env.DEV` 在正式建置會被替換成 `false`，整段變成死碼，
+  // TokenSheet 連同它的 import 一起被 tree-shake 掉（建置後 grep 得出來）。
+  if (import.meta.env.DEV && window.location.hash.startsWith('#/dev/tokens')) {
+    return <TokenSheet />
+  }
+
   if (booting) {
     return (
       // 單行內容，永遠不會溢出，所以不掛 overflow——掛了反而會與 `items-center`
@@ -123,13 +138,27 @@ export function AppShell() {
       而是**文字節點**。2026-09-11 就這樣把整段中文渲染到畫面上、把 shell
       往下推了 45px（`shellTop` 從 0 變 45），是自己的探針量出來才發現的。
     */}
-    <div className="flex h-full flex-col overflow-clip bg-background text-foreground">
+    <div className="flex h-full overflow-clip bg-background text-foreground">
       {/* 「主要內容」會變：主從切換顯示清單那一半時 `<main>` 是 inert 的，
           那時清單本身就是主要內容 */}
       <SkipLink href={mainHidden ? '#rail' : '#main'} />
 
       <StreamLiveRegions />
 
+      {/*
+        左側主導覽。**外框從 flex-col 改成 flex-row**：導覽是版面的第一欄，
+        頂列與三欄工作區都住在它右邊的直向容器裡。
+
+        這個順序有意義——頂列不橫跨導覽，導覽也不被頂列切成上下兩半。
+        兩者都是「全站級」的東西，但一個回答「有哪些模組」、一個回答
+        「這個模組裡你在哪」，讓它們正交比讓它們交叉好讀。
+
+        SkipLink 與 StreamLiveRegions 都是 sr-only（焦點時才 absolute 浮出），
+        放在 flex-row 容器裡不會佔掉一欄寬度。
+      */}
+      <SideNav />
+
+      <div className="flex min-w-0 flex-1 flex-col">
       <TopBar />
 
       {/*
@@ -228,6 +257,7 @@ export function AppShell() {
             <EvidenceColumn origin="draft" />
           </Pane>
         </aside>
+        </div>
       </div>
 
       <CommandPalette />

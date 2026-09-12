@@ -1,3 +1,4 @@
+import { READY_MODULES } from '@/lib/modules'
 import { hashForMentions, hashForSettings, hashForSummary } from '@/lib/route'
 import type { Mention, Space } from '@/lib/types'
 
@@ -21,10 +22,20 @@ export interface Command {
   pinned?: boolean
 }
 
+/**
+ * 「前往」清單由模組表推導，不要手寫——**新增一個工作台時最容易漏掉的就是這裡**：
+ * 導覽上看得到、⌘K 裡卻搜不到，而這種漏不會編譯失敗。
+ *
+ * 診斷頁不在模組表裡，它是設定底下的一個分頁（而且刻意排在登入 gate 之前），
+ * 所以單獨列。
+ */
 const NAV_COMMANDS: Command[] = [
-  { id: 'go-summary', label: '摘要工作台', group: '前往', href: hashForSummary() },
-  { id: 'go-mentions', label: 'Mention 收件匣', group: '前往', href: hashForMentions() },
-  { id: 'go-settings', label: '設定', group: '前往', href: hashForSettings('reply') },
+  ...READY_MODULES.map((module) => ({
+    id: `go-${module.id}`,
+    label: module.label,
+    group: '前往' as const,
+    href: module.hash,
+  })),
   {
     id: 'go-diagnostics',
     label: '診斷',

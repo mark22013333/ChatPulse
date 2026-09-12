@@ -12,7 +12,16 @@
  * 這個檔沒有任何 React 或 store 相依，可以在 node 環境直接測。
  */
 
-export type Section = 'summary' | 'mentions' | 'settings'
+/**
+ * `Section` 的定義搬到 `lib/modules.ts` 了——模組表是「有哪些頂層工作台」的
+ * 唯一事實來源，型別由它推導，不要在這裡再維護一份聯集。
+ *
+ * 這裡 re-export 是為了相容：既有的 `import { type Section } from '@/lib/route'`
+ * 不必全部改。**type-only re-export 不產生執行期 import**，所以這個檔
+ * 「零 React／零 store 相依、可在 node 環境直接測」的契約沒有被破壞。
+ */
+export type { Section } from '@/lib/modules'
+import type { Section } from '@/lib/modules'
 
 export const SETTINGS_TABS = [
   'reply',

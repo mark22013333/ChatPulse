@@ -2,6 +2,8 @@
  * 全域快捷鍵的判斷邏輯（設計規格 §11）。純函式，node 可測。
  */
 
+import { READY_MODULES, type Section } from '@/lib/modules'
+
 /**
  * 這個事件的目標是不是輸入中的欄位？
  *
@@ -48,9 +50,12 @@ export type HotkeyAction =
   | 'help'
   /** 按下了兩鍵序列的前綴，還在等第二個鍵 */
   | 'sequence'
-  | 'go-summary'
-  | 'go-mentions'
-  | 'go-settings'
+  /**
+   * 導覽動作由模組表推導（`go-summary` | `go-mentions` | `go-settings`）。
+   * 新增一個已上線的工作台時，這個聯集會自動長出對應的 action——
+   * 呼叫端若有窮舉 switch，TypeScript 會直接在那裡報出「你還沒接上」。
+   */
+  | `go-${Section}`
   | 'go-diagnostics'
   | 'generate'
   | 'stop'
@@ -71,12 +76,15 @@ export const SEQUENCE_PREFIX = 'g'
  */
 export const SEQUENCE_TIMEOUT_MS = 1000
 
-/** 按下前綴之後，第二個鍵對應的動作。 */
-const SEQUENCE_MAP: Record<string, HotkeyAction> = {
-  s: 'go-summary',
-  m: 'go-mentions',
-  ',': 'go-settings',
-  h: 'go-diagnostics',
+/**
+ * 按下前綴之後，第二個鍵對應的動作。
+ *
+ * 模組的鍵位寫在模組表的 `hotkey` 欄位，這裡只負責組裝——同一件事不要在
+ * 兩個檔案各記一份。診斷頁不是模組（它是設定底下的分頁），所以單獨列。
+ */
+const SEQUENCE_MAP: Record<string, HotkeyAction> = { h: 'go-diagnostics' }
+for (const module of READY_MODULES) {
+  if (module.hotkey) SEQUENCE_MAP[module.hotkey] = `go-${module.id}`
 }
 
 /**

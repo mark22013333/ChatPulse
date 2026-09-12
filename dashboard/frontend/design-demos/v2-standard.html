@@ -1,0 +1,942 @@
+<!doctype html>
+<!--
+  ChatPulse 後台介面改版 mockup — v2「標準」（admin console 氣質：Stripe Dashboard / Supabase）
+  只做「摘要工作台」一個畫面。純 HTML + CSS，零外部 CDN，零框架，只有一小段 vanilla JS 切主題。
+
+  三個差異參數（SPEC 第 7 節 v2 欄）的取值：
+    1) 主導覽    ＝ 200px 常駐展開：圖示 + 文字 + 待處理數字 badge（Mention 收件匣 = 6）
+                   水平帳：200(nav) + 288(Space) + 320(證據) = 808，1440 下主內容區 = 632px
+    2) 卡片強度  ＝ 中：--surface 與 --background 的 ΔL = 0.025（明暗兩主題同幅），邊框刻意壓淡
+                   亮：background L .952 / surface L .977 / raised L .995 / muted L .928
+                   暗：background L .188 / surface L .213 / raised L .252 / muted L .162
+    3) accent    ＝ 琥珀 h72：--signal oklch(0.78 0.158 72)（亮）/ oklch(0.785 0.15 72)（暗）
+                   線與字形態的 accent 用 --signal-text oklch(0.505 0.115 62)/(0.81 0.135 75)
+                   撞色處理（四層，前兩層完全不靠顏色）：
+                     1 角色互斥——accent 只給「可互動／當前選取」，警示色只給「證據降級」，
+                       3px 規線一律不用 accent，SPEC 警告的 3px 撞色在結構上不存在
+                     2 線型＋文字——實線完整／虛線降級／點線缺值，每段另印「完整／降級／缺值」
+                     3 彩度差——caution 彩度壓到 0.030（亮）/0.034（暗），是 accent 的 1/5；
+                       色相同時由 h70 推到 h95
+                     4 灰階亮度——signal 對 caution 灰階比 4.86:1（亮）/1.95:1（暗）
+                   完整說明與實測數字見本檔最底部 <details>。
+
+  色彩硬約束：全檔顏色一律 oklch()，零 hex、零 RGB 函式、零 HSL 函式（含陰影——本檔完全不用陰影）。
+-->
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1440">
+<title>ChatPulse 摘要工作台 — v2 標準</title>
+<style>
+/* ============================================================
+   1. Token
+   ============================================================ */
+:root{
+  color-scheme: light;
+
+  /* 四個表面（低 → 高） */
+  --background: oklch(0.9520 0.0070 75);
+  --surface:    oklch(0.9770 0.0045 75);
+  --raised:     oklch(0.9950 0.0025 75);
+  --muted:      oklch(0.9280 0.0085 75);
+
+  /* 前景 */
+  --foreground:  oklch(0.2480 0.0150 55);
+  --fg-dim:      oklch(0.4250 0.0150 55);
+  --fg-subtle:   oklch(0.5100 0.0135 55);
+  --fg-disabled: oklch(0.6900 0.0110 55);
+
+  /* 規線 */
+  --line:          oklch(0.8830 0.0080 75);   /* 純裝飾：無對比要求 */
+  --line-strong:   oklch(0.8050 0.0100 75);   /* 結構邊框：無對比要求 */
+  --line-evidence: oklch(0.5600 0.0160 60);   /* 承載語意：≥3:1 */
+
+  /* 語意色：只有三個（signal / caution / destructive）。
+     signal 有三個同色相變體，各有嚴格用途：
+       --signal       只當「填色」（主要鈕底、badge 底），永不當線或字
+       --signal-text  所有「線與字」的 accent（選取條、focus 環、圖示、主要鈕邊框）
+       --signal-ink   疊在 --signal 填色上的文字 */
+  --signal:      oklch(0.7800 0.1580 72);
+  --signal-text: oklch(0.5050 0.1150 62);
+  --signal-ink:  oklch(0.2800 0.0620 58);
+  --signal-soft: oklch(0.9450 0.0400 78);
+
+  /* caution：色相推到 h95、彩度壓到 0.030（signal 的 1/5），只當線與邊框用 */
+  --caution:      oklch(0.3800 0.0300 95);
+  --caution-soft: oklch(0.9350 0.0180 95);
+
+  --destructive:  oklch(0.5150 0.1750 27);
+
+  /* 字型 */
+  --sans: 'PingFang TC','Hiragino Sans CNS','Noto Sans TC', system-ui, sans-serif;
+  --mono: ui-monospace,'SF Mono', Menlo, Consolas, monospace;
+}
+
+html.dark{
+  color-scheme: dark;
+
+  --background: oklch(0.1880 0.0070 75);
+  --surface:    oklch(0.2130 0.0075 75);
+  --raised:     oklch(0.2520 0.0085 75);
+  --muted:      oklch(0.1620 0.0060 75);
+
+  --foreground:  oklch(0.9430 0.0070 80);
+  --fg-dim:      oklch(0.7600 0.0120 80);
+  --fg-subtle:   oklch(0.6450 0.0130 80);
+  --fg-disabled: oklch(0.4700 0.0110 80);
+
+  --line:          oklch(0.3080 0.0090 75);
+  --line-strong:   oklch(0.3950 0.0110 75);
+  --line-evidence: oklch(0.6300 0.0160 75);
+
+  --signal:      oklch(0.7850 0.1500 72);
+  --signal-text: oklch(0.8100 0.1350 75);
+  --signal-ink:  oklch(0.2150 0.0500 58);
+  --signal-soft: oklch(0.3000 0.0500 70);
+
+  --caution:      oklch(0.6000 0.0340 95);
+  --caution-soft: oklch(0.2700 0.0180 95);
+
+  --destructive:  oklch(0.6900 0.1700 27);
+}
+
+/* ============================================================
+   2. Reset / base
+   ============================================================ */
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  font-family:var(--sans);
+  font-size:13px;
+  line-height:1.6;
+  background:var(--background);
+  color:var(--foreground);
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+}
+a{color:inherit;text-decoration:none}
+button,input,select{font:inherit;color:inherit}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+:focus-visible{outline:2px solid var(--signal-text);outline-offset:2px;border-radius:3px}
+::selection{background:var(--signal-soft);color:var(--foreground)}
+
+.scroll{overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--line-strong) transparent}
+.scroll::-webkit-scrollbar{width:9px}
+.scroll::-webkit-scrollbar-thumb{background:var(--line-strong);border-radius:5px;
+  border:3px solid var(--background);background-clip:padding-box}
+.scroll::-webkit-scrollbar-track{background:transparent}
+
+.icon{width:16px;height:16px;flex:none;stroke:currentColor;fill:none;
+  stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.icon-sm{width:13px;height:13px;stroke-width:1.9}
+
+/* 分隔用的 1px 豎線（取代中點） */
+.rule-v{width:1px;align-self:stretch;background:var(--line);flex:none}
+
+/* ============================================================
+   3. 外框
+   ============================================================ */
+/* 每一層都把 grid row 明確鎖成 minmax(0,1fr)，否則隱含的 auto row 會被內容撐破 100vh */
+.app{display:grid;grid-template-columns:200px minmax(0,1fr);grid-template-rows:minmax(0,1fr);
+  height:100vh;min-height:660px;overflow:hidden}
+.shell{display:grid;grid-template-rows:48px minmax(0,1fr);min-width:0;min-height:0}
+.workarea{display:grid;grid-template-columns:288px minmax(0,1fr) 320px;
+  grid-template-rows:minmax(0,1fr);min-height:0}
+
+/* ============================================================
+   4. 主導覽 SideNav 200px
+   ============================================================ */
+.sidenav{
+  background:var(--surface);
+  border-right:1px solid var(--line);
+  display:flex;flex-direction:column;min-height:0;
+}
+.brand{display:flex;align-items:center;gap:9px;height:48px;padding:0 14px;
+  border-bottom:1px solid var(--line)}
+.brand .mark{width:22px;height:22px;border-radius:6px;background:var(--signal);
+  color:var(--signal-ink);display:grid;place-items:center;flex:none}
+.brand .mark svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:2;
+  stroke-linecap:round;stroke-linejoin:round}
+.brand b{font-size:13.5px;font-weight:600;letter-spacing:.01em}
+.brand span{font-size:10.5px;color:var(--fg-subtle);margin-top:1px}
+
+.navgroup{padding:12px 10px 6px}
+.navgroup-label{font-size:10.5px;color:var(--fg-subtle);padding:0 8px 6px;letter-spacing:.02em}
+.navlist{display:flex;flex-direction:column;gap:1px}
+.navitem{display:flex;align-items:center;gap:9px;height:32px;padding:0 9px;
+  border-radius:6px;font-size:13px;color:var(--fg-dim);position:relative;
+  border:1px solid transparent}
+.navitem:hover{background:var(--muted);color:var(--foreground)}
+.navitem[aria-current="page"]{
+  background:var(--raised);border-color:var(--line);color:var(--foreground);font-weight:600}
+.navitem[aria-current="page"]::before{
+  content:"";position:absolute;left:-10px;top:6px;bottom:6px;width:3px;
+  border-radius:0 2px 2px 0;background:var(--signal-text)}
+.navitem[aria-current="page"] .icon{color:var(--signal-text)}
+.navitem[aria-disabled="true"]{color:var(--fg-disabled);background:var(--muted);
+  cursor:default;pointer-events:none}
+.navitem .lbl{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.badge{min-width:19px;height:18px;padding:0 5px;border-radius:9px;flex:none;
+  display:grid;place-items:center;font-size:11px;font-weight:600;
+  font-family:var(--mono);font-variant-numeric:tabular-nums;
+  background:var(--signal);color:var(--signal-ink);
+  border:1px solid var(--signal-text)}
+.soon{font-size:10px;color:var(--fg-disabled);border:1px dashed var(--line-strong);
+  border-radius:4px;padding:1px 4px;flex:none;line-height:1.4}
+
+.nav-foot{margin-top:auto;padding:10px;border-top:1px solid var(--line);
+  display:flex;flex-direction:column;gap:1px}
+.nav-foot .navitem{font-size:12.5px}
+.nav-foot .navitem.danger:hover{color:var(--destructive)}
+.nav-foot .navitem.danger:hover .icon{color:var(--destructive)}
+
+/* ============================================================
+   5. TopBar
+   ============================================================ */
+.topbar{display:flex;align-items:center;gap:10px;padding:0 16px;
+  border-bottom:1px solid var(--line);background:var(--surface)}
+.crumb{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--fg-dim);min-width:0}
+.crumb .sep{color:var(--fg-subtle)}
+.crumb b{color:var(--foreground);font-weight:600}
+.topbar .spacer{flex:1}
+.tb-btn{display:flex;align-items:center;gap:6px;height:28px;padding:0 9px;border-radius:6px;
+  border:1px solid var(--line);background:var(--raised);color:var(--fg-dim);
+  font-size:12px;cursor:pointer}
+.tb-btn:hover{color:var(--foreground);border-color:var(--line-strong)}
+.tb-btn[aria-pressed="true"]{color:var(--signal-text);border-color:var(--signal-text);
+  background:var(--signal-soft)}
+.kbd{font-family:var(--mono);font-size:11px;color:var(--fg-subtle);
+  background:var(--muted);border:1px solid var(--line);border-radius:4px;padding:1px 4px}
+.whoami{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--foreground)}
+.avatar{width:22px;height:22px;border-radius:50%;background:var(--muted);
+  border:1px solid var(--line);display:grid;place-items:center;color:var(--fg-dim);flex:none}
+.icon-btn{width:28px;height:28px;border-radius:6px;border:1px solid var(--line);
+  background:var(--raised);color:var(--fg-dim);display:grid;place-items:center;cursor:pointer}
+.icon-btn:hover{color:var(--foreground);border-color:var(--line-strong)}
+html:not(.dark) .only-dark{display:none}
+html.dark .only-light{display:none}
+
+/* ============================================================
+   6. 上下文欄：Space 清單 288px
+   ============================================================ */
+.ctxcol{border-right:1px solid var(--line);background:var(--background);
+  display:grid;grid-template-rows:auto minmax(0,1fr) auto;min-height:0}
+.ctx-head{padding:12px;border-bottom:1px solid var(--line)}
+.ctx-title{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:9px}
+.ctx-title h2{margin:0;font-size:12.5px;font-weight:600}
+.ctx-title span{font-size:11px;color:var(--fg-subtle)}
+.search{position:relative;display:flex;align-items:center}
+.search .icon{position:absolute;left:9px;color:var(--fg-subtle);pointer-events:none}
+.search input{width:100%;height:30px;padding:0 10px 0 30px;border-radius:6px;
+  border:1px solid var(--line);background:var(--raised);font-size:12.5px}
+.search input::placeholder{color:var(--fg-subtle)}
+
+.spacelist{padding:6px}
+.space{display:flex;gap:9px;align-items:flex-start;padding:7px 9px;border-radius:6px;
+  position:relative;border:1px solid transparent;cursor:pointer}
+.space:hover{background:var(--muted)}
+.space .icon{margin-top:2px;color:var(--fg-subtle)}
+.space .nm{display:block;font-size:12.5px;line-height:1.35;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.space .sub{display:block;font-size:10.5px;color:var(--fg-subtle);line-height:1.4;margin-top:2px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.space .txt{min-width:0;flex:1}
+.space[aria-selected="true"]{background:var(--raised);border-color:var(--line-strong)}
+.space[aria-selected="true"] .nm{font-weight:600}
+.space[aria-selected="true"] .icon{color:var(--signal-text)}
+.space[aria-selected="true"]::before{content:"";position:absolute;left:-6px;top:4px;bottom:4px;
+  width:3px;border-radius:0 2px 2px 0;background:var(--signal-text)}
+
+.ctx-foot{display:flex;align-items:center;gap:8px;height:30px;padding:0 12px;
+  border-top:1px solid var(--line);background:var(--muted);
+  font-size:10.5px;color:var(--fg-subtle)}
+
+/* ============================================================
+   7. 主內容區 632px
+   ============================================================ */
+.main{padding:16px 20px 28px;min-width:0;background:var(--background)}
+.page-head{display:flex;align-items:flex-start;gap:10px;margin-bottom:14px}
+.page-head h1{margin:0;font-size:16px;font-weight:600;line-height:1.35}
+.page-head .sid{font-size:11px;color:var(--fg-subtle);margin-top:3px;display:block}
+
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:9px}
+.panel + .panel{margin-top:12px}
+
+/* 工具列 */
+.toolbar{padding:13px 14px}
+.fields{display:grid;grid-template-columns:1fr 108px;gap:10px 12px}
+.field{display:flex;flex-direction:column;gap:5px;min-width:0}
+.field.wide{grid-column:1 / -1}
+.field label{font-size:11px;color:var(--fg-dim)}
+.ctl{position:relative;display:flex;align-items:center}
+.ctl .chev{position:absolute;right:9px;color:var(--fg-subtle);pointer-events:none}
+select,.numinput{width:100%;height:30px;border-radius:6px;border:1px solid var(--line);
+  background:var(--raised);font-size:12.5px;padding:0 10px}
+select{appearance:none;padding-right:28px;cursor:pointer;text-overflow:ellipsis}
+.numinput{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.numinput::-webkit-outer-spin-button,.numinput::-webkit-inner-spin-button{
+  -webkit-appearance:none;margin:0}
+
+.toolbar-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:13px;
+  padding-top:13px;border-top:1px solid var(--line)}
+
+.btn{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px;
+  border-radius:6px;border:1px solid var(--line);background:var(--raised);
+  color:var(--foreground);font-size:12.5px;cursor:pointer;white-space:nowrap}
+.btn:hover{border-color:var(--line-strong);background:var(--muted)}
+.btn-primary{background:var(--signal);border-color:var(--signal-text);color:var(--signal-ink);
+  font-weight:600}
+.btn-primary:hover{background:var(--signal-soft);border-color:var(--signal-text);
+  color:var(--signal-text)}
+.btn-sm{height:26px;padding:0 9px;font-size:11.5px}
+.btn-ghost{background:transparent;border-color:transparent;color:var(--fg-dim)}
+.btn-ghost:hover{background:var(--muted);color:var(--foreground);border-color:var(--line)}
+
+/* 最近訊息摺疊區 */
+.recent{background:var(--surface);border:1px solid var(--line);border-radius:9px;margin-top:12px}
+.recent > summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:8px;
+  padding:9px 14px;font-size:12.5px;color:var(--fg-dim)}
+.recent > summary::-webkit-details-marker{display:none}
+.recent[open] > summary{border-bottom:1px solid var(--line);color:var(--foreground)}
+.recent > summary .caret{transition:transform .15s ease;color:var(--fg-subtle)}
+.recent[open] > summary .caret{transform:rotate(180deg)}
+.recent-body{display:flex;align-items:center;gap:10px;padding:11px 14px}
+.seg{display:inline-flex;background:var(--muted);border:1px solid var(--line);
+  border-radius:7px;padding:2px;gap:2px}
+.seg button{height:24px;min-width:38px;padding:0 9px;border:1px solid transparent;
+  border-radius:5px;background:transparent;color:var(--fg-dim);font-size:12px;cursor:pointer;
+  font-family:var(--mono);font-variant-numeric:tabular-nums}
+.seg button:hover{color:var(--foreground)}
+.seg button[aria-pressed="true"]{background:var(--raised);border-color:var(--line-strong);
+  color:var(--signal-text);font-weight:600}
+.unit{font-size:11.5px;color:var(--fg-subtle)}
+
+/* 摘要卡 */
+.sum-head{padding:11px 14px;border-bottom:1px solid var(--line);background:var(--surface);
+  border-radius:9px 9px 0 0}
+.meta{display:flex;align-items:center;gap:10px;font-size:11px;color:var(--fg-dim);
+  min-width:0}
+.meta + .meta{margin-top:7px}
+.meta .m{display:flex;align-items:center;gap:10px;min-width:0}
+.meta .m + .m::before{content:"";width:1px;height:11px;background:var(--line);
+  display:block;flex:none}
+.meta .k{color:var(--fg-subtle);flex:none}
+.meta .ell{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chip-mono{font-family:var(--mono);font-size:10.5px;background:var(--muted);
+  border:1px solid var(--line);border-radius:4px;padding:1px 5px;color:var(--fg-dim)}
+
+.legend{display:flex;align-items:center;gap:14px;padding:8px 14px;background:var(--muted);
+  border-bottom:1px solid var(--line);font-size:10.5px;color:var(--fg-dim)}
+.legend .lg{display:flex;align-items:center;gap:6px}
+.lg i{display:block;width:18px;height:0;border-top-width:2px}
+.lg .s-full{border-top-style:solid;border-top-color:var(--line-evidence)}
+.lg .s-part{border-top-style:dashed;border-top-color:var(--caution)}
+.lg .s-none{border-top-style:dotted;border-top-color:var(--line-evidence)}
+
+.sum-body{padding:4px 14px 14px}
+.sec{padding:12px 0 12px 13px;border-left-width:3px;position:relative}
+.sec + .sec{border-top:1px solid var(--line)}
+.sec.full{border-left-style:solid;border-left-color:var(--line-evidence)}
+.sec.part{border-left-style:dashed;border-left-color:var(--caution)}
+.sec.none{border-left-style:dotted;border-left-color:var(--line-evidence)}
+.sec-head{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.sec-head h3{margin:0;font-size:13px;font-weight:600;line-height:1.45}
+.state{font-size:10px;line-height:1.5;padding:1px 6px;border-radius:4px;flex:none;
+  border-width:1px;letter-spacing:.02em}
+.state.full{border-style:solid;border-color:var(--line-evidence);color:var(--fg-dim);
+  background:var(--muted)}
+.state.part{border-style:dashed;border-color:var(--caution);color:var(--foreground);
+  background:var(--caution-soft)}
+.state.none{border-style:dotted;border-color:var(--line-evidence);color:var(--fg-subtle);
+  background:transparent}
+.sec p{margin:0;font-size:13px;line-height:1.85;color:var(--foreground)}
+.sec p.dimmed{color:var(--fg-dim)}
+.sec ul{margin:7px 0 0;padding:0;list-style:none}
+.sec li{position:relative;padding-left:15px;font-size:12.5px;line-height:1.8;color:var(--fg-dim)}
+.sec li::before{content:"•";position:absolute;left:2px;color:var(--fg-subtle)}
+.ai-line{font-size:12.5px;line-height:1.85;color:var(--foreground);display:block}
+.ai-line + .ai-line{margin-top:5px}
+
+.sum-foot{display:flex;justify-content:flex-end;gap:8px;padding:11px 14px;
+  border-top:1px solid var(--line);background:var(--muted);border-radius:0 0 9px 9px}
+
+/* Action Items */
+.ai-head{display:flex;align-items:center;gap:10px;padding:11px 14px;
+  border-bottom:1px solid var(--line)}
+.ai-head h2{margin:0;font-size:13px;font-weight:600}
+.ai-head .count{font-size:11px;color:var(--fg-subtle);font-variant-numeric:tabular-nums}
+.ai-head .spacer{flex:1}
+.ai-list{padding:4px 14px 12px}
+.ai-item{display:flex;gap:10px;align-items:flex-start;padding:10px 0}
+.ai-item + .ai-item{border-top:1px solid var(--line)}
+.ai-item input[type=checkbox]{appearance:none;-webkit-appearance:none;width:15px;height:15px;
+  margin:3px 0 0;flex:none;cursor:pointer;position:relative;border-radius:4px;
+  border:1px solid var(--line-strong);background:var(--raised)}
+.ai-item input[type=checkbox]:hover{border-color:var(--signal-text)}
+.ai-item input[type=checkbox]:checked{background:var(--signal-text);border-color:var(--signal-text)}
+.ai-item input[type=checkbox]:checked::after{content:"";position:absolute;left:4px;top:1px;
+  width:4px;height:8px;border:solid var(--raised);border-width:0 2px 2px 0;transform:rotate(45deg)}
+.who{display:inline-block;font-size:11.5px;background:var(--muted);border:1px solid var(--line);
+  border-radius:4px;padding:0 6px;margin-right:5px;color:var(--foreground);white-space:nowrap}
+
+/* ============================================================
+   8. 證據欄 320px
+   ============================================================ */
+.evidence{border-left:1px solid var(--line);background:var(--surface);
+  display:flex;flex-direction:column;min-height:0}
+.ev-block{padding:12px 16px}
+.ev-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:9px}
+.ev-head h2{margin:0;font-size:12.5px;font-weight:600}
+.ev-head .cnt{font-size:11px;color:var(--fg-subtle);font-variant-numeric:tabular-nums}
+.hist{display:flex;flex-direction:column}
+.hist-item{padding:8px;border-radius:6px;border:1px solid transparent;cursor:pointer}
+.hist-item:hover{background:var(--muted);border-color:var(--line)}
+.hist-item .t{font-size:12px;line-height:1.4;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap}
+.hist-item .d{display:flex;align-items:center;gap:8px;margin-top:3px;font-size:10.5px;
+  color:var(--fg-subtle)}
+.hist-item .d .rule-v{height:9px;align-self:center}
+
+/* Token 用量是常駐計量footer：沉到 --background（四階裡最低的表面），
+   讓它與上方的清單面板明確分屬兩塊，中間的留白因此讀得出是刻意的而不是破圖 */
+.ev-foot{background:var(--background);border-top:1px solid var(--line)}
+
+.token-head{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:10px}
+.token-head h2{margin:0;font-size:12.5px;font-weight:600}
+.token-head .sub{font-size:10.5px;color:var(--fg-subtle);margin-top:2px}
+.bignum{font-family:var(--mono);font-size:22px;line-height:1;font-weight:600;
+  font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+table.tok{width:100%;border-collapse:collapse;font-size:11px}
+table.tok th{text-align:right;font-weight:500;color:var(--fg-subtle);font-size:10.5px;
+  padding:5px 7px;border-bottom:1px solid var(--line)}
+table.tok th:first-child{text-align:left}
+table.tok td{padding:6px 7px;text-align:right;font-family:var(--mono);
+  font-variant-numeric:tabular-nums;color:var(--fg-dim)}
+table.tok td:first-child{text-align:left;color:var(--foreground)}
+table.tok tbody tr:nth-child(odd){background:var(--muted)}
+table.tok tbody tr td:first-child{border-radius:4px 0 0 4px}
+table.tok tbody tr td:last-child{border-radius:0 4px 4px 0}
+
+/* ============================================================
+   9. 附錄（對比表）
+   ============================================================ */
+.appendix{border-top:1px solid var(--line-strong);background:var(--background);
+  padding:20px 24px 48px}
+.appendix > summary{cursor:pointer;font-size:13px;font-weight:600;padding:6px 0}
+.apx-body{max-width:1000px;font-size:12px;color:var(--fg-dim);line-height:1.85}
+.apx-body h3{font-size:12.5px;color:var(--foreground);margin:22px 0 8px}
+.apx-body p{margin:0 0 8px}
+.apx-body code{font-family:var(--mono);font-size:11px;background:var(--muted);
+  border:1px solid var(--line);border-radius:3px;padding:0 4px}
+table.apx{border-collapse:collapse;font-size:11px;margin:6px 0 4px;width:100%}
+table.apx th,table.apx td{border:1px solid var(--line);padding:4px 8px;text-align:right}
+table.apx th{background:var(--muted);color:var(--foreground);font-weight:600}
+table.apx td:first-child,table.apx th:first-child{text-align:left}
+table.apx td.pass{color:var(--foreground)}
+table.apx td.na{color:var(--fg-subtle)}
+.swatchrow{display:flex;gap:14px;flex-wrap:wrap;margin:10px 0 4px}
+.swatch{border:1px solid var(--line);border-radius:8px;padding:10px 12px;background:var(--surface);
+  min-width:210px}
+.swatch .bar{height:0;border-top-width:3px;margin-bottom:8px}
+.swatch .cap{font-size:10.5px;color:var(--fg-subtle)}
+</style>
+</head>
+<body>
+
+<!-- ===== SVG 圖示 sprite（lucide 風格線性圖示，無 emoji） ===== -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs>
+    <symbol id="i-pulse" viewBox="0 0 24 24"><path d="M3 12h4l3 8 4-16 3 8h4"/></symbol>
+    <symbol id="i-summary" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h5"/></symbol>
+    <symbol id="i-mention" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"/></symbol>
+    <symbol id="i-chart" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M7 16v-5"/><path d="M12 16V8"/><path d="M17 16v-3"/></symbol>
+    <symbol id="i-report" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/><path d="M8 15h4"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="M20 7h-8"/><path d="M14 17H4"/><circle cx="17" cy="17" r="3"/><circle cx="8" cy="7" r="3"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M6.3 17.7l-1.4 1.4M19.1 4.9l-1.4 1.4"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"/></symbol>
+    <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></symbol>
+    <symbol id="i-hash" viewBox="0 0 24 24"><path d="M4 9h16M4 15h16M10 3L8 21M16 3l-2 18"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></symbol>
+    <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 21a6.5 6.5 0 0 1 13 0"/><path d="M16 5.2a3.5 3.5 0 0 1 0 5.6"/><path d="M17.6 14.6A6.6 6.6 0 0 1 21.5 21"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></symbol>
+    <symbol id="i-draft" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></symbol>
+    <symbol id="i-panel" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/></symbol>
+    <symbol id="i-cmd" viewBox="0 0 24 24"><path d="M15 6a3 3 0 1 1 3 3h-3zM9 6a3 3 0 1 0-3 3h3zM15 18a3 3 0 1 0 3-3h-3zM9 18a3 3 0 1 1-3-3h3z"/><rect x="9" y="9" width="6" height="6"/></symbol>
+  </defs>
+</svg>
+
+<div class="app">
+
+  <!-- ========== 主導覽 ========== -->
+  <nav class="sidenav" aria-label="主導覽">
+    <div class="brand">
+      <span class="mark"><svg viewBox="0 0 24 24"><use href="#i-pulse"/></svg></span>
+      <span><b>ChatPulse</b><br><span>Google Chat 工作台</span></span>
+    </div>
+
+    <div class="navgroup">
+      <div class="navgroup-label">工作</div>
+      <div class="navlist">
+        <a class="navitem" href="#" aria-current="page">
+          <svg class="icon"><use href="#i-summary"/></svg><span class="lbl">摘要工作台</span></a>
+        <a class="navitem" href="#">
+          <svg class="icon"><use href="#i-mention"/></svg><span class="lbl">Mention 收件匣</span>
+          <span class="badge">6</span></a>
+      </div>
+    </div>
+
+    <div class="navgroup">
+      <div class="navgroup-label">分析</div>
+      <div class="navlist">
+        <a class="navitem" aria-disabled="true">
+          <svg class="icon"><use href="#i-chart"/></svg><span class="lbl">統計</span>
+          <span class="soon">即將推出</span></a>
+        <a class="navitem" aria-disabled="true">
+          <svg class="icon"><use href="#i-report"/></svg><span class="lbl">週報</span>
+          <span class="soon">即將推出</span></a>
+      </div>
+    </div>
+
+    <div class="navgroup">
+      <div class="navgroup-label">系統</div>
+      <div class="navlist">
+        <a class="navitem" href="#">
+          <svg class="icon"><use href="#i-settings"/></svg><span class="lbl">設定</span></a>
+      </div>
+    </div>
+
+    <div class="nav-foot">
+      <a class="navitem" href="#" role="button" onclick="toggleTheme();return false">
+        <svg class="icon only-light"><use href="#i-moon"/></svg>
+        <svg class="icon only-dark"><use href="#i-sun"/></svg>
+        <span class="lbl">切換為<span data-theme-label>暗色</span>主題</span></a>
+      <a class="navitem danger" href="#">
+        <svg class="icon"><use href="#i-logout"/></svg><span class="lbl">登出</span></a>
+    </div>
+  </nav>
+
+  <div class="shell">
+
+    <!-- ========== TopBar ========== -->
+    <header class="topbar">
+      <div class="crumb">
+        <span>摘要工作台</span><span class="sep">›</span><b>李姿誼Sica Lee</b>
+      </div>
+      <div class="spacer"></div>
+      <button class="tb-btn" type="button">
+        <svg class="icon icon-sm"><use href="#i-cmd"/></svg>命令面板<span class="kbd">⌘K</span></button>
+      <button class="tb-btn" type="button" aria-pressed="true">
+        <svg class="icon icon-sm"><use href="#i-panel"/></svg>證據欄</button>
+      <div class="rule-v" style="height:20px;align-self:center"></div>
+      <div class="whoami">
+        <span class="avatar"><svg class="icon icon-sm"><use href="#i-user"/></svg></span>鄭浩宇
+      </div>
+      <button class="icon-btn" id="themeBtn" type="button" onclick="toggleTheme()"
+              aria-label="切換明暗主題" aria-pressed="false">
+        <svg class="icon icon-sm only-light"><use href="#i-moon"/></svg>
+        <svg class="icon icon-sm only-dark"><use href="#i-sun"/></svg>
+      </button>
+    </header>
+
+    <div class="workarea">
+
+      <!-- ========== 上下文欄：Space 清單 ========== -->
+      <aside class="ctxcol" aria-label="Space 清單">
+        <div class="ctx-head">
+          <div class="ctx-title"><h2>Space</h2><span>共 436 個</span></div>
+          <div class="search">
+            <svg class="icon icon-sm"><use href="#i-search"/></svg>
+            <input type="search" placeholder="搜尋 436 個 Space 名稱…" aria-label="搜尋 Space">
+          </div>
+        </div>
+
+        <div class="spacelist scroll" role="listbox" aria-label="Space">
+          <div class="space" role="option"><svg class="icon"><use href="#i-hash"/></svg>
+            <span class="txt"><span class="nm">1.BU2-PG</span><span class="sub">群組，最後活動 27 分鐘前</span></span></div>
+          <div class="space" role="option"><svg class="icon"><use href="#i-users"/></svg>
+            <span class="txt"><span class="nm">ILOOP2601 - 勞動部勞動及職業安全…</span><span class="sub">多人對話，最後活動 10 小時前</span></span></div>
+          <div class="space" role="option" aria-selected="true"><svg class="icon"><use href="#i-user"/></svg>
+            <span class="txt"><span class="nm">李姿誼Sica Lee</span><span class="sub">私訊，最後活動 13 小時前</span></span></div>
+          <div class="space" role="option"><svg class="icon"><use href="#i-user"/></svg>
+            <span class="txt"><span class="nm">（私訊）</span><span class="sub">私訊，最後活動 13 小時前</span></span></div>
+          <div class="space" role="option"><svg class="icon"><use href="#i-user"/></svg>
+            <span class="txt"><span class="nm">張曼媜</span><span class="sub">私訊，最後活動 13 小時前</span></span></div>
+          <div class="space" role="option"><svg class="icon"><use href="#i-users"/></svg>
+            <span class="txt"><span class="nm">WCS內部小群組</span><span class="sub">多人對話，最後活動 17 小時前</span></span></div>
+          <div class="space" role="option"><svg class="icon"><use href="#i-users"/></svg>
+            <span class="txt"><span class="nm">（未命名空間）</span><span class="sub">多人對話，最後活動 1 天前</span></span></div>
+          <div class="space" role="option"><svg class="icon"><use href="#i-hash"/></svg>
+            <span class="txt"><span class="nm">彰銀Line BC預留 - 9月3日</span><span class="sub">群組，最後活動 1 天前</span></span></div>
+          <div class="space" role="option"><svg class="icon"><use href="#i-hash"/></svg>
+            <span class="txt"><span class="nm">碩網團隊ALL</span><span class="sub">群組，最後活動 1 天前</span></span></div>
+          <div class="space" role="option"><svg class="icon"><use href="#i-hash"/></svg>
+            <span class="txt"><span class="nm">P.S.公部門夥伴</span><span class="sub">群組，最後活動 2 天前</span></span></div>
+          <div class="space" role="option"><svg class="icon"><use href="#i-hash"/></svg>
+            <span class="txt"><span class="nm">TPE01P2601 北市府新案</span><span class="sub">群組，最後活動 2 天前</span></span></div>
+          <div class="space" role="option"><svg class="icon"><use href="#i-hash"/></svg>
+            <span class="txt"><span class="nm">工作紀錄簿</span><span class="sub">群組，最後活動 4 天前</span></span></div>
+          <div class="space" role="option"><svg class="icon"><use href="#i-hash"/></svg>
+            <span class="txt"><span class="nm">北富銀-內部討論</span><span class="sub">群組，最後活動 4 天前</span></span></div>
+          <div class="space" role="option"><svg class="icon"><use href="#i-hash"/></svg>
+            <span class="txt"><span class="nm">達駿</span><span class="sub">群組，最後活動 4 天前</span></span></div>
+        </div>
+
+        <div class="ctx-foot">
+          <span>顯示 <span class="mono">436</span> / <span class="mono">436</span></span>
+          <span class="rule-v" style="height:11px;align-self:center"></span>
+          <span>即時資料</span>
+        </div>
+      </aside>
+
+      <!-- ========== 主內容區 ========== -->
+      <main class="main scroll">
+        <div class="page-head">
+          <div style="min-width:0">
+            <h1>李姿誼Sica Lee</h1>
+            <span class="sid mono">spaces/5hp2VyAAAAE</span>
+          </div>
+        </div>
+
+        <!-- 工具列 -->
+        <section class="panel toolbar" aria-label="摘要設定">
+          <div class="fields">
+            <div class="field">
+              <label for="f-style">摘要風格</label>
+              <div class="ctl">
+                <select id="f-style"><option>技術細節</option></select>
+                <svg class="icon icon-sm chev"><use href="#i-chev"/></svg>
+              </div>
+            </div>
+            <div class="field">
+              <label for="f-n">抓取則數（1~1000）</label>
+              <div class="ctl"><input class="numinput" id="f-n" type="number" value="3"></div>
+            </div>
+            <div class="field wide">
+              <label for="f-ai">AI 供應商</label>
+              <div class="ctl">
+                <select id="f-ai"><option>自動（伺服器預設：claude）</option></select>
+                <svg class="icon icon-sm chev"><use href="#i-chev"/></svg>
+              </div>
+            </div>
+          </div>
+          <div class="toolbar-actions">
+            <button class="btn" type="button">
+              <svg class="icon icon-sm"><use href="#i-draft"/></svg>產生回覆草稿</button>
+            <button class="btn btn-primary" type="button">
+              <svg class="icon icon-sm"><use href="#i-refresh"/></svg>重新摘要</button>
+          </div>
+        </section>
+
+        <!-- 最近訊息 -->
+        <details class="recent" open>
+          <summary><svg class="icon icon-sm caret"><use href="#i-chev"/></svg>最近訊息</summary>
+          <div class="recent-body">
+            <div class="seg" role="group" aria-label="讀取則數">
+              <button type="button" aria-pressed="false">10</button>
+              <button type="button" aria-pressed="true">20</button>
+              <button type="button" aria-pressed="false">30</button>
+            </div>
+            <span class="unit">則</span>
+            <span style="flex:1"></span>
+            <button class="btn btn-sm btn-ghost" type="button">
+              <svg class="icon icon-sm"><use href="#i-refresh"/></svg>重新讀取</button>
+          </div>
+        </details>
+
+        <!-- 摘要卡 -->
+        <article class="panel" aria-label="摘要">
+          <div class="sum-head">
+            <div class="meta">
+              <span class="m"><span class="k">風格</span>技術細節</span>
+              <span class="m ell">李姿誼Sica Lee</span>
+              <span class="m">讀取 3 則</span>
+              <span class="m">圖片 0 張</span>
+            </div>
+            <div class="meta">
+              <span class="m ell">Claude Code（本機 CLI，用你現有的訂閱）</span>
+              <span class="m"><span class="chip-mono">claude-cli:opus</span></span>
+            </div>
+          </div>
+
+          <div class="legend" aria-label="規線圖例">
+            <span class="lg"><i class="s-full"></i>實線＝完整</span>
+            <span class="lg"><i class="s-part"></i>虛線＝降級</span>
+            <span class="lg"><i class="s-none"></i>點線＝缺值</span>
+          </div>
+
+          <div class="sum-body">
+            <section class="sec none">
+              <div class="sec-head"><h3>🔧 技術問題與症狀</h3><span class="state none">缺值</span></div>
+              <p class="dimmed">本次對話中未出現（僅提及需處理「北市府」相關工作，未描述任何錯誤訊息、發生條件或影響範圍）。</p>
+            </section>
+
+            <section class="sec none">
+              <div class="sec-head"><h3>🧪 已排除的假設與排查過程</h3><span class="state none">缺值</span></div>
+              <p class="dimmed">本次對話中未出現。</p>
+            </section>
+
+            <section class="sec none">
+              <div class="sec-head"><h3>🛠 技術方案與取捨</h3><span class="state none">缺值</span></div>
+              <p class="dimmed">本次對話中未出現。</p>
+            </section>
+
+            <section class="sec part">
+              <div class="sec-head"><h3>⚠️ 未解的技術問題</h3><span class="state part">降級</span></div>
+              <p>本次對話中未出現技術細節。接手者若要判斷狀況，仍缺少以下資訊：</p>
+              <ul>
+                <li>「北市府」所指的專案／系統與具體處理項目</li>
+                <li>是否有對應的錯誤訊息、環境（正式／測試）與影響範圍</li>
+                <li>李姿誼所「記錄」的內容為何（來源不在本段對話中）</li>
+              </ul>
+            </section>
+
+            <section class="sec full">
+              <div class="sec-head"><h3>🎯 待辦事項與追蹤 (Action Items)</h3><span class="state full">完整</span></div>
+              <span class="ai-line">[鄭浩宇] 於 2026-09-09 加班處理北市府相關工作（對話中未說明具體項目）</span>
+              <span class="ai-line">[李姿誼Sica Lee] 記錄前述事項（記錄標的內容未在本段對話中出現）</span>
+            </section>
+          </div>
+
+          <div class="sum-foot">
+            <button class="btn btn-sm" type="button">
+              <svg class="icon icon-sm"><use href="#i-copy"/></svg>複製 Markdown</button>
+            <button class="btn btn-sm" type="button">
+              <svg class="icon icon-sm"><use href="#i-send"/></svg>推播回 Google Chat</button>
+          </div>
+        </article>
+
+        <!-- Action Items -->
+        <section class="panel" aria-label="Action Items">
+          <div class="ai-head">
+            <h2>Action Items</h2>
+            <span class="count">（0/2 已勾選）</span>
+            <span class="spacer"></span>
+            <button class="btn btn-sm btn-ghost" type="button">
+              <svg class="icon icon-sm"><use href="#i-copy"/></svg>複製為 Markdown</button>
+          </div>
+          <div class="ai-list">
+            <label class="ai-item">
+              <input type="checkbox">
+              <span><span class="who">鄭浩宇</span>於 2026-09-09 加班處理北市府相關工作（對話中未說明具體項目）</span>
+            </label>
+            <label class="ai-item">
+              <input type="checkbox">
+              <span><span class="who">李姿誼Sica Lee</span>記錄前述事項（記錄標的內容未在本段對話中出現）</span>
+            </label>
+          </div>
+        </section>
+      </main>
+
+      <!-- ========== 證據欄 ========== -->
+      <aside class="evidence" aria-label="證據">
+        <div class="ev-block scroll" style="flex:1;min-height:0">
+          <div class="ev-head"><h2>歷史 Summary</h2><span class="cnt">28 份</span></div>
+          <div class="hist">
+            <div class="hist-item"><div class="t">李姿誼Sica Lee</div>
+              <div class="d"><span class="mono">2026-09-10 08:38</span><span class="rule-v"></span><span>技術細節</span><span class="rule-v"></span><span>3 則</span></div></div>
+            <div class="hist-item"><div class="t">李姿誼</div>
+              <div class="d"><span class="mono">2026-09-06 22:24</span><span class="rule-v"></span><span>技術細節</span><span class="rule-v"></span><span>3 則</span></div></div>
+            <div class="hist-item"><div class="t">（私訊／未命名空間）</div>
+              <div class="d"><span class="mono">2026-09-06 19:56</span><span class="rule-v"></span><span>通用</span><span class="rule-v"></span><span>10 則</span></div></div>
+            <div class="hist-item"><div class="t">（私訊／未命名空間）</div>
+              <div class="d"><span class="mono">2026-09-06 19:55</span><span class="rule-v"></span><span>通用</span><span class="rule-v"></span><span>3 則</span></div></div>
+            <div class="hist-item"><div class="t">（私訊／未命名空間）</div>
+              <div class="d"><span class="mono">2026-09-06 19:55</span><span class="rule-v"></span><span>技術細節</span><span class="rule-v"></span><span>3 則</span></div></div>
+            <div class="hist-item"><div class="t">0.暫存</div>
+              <div class="d"><span class="mono">2026-09-06 00:47</span><span class="rule-v"></span><span>只要待辦</span><span class="rule-v"></span><span>10 則</span></div></div>
+            <div class="hist-item"><div class="t">0.暫存</div>
+              <div class="d"><span class="mono">2026-09-06 00:30</span><span class="rule-v"></span><span>只要待辦</span><span class="rule-v"></span><span>10 則</span></div></div>
+            <div class="hist-item"><div class="t">0.暫存</div>
+              <div class="d"><span class="mono">2026-09-05 12:10</span><span class="rule-v"></span><span>只要待辦</span><span class="rule-v"></span><span>10 則</span></div></div>
+          </div>
+        </div>
+
+        <div class="ev-block ev-foot">
+          <div class="token-head">
+            <div><h2>Token 用量</h2><div class="sub">近 14 天</div></div>
+            <div class="bignum">240,275</div>
+          </div>
+          <table class="tok">
+            <thead><tr><th>日期</th><th>輸入</th><th>輸出</th><th>次數</th></tr></thead>
+            <tbody>
+              <tr><td>2026-09-07</td><td>15,695</td><td>10,966</td><td>3</td></tr>
+              <tr><td>2026-09-06</td><td>40,811</td><td>26,799</td><td>13</td></tr>
+              <tr><td>2026-09-05</td><td>56,650</td><td>10,919</td><td>26</td></tr>
+              <tr><td>2026-09-04</td><td>40,256</td><td>6,907</td><td>15</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </aside>
+
+    </div>
+  </div>
+</div>
+
+<!-- ===== 附錄：對比表與撞色說明 ===== -->
+<details class="appendix">
+  <summary>對比驗算表 ＆ 琥珀 accent 與警示色怎麼分得出來</summary>
+  <div class="apx-body" id="apx">
+
+    <h3>算法</h3>
+    <p><code>oklch(L C H)</code> → OKLab（<code>a = C × cos H</code>、<code>b = C × sin H</code>）→ 立方還原 LMS
+    → Björn Ottosson 的 OKLab→linear sRGB 矩陣 → 分量 clamp 到 0–1 → WCAG 2.x 相對亮度
+    <code>Y = 0.2126R + 0.7152G + 0.0722B</code>（用 <b>linear</b> 分量，非 gamma 編碼值）→
+    對比 <code>(Y亮 + 0.05) / (Y暗 + 0.05)</code>。以 Python 3.9 逐格算出，四捨五入至小數點後 2 位。</p>
+    <p>已檢查：本檔 36 個色值轉出的 linear sRGB 分量<b>全部落在 0–1 內，沒有任何一個觸發 clamp</b>，
+    所以不存在「超出色域被夾回去、數字虛高」的問題。</p>
+
+    <h3>門檻（SPEC 第 5 節）</h3>
+    <p>決策性文字 ≥ 7 ｜ 次級文字與標籤 ≥ 4.6 ｜ 承載語意的規線、focus 環、字符指示器 ≥ 3 ｜
+    disabled 文字 ≥ 2 ｜ 純裝飾分隔線 無要求。</p>
+
+    <h3>明亮主題：前景 × 四個表面</h3>
+    <table class="apx">
+      <thead><tr><th>色 token</th><th>用途／門檻</th><th>background</th><th>surface</th><th>raised</th><th>muted</th><th>最低值</th></tr></thead>
+      <tbody>
+        <tr><td>--foreground</td><td>決策性文字 ≥7</td><td>14.02</td><td>15.10</td><td>15.91</td><td>13.04</td><td class="pass">13.04 通過</td></tr>
+        <tr><td>--fg-dim</td><td>次級文字 ≥4.6</td><td>7.23</td><td>7.78</td><td>8.20</td><td>6.72</td><td class="pass">6.72 通過</td></tr>
+        <tr><td>--fg-subtle</td><td>第三層文字 ≥4.6</td><td>5.01</td><td>5.40</td><td>5.69</td><td>4.66</td><td class="pass">4.66 通過</td></tr>
+        <tr><td>--fg-disabled</td><td>disabled ≥2</td><td>2.42</td><td>2.60</td><td>2.74</td><td>2.25</td><td class="pass">2.25 通過</td></tr>
+        <tr><td>--line-evidence</td><td>語意規線 ≥3</td><td>4.06</td><td>4.37</td><td>4.60</td><td>3.78</td><td class="pass">3.78 通過</td></tr>
+        <tr><td>--signal-text</td><td>accent 線與字 ≥4.6</td><td>5.28</td><td>5.68</td><td>5.99</td><td>4.91</td><td class="pass">4.91 通過</td></tr>
+        <tr><td>--caution</td><td>語意規線 ≥3</td><td>8.68</td><td>9.35</td><td>9.85</td><td>8.08</td><td class="pass">8.08 通過</td></tr>
+        <tr><td>--destructive</td><td>語意 ≥4.6</td><td>5.35</td><td>5.76</td><td>6.07</td><td>4.97</td><td class="pass">4.97 通過</td></tr>
+        <tr><td>--signal</td><td>只當填色（見下註）</td><td>1.79</td><td>1.92</td><td>2.03</td><td>1.66</td><td class="na">不適用</td></tr>
+        <tr><td>--line</td><td>純裝飾線</td><td>1.24</td><td>1.33</td><td>1.40</td><td>1.15</td><td class="na">無要求</td></tr>
+        <tr><td>--line-strong</td><td>結構邊框</td><td>1.60</td><td>1.72</td><td>1.81</td><td>1.49</td><td class="na">無要求</td></tr>
+      </tbody>
+    </table>
+
+    <h3>暗色主題：前景 × 四個表面</h3>
+    <table class="apx">
+      <thead><tr><th>色 token</th><th>用途／門檻</th><th>background</th><th>surface</th><th>raised</th><th>muted</th><th>最低值</th></tr></thead>
+      <tbody>
+        <tr><td>--foreground</td><td>決策性文字 ≥7</td><td>15.69</td><td>14.90</td><td>13.47</td><td>16.38</td><td class="pass">13.47 通過</td></tr>
+        <tr><td>--fg-dim</td><td>次級文字 ≥4.6</td><td>8.63</td><td>8.20</td><td>7.41</td><td>9.01</td><td class="pass">7.41 通過</td></tr>
+        <tr><td>--fg-subtle</td><td>第三層文字 ≥4.6</td><td>5.62</td><td>5.33</td><td>4.82</td><td>5.87</td><td class="pass">4.82 通過</td></tr>
+        <tr><td>--fg-disabled</td><td>disabled ≥2</td><td>2.71</td><td>2.58</td><td>2.33</td><td>2.83</td><td class="pass">2.33 通過</td></tr>
+        <tr><td>--line-evidence</td><td>語意規線 ≥3</td><td>5.29</td><td>5.02</td><td>4.54</td><td>5.52</td><td class="pass">4.54 通過</td></tr>
+        <tr><td>--signal-text</td><td>accent 線與字 ≥4.6</td><td>10.09</td><td>9.58</td><td>8.66</td><td>10.54</td><td class="pass">8.66 通過</td></tr>
+        <tr><td>--caution</td><td>語意規線 ≥3</td><td>4.71</td><td>4.47</td><td>4.04</td><td>4.92</td><td class="pass">4.04 通過</td></tr>
+        <tr><td>--destructive</td><td>語意 ≥4.6</td><td>6.20</td><td>5.89</td><td>5.32</td><td>6.47</td><td class="pass">5.32 通過</td></tr>
+        <tr><td>--signal</td><td>填色，暗色下也可當線</td><td>9.20</td><td>8.74</td><td>7.90</td><td>9.60</td><td class="pass">7.90 通過</td></tr>
+        <tr><td>--line</td><td>純裝飾線</td><td>1.40</td><td>1.33</td><td>1.20</td><td>1.46</td><td class="na">無要求</td></tr>
+        <tr><td>--line-strong</td><td>結構邊框</td><td>1.97</td><td>1.87</td><td>1.69</td><td>2.06</td><td class="na">無要求</td></tr>
+      </tbody>
+    </table>
+
+    <h3>疊色特例（不在四表面矩陣裡的組合）</h3>
+    <table class="apx">
+      <thead><tr><th>組合</th><th>出現在哪</th><th>明亮</th><th>暗色</th><th>門檻</th></tr></thead>
+      <tbody>
+        <tr><td>--signal-ink 疊在 --signal</td><td>「重新摘要」鈕、Mention badge、品牌方塊</td><td>7.21</td><td>8.77</td><td class="pass">≥4.6 通過</td></tr>
+        <tr><td>--signal-text 疊在 --signal-soft</td><td>證據欄開關的按下狀態</td><td>5.16</td><td>7.48</td><td class="pass">≥4.6 通過</td></tr>
+        <tr><td>--foreground 疊在 --caution-soft</td><td>「降級」狀態標籤的字</td><td>13.35</td><td>12.74</td><td class="pass">≥4.6 通過</td></tr>
+        <tr><td>--raised 疊在 --signal-text</td><td>Action Item 打勾後的勾記號</td><td>5.99</td><td>8.66</td><td class="pass">≥3 通過</td></tr>
+      </tbody>
+    </table>
+    <p><b>關於 <code>--signal</code> 在明亮主題只有 1.66～2.03：</b>這是刻意的，不是漏算。
+    明亮主題的 <code>--signal</code>（亮琥珀）<b>只出現在填色</b>——主要鈕底、badge 底、品牌方塊，
+    這三處的可辨識性由「疊在它上面的文字（7.21）」與「它自己的 1px <code>--signal-text</code> 邊框（5.28）」承擔。
+    所有<b>線與字</b>形態的 accent（選取條、focus 環、當前項圖示、分段控制的選中字）一律用
+    <code>--signal-text</code>，不用 <code>--signal</code>。暗色主題兩者都過門檻，沒有這個限制。</p>
+    <p><b>未驗算的項目：</b>沒有。本檔用到的每一組前景／表面組合都在上面三張表裡；
+    <code>--line</code> 與 <code>--line-strong</code> 依 SPEC 屬「純裝飾分隔線／結構邊框」，
+    無對比門檻，數值照列但不判定通過與否。</p>
+
+    <h3>琥珀 accent 與警示色怎麼分得出來</h3>
+    <p>SPEC 第 5 節點名的陷阱是：accent 取琥珀 h70、警示色取 h75，兩者在 3px 邊框或小 chip 上會分不出來。
+    這一版的 accent 就在 h72，所以必須正面解掉。我用了四層，<b>前兩層完全不靠顏色</b>：</p>
+
+    <p><b>第一層｜角色互斥（最根本的一層）。</b>
+    這一版規定 accent 只能出現在「可互動 ／ 當前選取」，警示色只能出現在「證據降級」。
+    兩者因此<b>永遠不會以同一種元件形態出現在同一個區塊</b>：摘要正文左側那三種 3px 規線
+    （實線／虛線／點線）只用 <code>--line-evidence</code> 與 <code>--caution</code>，
+    <b>accent 從頭到尾不當規線用</b>，SPEC 警告的「3px 邊框撞色」在結構上就不存在。</p>
+
+    <p><b>第二層｜線型與字符承擔主要區分（SPEC 原則 2）。</b>
+    完整＝實線、降級＝虛線、缺值＝點線，每一段另外印出「完整／降級／缺值」四個字，
+    卡片上方還有一條常駐圖例。整份畫面轉成灰階、或給全色盲使用者看，三種狀態依然讀得出來。</p>
+
+    <p><b>第三層｜彩度差，不是色相差。</b>
+    <code>--caution</code> 的彩度壓到 <b>0.030</b>（明亮）／<b>0.034</b>（暗色），
+    而 accent 是 <b>0.158</b>／<b>0.150</b>——差 <b>4.4～5.3 倍</b>。
+    琥珀是飽和的橘黃，警示色是幾乎沒有顏色的灰褐橄欖，這個差距在 1px chip 邊框上就看得出來，
+    不需要放大到 3px。色相同時從 h70 推到 <b>h95</b>（拉開 23～33 度）當作第二重保險。</p>
+
+    <p><b>第四層｜灰階亮度也拉開。</b>
+    把兩色轉成灰階後的相對亮度比：明亮主題 <code>--signal</code> 對 <code>--caution</code> 是 <b>4.86:1</b>，
+    暗色主題是 <b>1.95:1</b>；同尺寸的線形態 <code>--signal-text</code> 對 <code>--caution</code>
+    則是 <b>1.64:1</b>（明亮）／<b>2.14:1</b>（暗色）。也就是說即使完全拿掉色彩資訊，
+    兩者的明暗仍有可辨差距——這是第三層的補強，不是主要手段。</p>
+
+    <p>下面是實際渲染，可用右上角的鈕切到另一個主題再看一次；
+    也可以把畫面截圖丟進任何去飽和濾鏡，驗證第二層與第四層仍然成立：</p>
+
+    <div class="swatchrow">
+      <div class="swatch">
+        <div class="bar" style="border-top-style:solid;border-top-color:var(--signal-text)"></div>
+        <div>accent（線形態）<code>--signal-text</code></div>
+        <div class="cap">明亮 oklch(0.505 0.115 62)　暗色 oklch(0.81 0.135 75)</div>
+      </div>
+      <div class="swatch">
+        <div class="bar" style="border-top-style:dashed;border-top-color:var(--caution)"></div>
+        <div>警示（線形態）<code>--caution</code></div>
+        <div class="cap">明亮 oklch(0.38 0.030 95)　暗色 oklch(0.60 0.034 95)</div>
+      </div>
+      <div class="swatch">
+        <div class="bar" style="border-top-style:dotted;border-top-color:var(--line-evidence)"></div>
+        <div>缺值（線形態）<code>--line-evidence</code></div>
+        <div class="cap">明亮 oklch(0.56 0.016 60)　暗色 oklch(0.63 0.016 75)</div>
+      </div>
+      <div class="swatch">
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+          <span class="state full">完整</span>
+          <span class="state part">降級</span>
+          <span class="state none">缺值</span>
+          <span class="badge">6</span>
+        </div>
+        <div>小 chip 實況比對</div>
+        <div class="cap">badge 是唯一用到亮琥珀填色的小元件</div>
+      </div>
+    </div>
+
+    <h3>632px 的主內容區夠不夠用（本版最大的風險）</h3>
+    <p>200px 常駐展開的主導覽把固定佔用推到 <code>200 + 288 + 320 = 808px</code>，1440 下主內容區只剩
+    <b>632px</b>。以 1440×900 實測（Chromium，<code>deviceScaleFactor 2</code>）：</p>
+    <table class="apx">
+      <thead><tr><th>量測項</th><th>實測值</th><th>判讀</th></tr></thead>
+      <tbody>
+        <tr><td>四欄實際寬度</td><td>200 ／ 288 ／ 632 ／ 320</td><td class="pass">合計 1440，分毫不差</td></tr>
+        <tr><td>文件 scrollWidth ÷ clientWidth</td><td>1440 ÷ 1440</td><td class="pass">無水平捲軸</td></tr>
+        <tr><td>橫向溢出 viewport 的元素</td><td>0 個</td><td class="pass">逐一量過全部節點</td></tr>
+        <tr><td>摘要正文單行寬度</td><td>546px</td><td class="pass">13px 中文約 42 字／行</td></tr>
+        <tr><td>摘要正文行高</td><td>24.05px（1.85）</td><td class="pass">CJK 長段落的舒適值</td></tr>
+      </tbody>
+    </table>
+    <p>42 字／行落在中文長文的舒適區間（一般建議 30～45 字），所以 632px <b>不是勉強夠用而是剛好</b>。
+    真正被 632px 壓縮到的是工具列：三個欄位排不成一列，改成「摘要風格 ＋ 抓取則數」同列、
+    「AI 供應商」獨佔一列的兩列式，理由是 <code>自動（伺服器預設：claude）</code> 這個值本身就長。
+    這是本版為了換得「導覽永遠看得見文字與待處理數字」所付的代價，也是三版比較時該盯著看的地方。</p>
+
+    <h3>四個表面的 ΔL（oklch 明度）</h3>
+    <p>明亮：background 0.952 ／ surface 0.977 ／ raised 0.995 ／ muted 0.928。
+    暗色：background 0.188 ／ surface 0.213 ／ raised 0.252 ／ muted 0.162。
+    兩個主題的 <code>surface − background</code> 都正好是 <b>0.025</b>，即本版指定的「卡片強度：中」。</p>
+  </div>
+</details>
+
+<script>
+function toggleTheme(){
+  var dark = document.documentElement.classList.toggle('dark');
+  document.getElementById('themeBtn').setAttribute('aria-pressed', dark ? 'true' : 'false');
+  var labels = document.querySelectorAll('[data-theme-label]');
+  for (var i=0;i<labels.length;i++){ labels[i].textContent = dark ? '亮色' : '暗色'; }
+}
+</script>
+</body>
+</html>

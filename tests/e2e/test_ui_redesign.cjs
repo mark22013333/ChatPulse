@@ -41,12 +41,25 @@ const SETTINGS_TABS = ['Persona', '常用提示詞', '參考專案', 'Space', '�
  * 是**資料相關的偶發**：換一批 Mention 就不會發生，看起來像功能壞掉。
  *
  * 兩條規則：
- *   1. 頂列的按鈕用 `exact: true`，或先限縮到 `header`
+ *   1. 導覽的項目先限縮到 `nav[aria-label="主導覽"]`，或用 `exact: true`
  *   2. 清單用它自己的 aria-label（改版時就是為此加上去的），不要用 `.first()`
  */
 const SUMMARY_LISTBOX = '[role="listbox"][aria-label="要做摘要的 Space"]'
 
-const topBarButton = (page, name) => page.locator('header').getByRole('button', { name })
+/**
+ * 工作台切換與設定入口。
+ *
+ * **2026-09-12 改版**：這些從頂列的膠囊按鈕搬到左側主導覽了，而且照規格 §10.2
+ * 改成 `<a href="#/...">` + `aria-current="page"`（原本是 `<button onClick>`，
+ * 那是偏離規格的）。所以這裡從 `header` + `getByRole('button')` 換成
+ * `nav[aria-label="主導覽"]` + `getByRole('link')`。
+ *
+ * **名字要用正則**：導覽收合時可及名稱是兩字短標籤（「摘要」），
+ * 展開時才是全名（「摘要工作台」）——寬度決定哪一個生效，寫死全名會在
+ * 1280 這種收合寬度下選不到。設定兩種狀態下都叫「設定」，可以精確比對。
+ */
+const navLink = (page, name) =>
+  page.locator('nav[aria-label="主導覽"]').getByRole('link', { name })
 const settingsDialog = (page) => page.getByRole('dialog', { name: '設定' })
 
 /**
@@ -79,7 +92,7 @@ const blur = (page) =>
   await goHash(page, '#/summary')
   check(
     '#/summary 落在摘要工作台',
-    (await topBarButton(page, /摘要工作台/).count()) > 0,
+    (await navLink(page, /摘要/).count()) > 0,
   )
 
   // 記住一個「原本在哪」的位置，後面要驗關閉設定會回到這裡
@@ -94,7 +107,7 @@ const blur = (page) =>
 
   // ── 2. 設定頁點 N 個分頁，按一次關閉 ──────────────────────
   console.log('\n【2】點過五個設定分頁之後，按一次「關閉」')
-  await topBarButton(page, '設定').click()
+  await navLink(page, '設定').click()
   await page.waitForTimeout(400)
   check('進入設定中心', (await hashOf(page)) === '#/settings/reply')
 
@@ -124,7 +137,7 @@ const blur = (page) =>
 
   // ── 3. 返回鍵一次離開設定 ─────────────────────────────────
   console.log('\n【3】在設定裡按瀏覽器返回鍵')
-  await topBarButton(page, '設定').click()
+  await navLink(page, '設定').click()
   await page.waitForTimeout(350)
   await page.getByRole('link', { name: /^Persona/ }).click()
   await page.waitForTimeout(250)
@@ -158,7 +171,7 @@ const blur = (page) =>
 
   // ── 5. Esc 由內而外 ───────────────────────────────────────
   console.log('\n【5】Esc 由內而外：面板開著時只關面板')
-  await topBarButton(page, '設定').click()
+  await navLink(page, '設定').click()
   await page.waitForTimeout(350)
   await page.keyboard.press('Meta+k')
   await page.waitForTimeout(300)
@@ -292,7 +305,7 @@ const blur = (page) =>
   // 這一條是本輪最重要的迴歸：設定開著時多開一層說明，一次 Esc 只能關一層。
   // 同型的 bug 在命令面板上發生過（commit adf7c84），修法是 defaultPrevented
   // ＋ store 的 isOverlayOpen()。新增覆蓋層時最容易漏掉的就是這件事。
-  await topBarButton(page, '設定').click()
+  await navLink(page, '設定').click()
   await page.waitForTimeout(400)
   await blur(page)
   await page.keyboard.press('?')
@@ -530,7 +543,7 @@ const blur = (page) =>
     // **不驗 aria-selected**：那一列可能捲出可視範圍、根本不在 DOM 裡，
     // 量到 0 說明不了任何事（HANDOFF 第四節第 1 條）。改按頂列的摘要頁籤
     // ——它會帶著 store 記住的 selectedId 導覽，網址就是證據。
-    await topBarButton(page, /摘要工作台/).click()
+    await navLink(page, /摘要/).click()
     await page.waitForTimeout(500)
     check(
       '**退回清單沒有把選取洗掉**（頂列頁籤仍回到原本那個 Space）',
