@@ -70,75 +70,78 @@ export function CodeProjectForm({ project, onDone }: CodeProjectFormProps) {
     setDraft((d) => ({ ...d, branches: { ...d.branches, [env]: value } }))
 
   return (
-    <div className="space-y-4 rounded-lg border p-4">
-      <h3 className="text-sm font-medium">{project ? '編輯專案' : '新增專案'}</h3>
-
-      <div className="grid gap-3 sm:grid-cols-2">
-        <div className="space-y-1.5">
-          <Label htmlFor="cp-name">專案名稱</Label>
-          <Input
-            id="cp-name"
-            value={draft.name}
-            placeholder="智慧客服後端"
-            onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="cp-path">專案資料夾路徑（絕對路徑）</Label>
-          <Input
-            id="cp-path"
-            value={draft.repo_path}
-            placeholder="D:\work\cs-backend"
-            onChange={(e) => setDraft((d) => ({ ...d, repo_path: e.target.value }))}
-          />
-        </div>
+    <section className="overflow-hidden rounded-xl border border-border bg-surface">
+      <div className="border-b border-line px-4 py-2">
+        <h3 className="text-sm font-semibold">{project ? '編輯專案' : '新增專案'}</h3>
       </div>
-
-      <fieldset className="space-y-2">
-        <legend className="text-sm font-medium">分支對應</legend>
-        <p className="text-xs text-muted-foreground">
-          留空表示該環境不對應任何分支。至少要填一個。
-        </p>
-        {ENV_ORDER.map((env) => (
-          <div key={env} className="flex flex-wrap items-center gap-2">
-            <Label htmlFor={`cp-branch-${env}`} className="w-20 shrink-0 font-normal">
-              {ENV_LABELS[env]}
-            </Label>
+      <div className="space-y-4 p-4">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="space-y-1.5">
+            <Label htmlFor="cp-name">專案名稱</Label>
             <Input
-              id={`cp-branch-${env}`}
-              className="max-w-xs"
-              value={draft.branches[env] ?? ''}
-              placeholder={BRANCH_PLACEHOLDER[env]}
-              onChange={(e) => setBranch(env, e.target.value)}
+              id="cp-name"
+              value={draft.name}
+              placeholder="智慧客服後端"
+              onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
             />
-            <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <input
-                type="radio"
-                name="cp-default-env"
-                checked={draft.default_env === env}
-                onChange={() => setDraft((d) => ({ ...d, default_env: env }))}
-              />
-              設為預設
-            </label>
           </div>
-        ))}
-      </fieldset>
+          <div className="space-y-1.5">
+            <Label htmlFor="cp-path">專案資料夾路徑（絕對路徑）</Label>
+            <Input
+              id="cp-path"
+              value={draft.repo_path}
+              placeholder="D:\work\cs-backend"
+              onChange={(e) => setDraft((d) => ({ ...d, repo_path: e.target.value }))}
+            />
+          </div>
+        </div>
 
-      <div className="flex gap-2">
-        <Button onClick={() => void submit()} disabled={saving}>
-          {saving ? (
-            <Loader2Icon className="size-4 animate-spin" aria-hidden />
-          ) : (
-            <PlusIcon className="size-4" aria-hidden />
-          )}
-          {project ? '儲存' : '新增'}
-        </Button>
-        {project && (
-          <Button variant="ghost" onClick={cancel}>
-            取消
+        <fieldset className="space-y-2">
+          <legend className="text-sm font-medium">分支對應</legend>
+          <p className="text-xs text-muted-foreground">
+            留空表示該環境不對應任何分支。至少要填一個。
+          </p>
+          {ENV_ORDER.map((env) => (
+            <div key={env} className="flex flex-wrap items-center gap-2">
+              <Label htmlFor={`cp-branch-${env}`} className="w-20 shrink-0 font-normal">
+                {ENV_LABELS[env]}
+              </Label>
+              <Input
+                id={`cp-branch-${env}`}
+                className="max-w-xs"
+                value={draft.branches[env] ?? ''}
+                placeholder={BRANCH_PLACEHOLDER[env]}
+                onChange={(e) => setBranch(env, e.target.value)}
+              />
+              <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <input
+                  type="radio"
+                  name="cp-default-env"
+                  checked={draft.default_env === env}
+                  onChange={() => setDraft((d) => ({ ...d, default_env: env }))}
+                />
+                設為預設
+              </label>
+            </div>
+          ))}
+        </fieldset>
+
+        <div className="flex gap-2">
+          <Button onClick={() => void submit()} disabled={saving}>
+            {saving ? (
+              <Loader2Icon className="size-4 animate-spin" aria-hidden />
+            ) : (
+              <PlusIcon className="size-4" aria-hidden />
+            )}
+            {project ? '儲存' : '新增'}
           </Button>
-        )}
+          {project && (
+            <Button variant="ghost" onClick={cancel}>
+              取消
+            </Button>
+          )}
+        </div>
       </div>
-    </div>
+    </section>
   )
 }

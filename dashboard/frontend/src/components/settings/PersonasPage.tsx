@@ -99,32 +99,32 @@ export function PersonasPage() {
         </p>
       </div>
 
-      <div className="space-y-4">
-        <div className="space-y-2 rounded border border-border p-3">
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-semibold">匯入</span>
-            <div className="ml-auto flex gap-1">
-              {(['github', 'url'] as const).map((m) => (
-                <Button
-                  key={m}
-                  type="button"
-                  size="xs"
-                  variant={mode === m ? 'default' : 'ghost'}
-                  className="h-5 px-2 text-2xs"
-                  // 換模式＝「我改用另一種方式試」，上一個模式的錯誤訊息
-                  // 留著只會誤導（它講的是另一種輸入的問題）
-                  onClick={() => {
-                    setMode(m)
-                    setImportError(null)
-                    setImportNotice(null)
-                  }}
-                >
-                  {m === 'github' ? 'Repository' : '網址'}
-                </Button>
-              ))}
-            </div>
+      <section className="overflow-hidden rounded-xl border border-border bg-surface">
+        <div className="flex items-center justify-between gap-2 border-b border-line px-4 py-2">
+          <h3 className="text-sm font-semibold">匯入</h3>
+          <div className="flex gap-1">
+            {(['github', 'url'] as const).map((m) => (
+              <Button
+                key={m}
+                type="button"
+                size="xs"
+                variant={mode === m ? 'default' : 'ghost'}
+                className="h-5 px-2 text-2xs"
+                // 換模式＝「我改用另一種方式試」，上一個模式的錯誤訊息
+                // 留著只會誤導（它講的是另一種輸入的問題）
+                onClick={() => {
+                  setMode(m)
+                  setImportError(null)
+                  setImportNotice(null)
+                }}
+              >
+                {m === 'github' ? 'Repository' : '網址'}
+              </Button>
+            ))}
           </div>
+        </div>
 
+        <div className="space-y-2 p-4">
           {mode === 'github' ? (
             <div className="grid gap-2 sm:grid-cols-2">
               <div className="flex flex-col gap-1">
@@ -233,9 +233,13 @@ export function PersonasPage() {
             這類授權一律不採用。只有表達與思考風格會被保留。
           </p>
         </div>
+      </section>
 
-        <div className="space-y-2">
-          <span className="text-xs font-semibold">已匯入（{personas.length}）</span>
+      <section className="overflow-hidden rounded-xl border border-border bg-surface">
+        <div className="flex items-center justify-between gap-2 border-b border-line px-4 py-2">
+          <h3 className="text-sm font-semibold">已匯入（{personas.length}）</h3>
+        </div>
+        <div className="p-4">
           {personas.length === 0 ? (
             // 「還沒載完」與「真的沒有」要分開講。兩者都是空清單，但前者說
             // 「還沒有匯入任何 Persona」是**假話**，而使用者無從分辨。
@@ -275,7 +279,7 @@ export function PersonasPage() {
           ) : (
             <div className="max-h-64 space-y-2 overflow-y-auto">
               {personas.map((persona) => (
-                <div key={persona.id} className="space-y-1 rounded border border-border p-2">
+                <div key={persona.id} className="space-y-1 rounded-lg border border-line bg-background p-2">
                   <div className="flex items-center gap-2">
                     <span className="text-xs font-medium">{persona.name}</span>
                     {!persona.enabled ? (
@@ -350,7 +354,7 @@ export function PersonasPage() {
             </div>
           )}
         </div>
-      </div>
+      </section>
     </div>
   )
 }

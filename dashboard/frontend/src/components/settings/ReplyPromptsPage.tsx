@@ -66,38 +66,38 @@ export function ReplyPromptsPage() {
         </p>
       </div>
 
-      <div className="space-y-4">
-        <div className="space-y-2 rounded border border-border p-3">
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-semibold">{editingId === null ? '新增' : '編輯'}</span>
-            {editingId === null && customPrompt.trim() ? (
-              <Button
-                type="button"
-                size="xs"
-                variant="ghost"
-                className="ml-auto h-5 px-1 text-2xs text-muted-foreground"
-                onClick={() => setText(customPrompt)}
-              >
-                帶入草稿頁目前的內容
-              </Button>
-            ) : null}
-            {editingId !== null ? (
-              <Button
-                type="button"
-                size="xs"
-                variant="ghost"
-                className="ml-auto h-5 px-1 text-2xs"
-                onClick={() => {
-                  setEditingId(null)
-                  setName('')
-                  setDescription('')
-                  setText('')
-                }}
-              >
-                取消編輯
-              </Button>
-            ) : null}
-          </div>
+      <section className="overflow-hidden rounded-xl border border-border bg-surface">
+        <div className="flex items-center justify-between gap-2 border-b border-line px-4 py-2">
+          <h3 className="text-sm font-semibold">{editingId === null ? '新增' : '編輯'}</h3>
+          {editingId === null && customPrompt.trim() ? (
+            <Button
+              type="button"
+              size="xs"
+              variant="ghost"
+              className="h-5 px-1 text-2xs text-muted-foreground"
+              onClick={() => setText(customPrompt)}
+            >
+              帶入草稿頁目前的內容
+            </Button>
+          ) : null}
+          {editingId !== null ? (
+            <Button
+              type="button"
+              size="xs"
+              variant="ghost"
+              className="h-5 px-1 text-2xs"
+              onClick={() => {
+                setEditingId(null)
+                setName('')
+                setDescription('')
+                setText('')
+              }}
+            >
+              取消編輯
+            </Button>
+          ) : null}
+        </div>
+        <div className="space-y-2 p-4">
           <div className="grid gap-2 sm:grid-cols-2">
             <div className="flex flex-col gap-1">
               <Label htmlFor="preset-name" className="text-xs text-muted-foreground">
@@ -148,15 +148,19 @@ export function ReplyPromptsPage() {
             {editingId === null ? '儲存' : '更新'}
           </Button>
         </div>
+      </section>
 
-        <div className="space-y-2">
-          <span className="text-xs font-semibold">已儲存（{replyPrompts.length}）</span>
+      <section className="overflow-hidden rounded-xl border border-border bg-surface">
+        <div className="flex items-center justify-between gap-2 border-b border-line px-4 py-2">
+          <h3 className="text-sm font-semibold">已儲存（{replyPrompts.length}）</h3>
+        </div>
+        <div className="p-4">
           {replyPrompts.length === 0 ? (
             <p className="text-xs text-muted-foreground">還沒有儲存任何提示詞。</p>
           ) : (
             <div className="max-h-56 space-y-2 overflow-y-auto">
               {replyPrompts.map((preset) => (
-                <div key={preset.id} className="space-y-1 rounded border border-border p-2">
+                <div key={preset.id} className="space-y-1 rounded-lg border border-line bg-background p-2">
                   <div className="flex items-center gap-2">
                     <span className="text-xs font-medium">{preset.name}</span>
                     <div className="ml-auto flex gap-1">
@@ -201,7 +205,7 @@ export function ReplyPromptsPage() {
             </div>
           )}
         </div>
-      </div>
+      </section>
     </div>
   )
 }

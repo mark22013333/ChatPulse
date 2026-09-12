@@ -53,7 +53,7 @@ export function CodeProjectsPage() {
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="text-md font-semibold">參考專案</h2>
+        <h2 className="text-sm font-semibold">參考專案</h2>
         <p className="text-fg-dim mt-1 text-xs leading-relaxed">
           登錄這台機器上的程式碼資料夾，Draft Reply 就能引用實際程式碼回答問題。
           <strong className="text-foreground">每個環境對應哪個分支要在這裡講清楚</strong>
@@ -67,62 +67,69 @@ export function CodeProjectsPage() {
         </p>
       )}
 
-      {loading ? (
-        <p className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Loader2Icon className="size-4 animate-spin" aria-hidden />
-          載入中…
-        </p>
-      ) : projects.length === 0 ? (
-        <p className="rounded-md border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
-          還沒有登錄任何專案。在下面新增一個，草稿就能引用程式碼了。
-        </p>
-      ) : (
-        <ul className="space-y-3">
-          {projects.map((project) => (
-            <li key={project.id} className="rounded-lg border p-4">
-              <div className="flex flex-wrap items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="font-medium">{project.name}</p>
-                  <p className="truncate font-mono text-xs text-muted-foreground">
-                    {project.repo_path}
-                  </p>
-                </div>
-                <div className="flex shrink-0 gap-1">
-                  <Button size="sm" variant="ghost" onClick={() => void verify(project.id)}>
-                    <RefreshCwIcon className="size-3.5" aria-hidden />
-                    重新檢查
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => {
-                      clearError()
-                      setEditing(project)
-                    }}
-                  >
-                    編輯
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    // 這顆按鈕只有一個圖示，說明是它唯一的可及名稱來源
-                    aria-label={`刪除 ${project.name}`}
-                    onClick={() => void remove(project.id)}
-                  >
-                    <Trash2Icon className="size-3.5" aria-hidden />
-                  </Button>
-                </div>
-              </div>
+      <section className="overflow-hidden rounded-xl border border-border bg-surface">
+        <div className="border-b border-line px-4 py-2">
+          <h3 className="text-sm font-semibold">已登錄的專案</h3>
+        </div>
+        <div className="p-4">
+          {loading ? (
+            <p className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2Icon className="size-4 animate-spin" aria-hidden />
+              載入中…
+            </p>
+          ) : projects.length === 0 ? (
+            <p className="rounded-md border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
+              還沒有登錄任何專案。在下面新增一個，草稿就能引用程式碼了。
+            </p>
+          ) : (
+            <ul className="space-y-3">
+              {projects.map((project) => (
+                <li key={project.id} className="rounded-lg border border-line bg-background p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="font-medium">{project.name}</p>
+                      <p className="truncate font-mono text-xs text-muted-foreground">
+                        {project.repo_path}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 gap-1">
+                      <Button size="sm" variant="ghost" onClick={() => void verify(project.id)}>
+                        <RefreshCwIcon className="size-3.5" aria-hidden />
+                        重新檢查
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          clearError()
+                          setEditing(project)
+                        }}
+                      >
+                        編輯
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        // 這顆按鈕只有一個圖示，說明是它唯一的可及名稱來源
+                        aria-label={`刪除 ${project.name}`}
+                        onClick={() => void remove(project.id)}
+                      >
+                        <Trash2Icon className="size-3.5" aria-hidden />
+                      </Button>
+                    </div>
+                  </div>
 
-              <BranchMatrix project={project} />
+                  <BranchMatrix project={project} />
 
-              {project.last_verify_error && (
-                <p className="mt-2 text-xs text-caution">{project.last_verify_error}</p>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
+                  {project.last_verify_error && (
+                    <p className="mt-2 text-xs text-caution">{project.last_verify_error}</p>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </section>
 
       {/* key 讓表單在切換編輯目標時重新掛載，內部 draft 才會跟著換 */}
       <CodeProjectForm
