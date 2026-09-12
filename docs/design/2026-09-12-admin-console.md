@@ -30,7 +30,9 @@
 
 **選定 v1**，並一併採納兩項調整：ΔL 抬到 0.02~0.025、修 `--caution` 的對比。
 完整記錄（含三版各自的弱點與驗證結果）在 `dashboard/frontend/design-demos/direction-approved.md`，
-設計稿與 spec 在同一個目錄，截圖可用該目錄的 `shoot.js` 重跑。
+設計稿與 spec 在同一個目錄，截圖可用該目錄的 `shoot.cjs` 重跑
+（副檔名是 `.cjs` 不是 `.js`——`dashboard/frontend/package.json` 有 `"type": "module"`，
+放在它底下的 `.js` 會被當成 ES module，用 `require` 會直接炸）。
 
 三版都做到的事值得留著：狀態的第一區分是**線型與字符**、不用中點 `·`、
 全站最大的字是 Token 用量那個數字、零漸層零裝飾性陰影。
