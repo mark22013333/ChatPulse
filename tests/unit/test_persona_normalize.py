@@ -313,6 +313,59 @@ class TestValuesAreNotConfusedWithAntiPatterns(unittest.TestCase):
         self.assertNotIn("长期主义", PROMPT_TEXT)
 
 
+#: 實測最常見的 avoid 寫法：`拒绝` 是 `价值观与反模式` 的子章節，
+#: 而它的兄弟 `追求` 是**要追求**的東西。
+REFUSAL_MD = """---
+name: x
+---
+
+## 价值观与反模式
+
+### 追求（排序）
+1. 诚实——对自然诚实、对自己诚实、对他人诚实
+2. 好奇心——发现的乐趣本身就是目的
+
+### 拒绝
+- ❌ 术语堆砌伪装深度
+- ❌ 权威崇拜代替独立验证
+"""
+
+
+class TestRefusalSectionsReachAvoid(unittest.TestCase):
+    """`avoid` 是唯一直接約束輸出的欄位，空著等於那一路約束沒生效。
+
+    2026-09-12 實測 16 個已匯入的 persona，11 個的 `avoid` 是 0 條。診斷是
+    **關鍵字沒涵蓋**而不是來源沒有：跨 16 份出現 `我拒绝的` 7 次、
+    `拒绝（明确的反模式）` 2 次、`拒绝` 2 次、`我绝对拒绝的` 1 次、
+    `禁用句式` 1 次，內容都是乾淨的 ❌ 短條列。
+    """
+
+    def test_a_refusal_subsection_goes_to_avoid(self):
+        profile = personas.normalize_persona(REFUSAL_MD)
+        self.assertIn("术语堆砌伪装深度", profile.avoid)
+
+    def test_banned_phrasings_go_to_avoid_too(self):
+        doc = "# x\n\n## 表达DNA\n\n### 禁用句式\n- ❌「总结一下」「综上所述」\n- ❌「这是一个好问题」\n"
+        profile = personas.normalize_persona(doc)
+        self.assertTrue(any("总结一下" in item for item in profile.avoid))
+
+    def test_the_sibling_pursuit_section_still_does_not_go_to_avoid(self):
+        """**這條是重點。** 新關鍵字加在子章節上，父章節必須仍然不命中。
+
+        父章節 `价值观与反模式` 一旦命中 avoid，它底下「要追求」的東西就會
+        被當成「要避開」的——語意正好相反，而且在產出上看不出來
+        （見 `TestValuesAreNotConfusedWithAntiPatterns`）。
+        """
+        profile = personas.normalize_persona(REFUSAL_MD)
+        for item in profile.avoid:
+            self.assertNotIn("诚实", item)
+            self.assertNotIn("好奇心", item)
+
+    def test_the_pursuit_section_is_ignored_not_relabelled(self):
+        profile = personas.normalize_persona(REFUSAL_MD)
+        self.assertNotIn("好奇心", prompt_text(profile))
+
+
 #: 六個各含三條的章節，用來驗「每個欄位最多 `_MAX_ITEMS` 條」。
 MANY_SECTIONS_MD = "# T\n\n" + "\n\n".join(
     f"## 心智模型 {i}\n"

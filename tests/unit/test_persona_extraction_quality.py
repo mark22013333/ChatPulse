@@ -231,6 +231,29 @@ class EveryRealSampleGetsADescriptionTest(unittest.TestCase):
         self.assertTrue(len(raw_description) > 200)
 
 
+class AvoidIsNotSilentlyEmptyTest(unittest.TestCase):
+    """`avoid` 是唯一直接約束輸出的欄位——它空著不會報錯，只會悄悄失效。
+
+    三份語料都有 `### 我拒绝的` 或 `### 拒绝` 這種章節，所以三份都該抽得到。
+    """
+
+    def test_every_sample_produces_at_least_one_avoid_item(self):
+        for name in SAMPLES:
+            with self.subTest(sample=name):
+                profile = personas.normalize_persona(load(name), name_hint=name)
+                self.assertTrue(profile.avoid, "avoid 是空的")
+
+    def test_pursuit_sections_never_leak_into_avoid(self):
+        """反向守衛：`拒绝` 的兄弟章節是「要追求的東西」，不可以一起被收進來。"""
+        for name in SAMPLES:
+            profile = personas.normalize_persona(load(name), name_hint=name)
+            for item in profile.avoid:
+                with self.subTest(sample=name, item=item[:24]):
+                    # 這批語料的 `追求` 章節都以價值觀名詞起頭（诚实／好奇心／
+                    # 独立／简洁），避開的東西不會長這樣。
+                    self.assertFalse(item.startswith(("诚实", "好奇心", "独立", "简洁")))
+
+
 class FieldBudgetsHoldOnRealFilesTest(unittest.TestCase):
     """條數放寬到 8 之後，**總表達量**在真實檔案上仍然沒有變大。"""
 
