@@ -344,15 +344,51 @@ class TestPerItemAndPerFieldQuotas(unittest.TestCase):
         """逐章節配額的用意是涵蓋面：模型二不能因為模型一寫得長就整個消失。"""
         self.assertIn("决策要看你在哪张价值网里，而不是能力有多强", PROFILE.thinking_style)
 
-    def test_a_field_never_exceeds_the_global_cap(self):
-        self.assertEqual(personas._MAX_ITEMS, 6)
+    def test_a_field_never_exceeds_its_own_cap(self):
+        """上限改成逐欄位：思考與表達 8，避開與邊界仍是 6。"""
+        self.assertEqual(personas._MAX_ITEMS_BY_FIELD["thinking_style"], 8)
+        self.assertEqual(personas._MAX_ITEMS_BY_FIELD["avoid"], 6)
         profile = personas.normalize_persona(MANY_SECTIONS_MD)
-        self.assertEqual(len(profile.thinking_style), personas._MAX_ITEMS)
+        self.assertEqual(
+            len(profile.thinking_style), personas._MAX_ITEMS_BY_FIELD["thinking_style"]
+        )
 
     def test_every_field_of_the_real_sample_respects_the_cap(self):
         for name in ("thinking_style", "communication_style", "avoid", "boundaries"):
             with self.subTest(field=name):
-                self.assertLessEqual(len(getattr(PROFILE, name)), personas._MAX_ITEMS)
+                self.assertLessEqual(
+                    len(getattr(PROFILE, name)), personas._MAX_ITEMS_BY_FIELD[name]
+                )
+
+    def test_the_character_budget_is_what_caps_expressive_power(self):
+        """條數放寬之後，**總表達量**不可以跟著放寬。
+
+        720 ＝ 改版前的 6 × `_MAX_ITEM_CHARS`。這條守的是那筆帳：
+        8 條各 120 字是 960 字，必須被字元預算擋在 720。
+        """
+        self.assertEqual(personas._MAX_FIELD_CHARS, 720)
+        long_items = "# T\n\n## 心智模型\n\n" + "\n".join(
+            f"- {chr(0x4E00 + i)}" + "壹" * 119 for i in range(8)
+        )
+        profile = personas.normalize_persona(long_items)
+        total = sum(len(item) for item in profile.thinking_style)
+        self.assertLessEqual(total, personas._MAX_FIELD_CHARS)
+        # 正對照：不是「一條都沒抽到」才通過的
+        self.assertGreaterEqual(len(profile.thinking_style), 1)
+
+    def test_the_budget_also_applies_when_reading_back_from_the_db(self):
+        """`from_json()` 走 `_coerce()`，那條路徑也要擋——DB 內容不可信任。"""
+        stored = json.dumps(
+            {
+                "name": "x",
+                # 前綴各不相同，否則 `_coerce()` 的去重會讓這條測試變空包彈
+                "thinking_style": [chr(0x4E00 + i) + "壹" * 119 for i in range(20)],
+            }
+        )
+        profile = personas.PersonaProfile.from_json(stored)
+        self.assertLessEqual(
+            sum(len(item) for item in profile.thinking_style), personas._MAX_FIELD_CHARS
+        )
 
     def test_an_overlong_item_is_truncated_not_dropped(self):
         """丟棄會讓正常但偏長的風格描述整條消失，profile 因此變空。"""

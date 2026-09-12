@@ -188,12 +188,19 @@ class TestExtractionReportMatchesTheProfile(unittest.TestCase):
                 self.assertEqual(count, len(getattr(profile, field)))
 
     def test_field_cap_is_reflected_too(self):
-        """欄位總量上限（6）也要算進回報。"""
+        """欄位總量上限也要算進回報。
+
+        2026-09-12：上限從「四個欄位一律 6」改成逐欄位（表達是 8），
+        所以這裡對的是 `_MAX_ITEMS_BY_FIELD`，不是單一常數。
+        """
         many = "# 人格\n\n## 表达 DNA\n" + "".join(
             f"\n### 小節{i}\n- 第{i}條風格描述，長度足夠不會被丟掉\n" for i in range(1, 12)
         )
         profile, reported = self._totals(many)
-        self.assertEqual(len(profile.communication_style), personas._MAX_ITEMS)
+        self.assertEqual(
+            len(profile.communication_style),
+            personas._MAX_ITEMS_BY_FIELD["communication_style"],
+        )
         self.assertEqual(reported.get("communication_style"), len(profile.communication_style))
 
     def test_duplicates_are_not_double_counted(self):
@@ -534,10 +541,26 @@ class TestRootLevelUrlImportIsFlagged(unittest.TestCase):
         )
         self.assertIsNone(server._persona_import_notice(self.fetched(path="skills/x/SKILL.md")))
 
-    def test_repository_mode_never_gets_a_notice(self):
-        """Repository 模式有 `_LISTING_RE` 守著，走不到根目錄。"""
+    def test_repository_mode_root_import_gets_the_same_notice(self):
+        """2026-09-12 起 Repository 模式也走得到根目錄，提醒要跟著涵蓋它。
+
+        這條原本斷言的是相反的事（「Repository 模式有 `_LISTING_RE` 守著，
+        走不到根目錄」）。`_single_persona_root()` 讓那句話失效之後，如果
+        沒有一起改，這個提醒就會對**新增的那條路徑**靜默失效——而它防的
+        正是那條路徑會遇到的東西：整個 repo 只有一份方法論 SKILL.md。
+        """
+        notice = server._persona_import_notice(
+            self.fetched(source_type="github", path="SKILL.md")
+        )
+        self.assertIsNotNone(notice)
+        self.assertIn("方法論", notice)
+
+    def test_repository_mode_normal_paths_still_get_no_notice(self):
+        """正對照：Repository 模式的正常路徑含 `/`，不該被提醒。"""
         self.assertIsNone(
-            server._persona_import_notice(self.fetched(source_type="github", path="SKILL.md"))
+            server._persona_import_notice(
+                self.fetched(source_type="github", path="personas/luozhenyu/SKILL.md")
+            )
         )
 
     def test_no_path_means_no_notice(self):
@@ -545,8 +568,88 @@ class TestRootLevelUrlImportIsFlagged(unittest.TestCase):
         self.assertIsNone(server._persona_import_notice(self.fetched()))
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
+class TestSimplifiedSourceIsFlagged(unittest.TestCase):
+    """簡體來源要說一句——**但不轉換**。
+
+    匯入器的職責是「忠實抽取 ＋ 淨化指令」，語言風格是 `core/polishers/` 的事。
+    可是不處理不等於不告知：`prompts._BASE_RULES` 的「請使用繁體中文輸出」壓得掉
+    **字形**，壓不掉**用詞**——2026-09-12 實測 `alchaincyf` 的人物 skill，抽出來的
+    `communication_style` 裡有「高频词：…靠谱」「东北方言——嘎巴、整（做/搞）」
+    這種直接指定用字的條目，它們跟繁體規則不衝突，於是 bot 會在公司群組裡
+    講出「視頻」「信息」「靠譜」。
+
+    判定用的是**只在簡體出現的字形**，不是語言猜測：這批字在繁體裡一律寫成
+    另一個形（這／說／時…），命中就是明確證據。
+    """
+
+    @staticmethod
+    def profile(**fields):
+        return server.personas.PersonaProfile(name="x", **fields)
+
+    def test_simplified_items_get_a_notice(self):
+        notice = server._simplified_source_notice(
+            self.profile(communication_style=["高频词：靠谱、这个、说清楚", "短句为主"])
+        )
+        self.assertIsNotNone(notice)
+        self.assertIn("簡體", notice)
+
+    def test_traditional_items_get_no_notice(self):
+        """正對照。少了它，「永遠回提醒」也會讓上面那條通過。"""
+        self.assertIsNone(
+            server._simplified_source_notice(
+                self.profile(
+                    thinking_style=["先問這個說法的前提是什麼"],
+                    communication_style=["短句為主，結論放前面"],
+                )
+            )
+        )
+
+    def test_one_stray_character_is_not_enough(self):
+        """引用一個簡體書名不該觸發提醒——門檻是 3 個不同的字。"""
+        self.assertIsNone(
+            server._simplified_source_notice(
+                self.profile(thinking_style=["參考《长期主義》這本書的論點"])
+            )
+        )
+
+    def test_japanese_is_not_mistaken_for_simplified(self):
+        """日文新字體與簡體共用一批字形（会・学・国・来・体・点）。
+
+        光看字形會把日文 persona 誤判成簡體。有假名就一定不是中文，
+        放棄判斷——這是提醒不是守衛，寧可少說一句也不要說錯。
+        """
+        self.assertIsNone(
+            server._simplified_source_notice(
+                self.profile(
+                    communication_style=["短い文で話す、専門用語は使わない"],
+                    thinking_style=["会社の学習と国際的な体験を点で結ぶ"],
+                )
+            )
+        )
+
+    def test_boundaries_are_not_considered(self):
+        """`boundaries` 不進 prompt，它是簡體不影響輸出，不該拿來觸發提醒。"""
+        self.assertIsNone(
+            server._simplified_source_notice(
+                self.profile(boundaries=["这个模型不适用于时间跨度很长的问题，会失真"])
+            )
+        )
+
+    def test_both_notices_are_joined(self):
+        """根目錄提醒與簡體提醒可以同時成立，不可以互相蓋掉。"""
+        notice = server._persona_import_notice(
+            TestRootLevelUrlImportIsFlagged.fetched(path="SKILL.md"),
+            self.profile(communication_style=["高频词：靠谱、这个、说清楚", "短句为主"]),
+        )
+        self.assertIsNotNone(notice)
+        self.assertIn("方法論", notice)
+        self.assertIn("簡體", notice)
+
+    def test_the_profile_is_optional(self):
+        """沒傳 profile 時只做路徑判斷，不可以炸掉。"""
+        self.assertIsNone(server._persona_import_notice(
+            TestRootLevelUrlImportIsFlagged.fetched(path="personas/x/SKILL.md")
+        ))
 
 
 class TestStoredDraftIsReadableBack(unittest.TestCase):
@@ -709,3 +812,10 @@ class TestGenerationConfigCarriesTheWholeMeta(unittest.TestCase):
         self.assertEqual(out["content_md"], "舊內容")
         self.assertNotIn("meta", out["generation_config"])
         self.assertEqual(out["generation_config"]["persona_name"], "羅振宇（羅胖）")
+
+
+# `unittest.main()` 一定要放在**檔案最後**。2026-09-12 之前它卡在中段，
+# 後面還有兩個測試類別——直接跑這個檔案時那兩個類別根本來不及被定義，
+# 等於靜默跳過。`unittest discover` 與 pytest 走得到，所以一直沒露餡。
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

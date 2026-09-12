@@ -140,8 +140,13 @@ export function PersonasPage() {
                 />
               </div>
               <div className="flex flex-col gap-1">
+                {/*
+                  「目錄名」對多數 repo 不成立：生態裡最常見的形態是一個 repo
+                  一份 persona、SKILL.md 放在根目錄，那種 repo 沒有目錄層可以填。
+                  這類 repo 填 repo 名即可（後端只有一份候選，不會挑錯）。
+                */}
                 <Label htmlFor="persona-slug" className="text-xs text-muted-foreground">
-                  Persona 名稱（目錄名）
+                  Persona 名稱（目錄名；整個 repo 只有一份時填 repo 名）
                 </Label>
                 <Input
                   id="persona-slug"

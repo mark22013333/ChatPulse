@@ -6,22 +6,26 @@ Repository 模式試五條候選路徑，全部 404 時原本只回「試過的�
 「slug 打錯」有用，對真正最常見的情況卻完全沒用：**生態裡的多數 repo 是
 「一個 repo 一個 persona、SKILL.md 放在根目錄」**（2026-09-11 實測
 `jangviktor-web/zeng-shiqiang`、`superj0107/kaishengwang-perspective`、
-`zhuoshu-perspective`、`chenboling-perspective`、`shugui-perspective` 五個
-都是），而那種形態在 Repository 模式下**永遠**找不到——根目錄不算 persona
-是刻意的（見 `_LISTING_RE` 上方的註解）。使用者盯著五條路徑看不出「該換模式」。
+`zhuoshu-perspective`、`chenboling-perspective`、`shugui-perspective` 五個都是；
+2026-09-12 再測 `alchaincyf` 的 14 個人物 skill repo，也全部是）。
 
-所以失敗時多花一次 trees 呼叫把話講完。下面守四件事：
+這個檔案有兩套測試，守的是同一個缺口的兩個階段：
+
+* `SinglePersonaRepoTest`（2026-09-12 新增）——**那種 repo 現在直接匯入**。
+  這是主要路徑。
+* `MissingPersonaErrorTest`——兩種結構都沒有、或 slug 真的打錯時，錯誤訊息
+  要指路。這是退而求其次的路徑，守三件事：
 
   1. 有 slug 就列出來，而且措辭**不可以**是「可以匯入」——`_LISTING_RE` 只
      證明路徑形狀符合。實測 `anthropics/skills` 有 19 個
      `skills/<名稱>/SKILL.md`，全部都不是 persona。說「可以匯入」會把人
      送去撞 409。
-  2. 只有根目錄檔案時要說「改用網址模式」，而且**建議的網址用 commit SHA**。
-     實測 zeng-shiqiang 的預設分支叫 `auto-optimize/20260825-…`，**含斜線**，
-     而網址模式按 `/` 切段解析，含斜線的 ref 結構上表達不出來、填了必然 404。
-  3. 樹被截斷時要說清單可能不完整（原本的程式碼有個 `pass` 與一句「照實說」
+  2. 樹被截斷時要說清單可能不完整（原本的程式碼有個 `pass` 與一句「照實說」
      的註解，但實際上什麼都沒說）。
-  4. 列舉失敗（rate limit、格式怪）**不可以蓋掉原本的錯誤**。
+  3. 列舉失敗（rate limit、格式怪）**不可以蓋掉原本的錯誤**。
+
+原本還有兩條「只有根目錄檔案時要說改用網址模式」的測試，2026-09-12 移除：
+那個分支走不到了，能匯就不該叫使用者換模式。
 
 全部用 mock，不打網路。
 """
@@ -92,25 +96,13 @@ class MissingPersonaErrorTest(unittest.TestCase):
 
     # ---------------------------------------------------------------- 2
 
-    def test_root_level_repo_is_told_to_switch_to_url_mode(self):
-        msg = self.message([blob("SKILL.md"), blob("README.md")])
-        self.assertIn("網址", msg)
-        self.assertIn("根目錄", msg)
+    def test_a_repo_with_nothing_says_so_plainly(self):
+        """兩種結構都沒有時，要講清楚是「這個 repo 裡沒有」而不是「slug 打錯」。
 
-    def test_the_suggested_url_pins_the_commit_sha_not_a_branch(self):
-        """**這條是重點。** 含斜線的分支名在網址模式裡表達不出來。
-
-        zeng-shiqiang 的預設分支是 `auto-optimize/20260825-…`：網址模式按
-        `/` 切段，把它填進 ref 那一段會被切壞、必然 404。用 SHA 沒有這個
-        問題，而且順便把版本固定住。
+        （原本這裡還斷言訊息不含 raw 網址。2026-09-12 產生網址的分支整段移除
+        之後，那條斷言永遠成立、測不到任何東西，所以拿掉。）
         """
-        msg = self.message([blob("SKILL.md")])
-        self.assertIn(f"https://raw.githubusercontent.com/{OWNER}/{REPO}/{SHA}/SKILL.md", msg)
-
-    def test_no_url_is_suggested_when_there_is_no_root_file(self):
-        """正對照：沒看到根目錄檔案就不要憑猜測給一個會 404 的連結。"""
         msg = self.message([blob("README.md"), blob("docs/guide.md")])
-        self.assertNotIn("raw.githubusercontent.com", msg)
         self.assertIn("找不到任何 persona 檔案", msg)
 
     def test_personas_take_priority_over_a_root_file(self):
@@ -146,6 +138,160 @@ class MissingPersonaErrorTest(unittest.TestCase):
                 msg = self.message(blobs)
                 self.assertIn(SLUG, msg)
                 self.assertIn("試過的路徑", msg)
+
+
+#: 一份剛好能過淨化的最小 persona。內容不重要，重要的是它被取回來了。
+ROOT_SKILL_MD = "---\nname: feynman-perspective\n---\n\n## 心智模型\n\n- 先問這個說法的前提是什麼\n"
+
+
+class SinglePersonaRepoTest(unittest.TestCase):
+    """「一個 repo 一個 persona、SKILL.md 放根目錄」要能用 Repository 模式匯入。
+
+    這是生態裡的主流長相：2026-09-12 實測 `alchaincyf` 的 14 個人物 skill
+    repo 全部如此。改版前它們在 Repository 模式下**永遠**找不到，只能改用
+    網址模式手打 raw 網址——而那條路徑沒有預設分支解析（14 個裡有 7 個的
+    預設分支是 `master` 不是 `main`，照 UI placeholder 填必然 404），
+    也沒有 commit SHA 釘版。
+
+    下面同時守住反向：`fxp/persona-distill-skills` 的根目錄 `SKILL.md` 是
+    「如何蒸餾 persona」的方法論而不是 persona，那個 repo 另有
+    `personas/<名稱>/`，**不可以**因為這次放寬而被當成 persona 收進來。
+    """
+
+    def source_with(self, blobs, root_body=ROOT_SKILL_MD):
+        """把 GitHub 換成假的：五條候選路徑一律 404，根目錄檔案有內容。"""
+        def fake_get(url, accept=None):
+            if url.endswith("/SKILL.md") and f"/{SHA}/SKILL.md" in url:
+                return root_body, url
+            raise PersonaSourceError(f"404 Not Found: {url}")
+
+        source = GitHubPersonaSource()
+        return source, mock.patch.multiple(
+            "core.persona_sources.github",
+            safe_get=mock.Mock(side_effect=fake_get),
+        ), mock.patch.multiple(
+            GitHubPersonaSource,
+            _resolve_commit=mock.Mock(return_value=(SHA, "master")),
+            _tree_blobs=mock.Mock(return_value=(blobs, False)),
+        )
+
+    def fetch(self, blobs, slug=SLUG):
+        source, patch_mod, patch_cls = self.source_with(blobs)
+        with patch_mod, patch_cls:
+            return source._fetch_by_path(f"{OWNER}/{REPO}", slug, None)
+
+    # ---------------------------------------------------------------- 匯入
+
+    def test_a_root_level_skill_is_imported_instead_of_erroring(self):
+        fetched = self.fetch([blob("SKILL.md"), blob("README.md")])
+        self.assertIn("心智模型", fetched.raw_text)
+        self.assertEqual(fetched.extra["path"], "SKILL.md")
+
+    def test_the_import_is_pinned_to_a_commit_sha(self):
+        """Repository 模式的價值就在這裡——網址模式沒有這一層。"""
+        fetched = self.fetch([blob("SKILL.md")])
+        self.assertEqual(fetched.source_commit_sha, SHA)
+        self.assertEqual(fetched.source_repository, f"{OWNER}/{REPO}")
+
+    def test_the_slug_does_not_have_to_match(self):
+        """這種 repo 只有一份 persona，沒有第二個候選可以選錯。
+
+        要求 slug 對得上只會讓「跟 repo 名差一個字」變成一個使用者看不出
+        該怎麼修的 404。填過的字仍然記在 provenance 裡。
+        """
+        fetched = self.fetch([blob("SKILL.md")], slug="whatever")
+        self.assertIn("心智模型", fetched.raw_text)
+        self.assertEqual(fetched.extra["requested_slug"], "whatever")
+
+    def test_the_name_hint_comes_from_the_repo_name(self):
+        """沒有目錄層可以當名字，只剩 repo 名。"""
+        fetched = self.fetch([blob("SKILL.md")])
+        self.assertEqual(fetched.name_hint, "some-repo")
+
+    # ---------------------------------------------------------------- 反向
+
+    def test_a_repo_with_personas_dirs_never_falls_back_to_the_root_file(self):
+        """`fxp/persona-distill-skills` 的實測案例：根目錄那份是方法論。"""
+        with self.assertRaises(PersonaSourceError) as caught:
+            self.fetch([blob("SKILL.md"), blob("personas/luozhenyu/SKILL.md")])
+        self.assertIn("luozhenyu", str(caught.exception))
+
+    def test_a_truncated_tree_never_falls_back_to_the_root_file(self):
+        """「這個 repo 沒有 personas/ 結構」是全稱斷言，截斷的樹證明不了它。
+
+        大型 repo 的 `personas/` 目錄可能整個落在截斷之外。那時放行等於把
+        `fxp/persona-distill-skills` 那個反例重新打開——匯進一份方法論。
+        寧可退回錯誤訊息讓使用者自己指定。
+        """
+        source, patch_mod, _ = self.source_with([blob("SKILL.md")])
+        with patch_mod, mock.patch.multiple(
+            GitHubPersonaSource,
+            _resolve_commit=mock.Mock(return_value=(SHA, "master")),
+            _tree_blobs=mock.Mock(return_value=([blob("SKILL.md")], True)),
+        ):
+            with self.assertRaises(PersonaSourceError):
+                source._fetch_by_path(f"{OWNER}/{REPO}", SLUG, None)
+
+    def test_listing_does_not_invent_one_from_a_truncated_tree_either(self):
+        source = GitHubPersonaSource()
+        with mock.patch.multiple(
+            GitHubPersonaSource,
+            _resolve_commit=mock.Mock(return_value=(SHA, "master")),
+            _tree_blobs=mock.Mock(return_value=([blob("SKILL.md")], True)),
+        ):
+            self.assertEqual(source.list_personas(repository=f"{OWNER}/{REPO}"), [])
+
+    def test_a_repo_with_neither_still_raises(self):
+        with self.assertRaises(PersonaSourceError) as caught:
+            self.fetch([blob("README.md"), blob("docs/guide.md")])
+        self.assertIn("找不到任何 persona 檔案", str(caught.exception))
+
+    def test_a_failing_tree_call_still_reports_the_attempted_paths(self):
+        """樹拿不到時不可以變成「列舉失敗」，要退回原本那句。"""
+        source = GitHubPersonaSource()
+        with mock.patch(
+            "core.persona_sources.github.safe_get",
+            side_effect=PersonaSourceError("404 Not Found"),
+        ), mock.patch.multiple(
+            GitHubPersonaSource,
+            _resolve_commit=mock.Mock(return_value=(SHA, "master")),
+            _tree_blobs=mock.Mock(side_effect=PersonaSourceError("rate limit exceeded")),
+        ):
+            with self.assertRaises(PersonaSourceError) as caught:
+                source._fetch_by_path(f"{OWNER}/{REPO}", SLUG, None)
+        self.assertIn("試過的路徑", str(caught.exception))
+        self.assertNotIn("rate limit", str(caught.exception))
+
+    # ---------------------------------------------------------------- 列舉
+
+    def test_listing_shows_the_single_persona(self):
+        """UI 的「列舉 → 挑一個」流程對這種 repo 也要走得通。
+
+        列不出來的話使用者看到的是空清單，而空清單看起來就像
+        「這個 repo 沒東西」——那正是改版前的體驗。
+        """
+        source = GitHubPersonaSource()
+        with mock.patch.multiple(
+            GitHubPersonaSource,
+            _resolve_commit=mock.Mock(return_value=(SHA, "master")),
+            _tree_blobs=mock.Mock(return_value=([blob("SKILL.md")], False)),
+        ):
+            listed = source.list_personas(repository=f"{OWNER}/{REPO}")
+        self.assertEqual([item["id"] for item in listed], ["some-repo"])
+        self.assertEqual(listed[0]["commit_sha"], SHA)
+
+    def test_listing_is_unchanged_for_a_multi_persona_repo(self):
+        """正對照：有 slug 結構時不可以多冒出一筆根目錄的東西。"""
+        source = GitHubPersonaSource()
+        with mock.patch.multiple(
+            GitHubPersonaSource,
+            _resolve_commit=mock.Mock(return_value=(SHA, "master")),
+            _tree_blobs=mock.Mock(
+                return_value=([blob("SKILL.md"), blob("personas/luozhenyu/SKILL.md")], False)
+            ),
+        ):
+            listed = source.list_personas(repository=f"{OWNER}/{REPO}")
+        self.assertEqual([item["id"] for item in listed], ["luozhenyu"])
 
 
 if __name__ == "__main__":

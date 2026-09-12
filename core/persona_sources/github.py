@@ -62,6 +62,11 @@ _REF_RE = re.compile(r"^[\w][\w./-]{0,100}$")
 #: 用寬鬆的 `**/SKILL.md` 或允許空的目錄層級，就會把方法論檔當成一個
 #: persona 收進來——而它的內容看起來完全像一份合理的 skill，
 #: 使用者要選了之後才發現不對。
+#:
+#: 根目錄的 `SKILL.md` 仍然**不在這張表裡**。它是在五條全部 404 之後、
+#: 且確認這個 repo 沒有任何 `personas/`／`skills/` 結構時才採用
+#: （見 `_single_persona_root()`）——`fxp/persona-distill-skills` 兩者都有，
+#: 所以上面那個實測案例仍然被擋著。
 _CANDIDATE_PATHS = (
     "personas/{slug}/SKILL.md",
     "personas/{slug}/PERSONA.md",
@@ -70,9 +75,16 @@ _CANDIDATE_PATHS = (
     "{slug}/SKILL.md",
 )
 
-#: 根目錄的主檔名。**這些刻意不算 persona**（理由見 `_CANDIDATE_PATHS`
-#: 上方的註解），列在這裡只為了在「找不到指定的 persona」時能告訴使用者
-#: 「這個 repo 是把檔案放根目錄的形態，改用網址模式」——是指路，不是放寬比對。
+#: 根目錄的主檔名。**只有在這個 repo 完全沒有 `personas/`／`skills/` 結構時
+#: 才算 persona**——那種形態就是「一個 repo 一個 persona」，見
+#: `_single_persona_root()`。
+#:
+#: 2026-09-12 之前這些一律不算 persona，使用者只會拿到一句「改用網址模式」。
+#: 但那條退路有兩個實際代價：網址模式的 ref 是使用者自己從網址裡打的，
+#: 打錯就是 404（實測 `alchaincyf` 的 14 個人物 repo 裡有 7 個預設分支是
+#: `master` 不是 `main`，照 UI placeholder 填必然失敗）；而且網址模式不走
+#: `_resolve_commit()`，沒有預設分支解析、也沒有 commit SHA 釘版。
+#: 換句話說，我們把生態裡最主流的形態趕到了功能最弱的那條路徑上。
 _ROOT_CANDIDATES: Tuple[str, ...] = ("SKILL.md", "PERSONA.md")
 
 #: 列舉 persona 時用的路徑比對。與 `_CANDIDATE_PATHS` 對應，
@@ -117,6 +129,60 @@ def _validate_ref(ref: Optional[str]) -> Optional[str]:
     if not _REF_RE.match(value) or ".." in value:
         raise InvalidParameter(f"ref 含不合法的字元：{ref!r}")
     return value
+
+
+def _single_persona_root(
+    blobs: List[Dict[str, Any]], *, truncated: bool = False
+) -> Optional[str]:
+    """這個 repo 是不是「一個 repo 一個 persona、主檔放根目錄」的形態。
+
+    是的話回傳那個根檔案的路徑，不是的話回 `None`。
+
+    判定條件是**兩件事同時成立**：樹裡沒有任何 `personas/<名稱>/` 或
+    `skills/<名稱>/` 形狀的檔案，而且根目錄有 `SKILL.md`／`PERSONA.md`。
+
+    **樹被截斷時一律回 `None`。** 前一半是個全稱斷言（「沒有任何…」），
+    而截斷的樹證明不了「沒有」——只證明「我看到的這些裡面沒有」。
+    大型 repo 的 `personas/` 目錄可能整個落在截斷之外，那時放行等於把
+    `fxp/persona-distill-skills` 那個反例重新打開。寧可退回錯誤訊息讓
+    使用者自己指定，也不要匯進一份方法論。
+
+    「沒有任何 slug 結構」這一半是關鍵，不能省。`fxp/persona-distill-skills`
+    同時有 `personas/luozhenyu/SKILL.md` 與一個根目錄 `SKILL.md`，而後者是
+    「如何蒸餾 persona」的方法論——只看根目錄有沒有檔案就會把方法論當成
+    persona 匯進來（2026-09-07 的實測案例，見 `_CANDIDATE_PATHS`）。
+    有 slug 結構就代表作者是用目錄在組織 persona，根目錄那份是別的東西。
+    """
+    if truncated:
+        return None
+    root: Optional[str] = None
+    for entry in blobs:
+        path = str(entry.get("path") or "")
+        if _LISTING_RE.match(path):
+            return None
+        if path in _ROOT_CANDIDATES and root is None:
+            root = path
+    return root
+
+
+def _repo_as_slug(repo: str) -> str:
+    """repo 名 → 合法的 slug。
+
+    單一 persona repo 沒有目錄層可以當名字，只能用 repo 名。而 GitHub 的
+    repo 名允許 `.`，`_SLUG_RE` 不允許（擋路徑穿越），所以要先收斂。
+    """
+    value = re.sub(r"[^\w-]", "-", repo).strip("-")
+    return value[:80] or "persona"
+
+
+def _base_missing_message(
+    owner: str, repo: str, sha: str, slug: str, attempted: List[str]
+) -> str:
+    """「找不到哪個 slug、試過哪些路徑」——每一種失敗訊息都要保留這句。"""
+    return (
+        f"在 {owner}/{repo}@{sha[:7]} 找不到 persona {slug!r}。"
+        f"試過的路徑：{'、'.join(attempted)}"
+    )
 
 
 def _api_json(url: str) -> Any:
@@ -169,7 +235,7 @@ class GitHubPersonaSource(PersonaSource):
         """
         owner, repo = _validate_repository(repository)
         sha, resolved_ref = self._resolve_commit(owner, repo, _validate_ref(ref))
-        blobs, _truncated = self._tree_blobs(owner, repo, sha)
+        blobs, truncated = self._tree_blobs(owner, repo, sha)
 
         seen: Dict[str, Dict[str, Any]] = {}
         for entry in blobs:
@@ -193,6 +259,32 @@ class GitHubPersonaSource(PersonaSource):
                     "commit_sha": sha,
                 },
             )
+
+        if not seen:
+            # 一個 repo 一個 persona 的形態：列出那一份，讓 UI 的
+            # 「列舉 → 挑一個」流程對這種 repo 也走得通。不列的話使用者
+            # 會看到空清單，而空清單看起來就像「這個 repo 沒東西」。
+            root = _single_persona_root(blobs, truncated=truncated)
+            if root:
+                slug = _repo_as_slug(repo)
+                return [
+                    {
+                        "id": slug,
+                        "name": slug,
+                        "path": root,
+                        "size": next(
+                            (
+                                entry.get("size")
+                                for entry in blobs
+                                if str(entry.get("path") or "") == root
+                            ),
+                            None,
+                        ),
+                        "repository": f"{owner}/{repo}",
+                        "ref": resolved_ref,
+                        "commit_sha": sha,
+                    }
+                ]
 
         return sorted(seen.values(), key=lambda item: item["id"])
 
@@ -271,7 +363,44 @@ class GitHubPersonaSource(PersonaSource):
                 extra={"path": path},
             )
 
-        raise self._missing_persona_error(owner, repo, sha, slug, attempted)
+        # 五條候選路徑都沒有。在放棄之前先確認這是不是「一個 repo 一個
+        # persona」的形態——那是生態裡的主流長相（2026-09-12 實測
+        # `alchaincyf` 的 14 個人物 repo 全部如此），而它在候選路徑表裡
+        # 結構上就表達不出來（沒有 slug 那一層）。
+        #
+        # 樹只取一次，失敗路徑本來就要取一次（`_missing_persona_error` 用它
+        # 指路），所以 API 呼叫次數沒有增加——未認證每小時只有 60 次。
+        try:
+            blobs, truncated = self._tree_blobs(owner, repo, sha)
+        except (PersonaSourceError, InvalidParameter):
+            # 列舉失敗（rate limit、樹格式怪）不可以蓋掉原本的錯誤，也不值得
+            # 再打一次同樣會失敗的 API——直接退回那句原本的訊息。
+            raise PersonaSourceError(
+                _base_missing_message(owner, repo, sha, slug, attempted)
+            ) from None
+
+        root = _single_persona_root(blobs, truncated=truncated)
+        if root:
+            # 這裡**刻意不比對使用者填的 slug**。這種 repo 只有一份 persona，
+            # 沒有第二個候選，要求 slug 對得上只會讓「打字跟 repo 名差一個字」
+            # 變成 404，而那個錯誤使用者完全看不出該怎麼修。
+            raw_url = f"{_RAW}/{owner}/{repo}/{sha}/{root}"
+            text, final_url = safe_get(raw_url, accept="text/plain")
+            return FetchedPersona(
+                raw_text=text,
+                source_type=self.name,
+                name_hint=_repo_as_slug(repo),
+                source_repository=f"{owner}/{repo}",
+                source_url=final_url,
+                source_ref=resolved_ref,
+                source_commit_sha=sha,
+                source_hash=_content_hash(text),
+                extra={"path": root, "requested_slug": slug},
+            )
+
+        raise self._missing_persona_error(
+            owner, repo, sha, slug, attempted, blobs=blobs, truncated=truncated
+        )
 
     def _missing_persona_error(
         self,
@@ -280,44 +409,40 @@ class GitHubPersonaSource(PersonaSource):
         sha: str,
         slug: str,
         attempted: List[str],
+        *,
+        blobs: Optional[List[Dict[str, Any]]] = None,
+        truncated: bool = False,
     ) -> PersonaSourceError:
-        """五條候選路徑都 404 時的錯誤——**要指路，不只是報告失敗**。
+        """五條候選路徑都 404、而且也不是單一 persona repo 時的錯誤。
 
-        原本的訊息只列了試過的五條路徑。那對「打錯 slug」有幫助，但對真正
-        最常見的情況完全沒幫助：**生態裡的多數 repo 是「一個 repo 一個
-        persona、SKILL.md 放在根目錄」**（2026-09-11 實測 zeng-shiqiang、
-        kaishengwang-perspective、zhuoshu-perspective… 五個都是這種），
-        而那種形態在 Repository 模式下**永遠**找不到——根目錄不算 persona
-        是刻意的（見 `_LISTING_RE`）。使用者對著五條路徑看不出「該換模式」。
+        原本的訊息只列了試過的五條路徑。那對「打錯 slug」有幫助，但看不出
+        「這個 repo 到底有什麼」，所以這裡用已經取到的樹把話講完：
+        這個 repo 裡名稱形狀符合的有哪些。
 
-        所以這裡多花一次 trees 呼叫（只在失敗路徑，且共用已解出的 SHA）
-        把話講完：這個 repo 有哪些可以匯入，或者它根本是另一種形態、
-        該用哪個網址。
+        措辭是「名稱形狀符合」而不是「可以匯入」——`_LISTING_RE` 只證明
+        路徑形狀，證明不了那是 persona（實測 `anthropics/skills` 的 19 個
+        `skills/<名稱>/SKILL.md` 全部 `is_usable() == False`）。說「可以匯入」
+        會把人送去撞 409，那比不指路更糟。
 
-        兩個講究：
+        2026-09-12：原本還有一個分支，在只看到根目錄 `SKILL.md` 時建議一個
+        raw 網址、叫使用者改用網址模式（那段還講究了「網址要用 commit SHA
+        而不是分支名」，因為實測 `jangviktor-web/zeng-shiqiang` 的預設分支
+        含斜線、在網址模式裡結構上表達不出來）。**那整段已經移除**：那種
+        repo 現在由 `_single_persona_root()` 直接匯入，走不到這裡了。
+        能匯就不該叫使用者換模式。
 
-        * 建議的網址用 **commit SHA 而不是分支名**。實測
-          `jangviktor-web/zeng-shiqiang` 的預設分支叫
-          `auto-optimize/20260825-…`，**含斜線**——而網址模式是按 `/`
-          切段解析的，含斜線的 ref 在那個網址形狀裡結構上表達不出來，
-          填了必然 404。SHA 沒有這個問題，而且順便把版本固定住。
-        * 只有在樹裡**真的看到**根目錄的 `SKILL.md` 時才建議那個網址，
-          不憑猜測給一個會 404 的連結。
-
-        列舉失敗（rate limit、樹格式怪）**不可以蓋掉原本的錯誤**——
-        指路是加分，拿不到就退回原本那句。
+        `blobs` 由呼叫端傳入（它已經取過樹了，不必再打一次 API）。沒傳就
+        自己取；取不到**不可以蓋掉原本的錯誤**——指路是加分，拿不到就
+        退回原本那句。
         """
-        base = (
-            f"在 {owner}/{repo}@{sha[:7]} 找不到 persona {slug!r}。"
-            f"試過的路徑：{'、'.join(attempted)}"
-        )
-        try:
-            blobs, truncated = self._tree_blobs(owner, repo, sha)
-        except (PersonaSourceError, InvalidParameter):
-            return PersonaSourceError(base)
+        base = _base_missing_message(owner, repo, sha, slug, attempted)
+        if blobs is None:
+            try:
+                blobs, truncated = self._tree_blobs(owner, repo, sha)
+            except (PersonaSourceError, InvalidParameter):
+                return PersonaSourceError(base)
 
         slugs: List[str] = []
-        root_file: Optional[str] = None
         for entry in blobs:
             path = str(entry.get("path") or "")
             match = _LISTING_RE.match(path)
@@ -325,8 +450,6 @@ class GitHubPersonaSource(PersonaSource):
                 found = match.group("slug") or match.group("slug2")
                 if found and _SLUG_RE.match(found) and found not in slugs:
                     slugs.append(found)
-            elif path in _ROOT_CANDIDATES and root_file is None:
-                root_file = path
 
         if slugs:
             shown = "、".join(slugs[:8])
@@ -343,13 +466,9 @@ class GitHubPersonaSource(PersonaSource):
                 "（形狀符合不代表它們是 persona——不是的話匯入會被擋下來並說明原因）"
             )
 
-        if root_file:
-            return PersonaSourceError(
-                f"{base}。這個 repo 沒有 personas/<名稱>/ 這種結構，"
-                f"它的 {root_file} 放在根目錄——那種形態要用「網址」模式匯入："
-                f"{_RAW}/{owner}/{repo}/{sha}/{root_file}"
-            )
-
+        # 「根目錄有 SKILL.md」在 2026-09-12 之前會走到一句「改用網址模式」。
+        # 現在那種 repo 在 `_fetch_by_path()` 裡就直接匯入了（見
+        # `_single_persona_root()`），所以走到這裡代表**兩種結構都沒有**。
         return PersonaSourceError(
             f"{base}。這個 repo 裡找不到任何 persona 檔案"
             "（既沒有 personas/<名稱>/SKILL.md，根目錄也沒有 SKILL.md）。"

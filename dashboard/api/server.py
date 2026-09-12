@@ -965,8 +965,61 @@ class PersonaUpdateRequest(BaseModel):
     enabled: Optional[bool] = None
 
 
-def _persona_import_notice(fetched: persona_sources.FetchedPersona) -> Optional[str]:
-    """匯入成功了，但有件事值得說一句——目前只有一種情況。
+#: 只在簡體中文出現、繁體中文不會用到的字形。用來判斷來源的書寫系統。
+#:
+#: 比對字形而不是猜語言：這批字在繁體中文裡一律寫成另一個形（這／說／時…），
+#: 所以命中就是明確證據，不是機率判斷。
+_SIMPLIFIED_ONLY_CHARS = frozenset(
+    "这说时会对应实现样边过还让认识语见进问间关开义张长门风马齐专业东车书买卖"
+    "华单变点为无与众体亲头转记论设该则给结经统级绝继续观规视觉"
+    "个们么来学国电产质题传处务广总类选价组数断满术双区医压参离罗员责权证"
+    "议计讲谈调达输运连远迟适递复杂难济领导习惯态势创频谱发"
+)
+
+#: 要命中幾個**不同**的字才算數。設 3 是為了擋掉偶發的單字誤判
+#: （引用一個簡體書名、一個人名），那種情況不值得提醒。
+_SIMPLIFIED_HITS_NEEDED = 3
+
+
+def _simplified_source_notice(profile: personas.PersonaProfile) -> Optional[str]:
+    """抽出來的風格條目是簡體中文時說一句。
+
+    **這裡刻意不做任何轉換。** 匯入器的職責是「忠實抽取 ＋ 淨化指令」，
+    語言風格是輸出層的事（`core/polishers/`，`language="zh-TW"`）。在匯入時
+    改寫第三方原文等於竄改來源語意，而且會讓 `raw_source` 與 profile 對不起來。
+
+    但**不處理不等於不告知**。`prompts._BASE_RULES` 的「請使用繁體中文輸出」
+    會把字形壓成繁體，壓不掉的是**用詞**：抽出來的條目裡有「高频词：…靠谱」
+    「东北方言——嘎巴、整（做/搞）」這種直接指定用字的句子，它們跟繁體規則
+    不衝突（字形轉了就是），於是 bot 會在公司群組裡講出「視頻」「信息」
+    「靠譜」。使用者選 persona 之前應該知道這件事。
+    """
+    text = "".join(profile.thinking_style + profile.communication_style + profile.avoid)
+
+    # 日文的新字體與簡體有一批共同的字形（会・学・国・来・体・点），光看字形
+    # 會把日文 persona 誤判成簡體。有假名就一定不是中文，直接放棄判斷——
+    # 這是提醒不是守衛，寧可少說一句也不要說錯。
+    if any("぀" <= char <= "ヿ" for char in text):
+        return None
+
+    hits = {char for char in text if char in _SIMPLIFIED_ONLY_CHARS}
+    if len(hits) < _SIMPLIFIED_HITS_NEEDED:
+        return None
+    return (
+        "這份來源是簡體中文。回話會照設定輸出繁體，但抽出來的表達習慣裡"
+        "可能帶著中國用語（例如「視頻」「信息」「靠譜」），"
+        "請看一眼下面的條目再決定要不要啟用。"
+    )
+
+
+def _persona_import_notice(
+    fetched: persona_sources.FetchedPersona,
+    profile: Optional[personas.PersonaProfile] = None,
+) -> Optional[str]:
+    """匯入成功了，但有件事值得說一句。
+
+    回傳的是**所有適用提醒串起來的一句**（各自的判斷見下面各函式），
+    都不適用就回 `None`——不要為了「有東西可顯示」而硬湊一句廢話。
 
     **repo 根目錄的 SKILL.md 有可能不是 persona。** 實測
     `fxp/persona-distill-skills` 根目錄那份是「如何蒸餾一個 persona」的
@@ -978,18 +1031,33 @@ def _persona_import_notice(fetched: persona_sources.FetchedPersona) -> Optional[
     東西看起來完全像一份合理的 persona。所以這裡**不擋**（那會擋掉真的把
     persona 放在根目錄的 repo，那是生態裡的多數形態），只提醒一句，
     讓他去看一眼抽出來的條目對不對。
+
+    2026-09-12：這裡原本先擋掉 `source_type != "url"`，理由寫的是
+    「Repository 模式有 `_LISTING_RE` 守著，走不到根目錄」。**那句話不再成立**
+    ——Repository 模式現在會在沒有任何 `personas/`／`skills/` 結構時採用根目錄的
+    檔案（見 `persona_sources/github.py` 的 `_single_persona_root()`）。
+    那道新守衛擋得住 `fxp/persona-distill-skills`（它兩種結構都有），但擋不住
+    「整個 repo 就只有一份方法論 SKILL.md」的情況，所以這句提醒對它一樣需要。
+
+    改成只看路徑形狀就同時涵蓋兩種模式：Repository 模式正常取到的路徑一定含
+    `/`（`personas/<名稱>/SKILL.md`），只有根目錄那條不含。
     """
-    if fetched.source_type != "url":
-        # Repository 模式有 `_LISTING_RE` 守著，走不到根目錄
-        return None
+    notices: List[str] = []
+
     path = (fetched.extra or {}).get("path") or ""
-    if not path or "/" in path:
-        return None
-    return (
-        f"這份是從 repo 根目錄的 {path} 匯入的。有些 repo 根目錄放的是"
-        "「如何寫 persona」的方法論而不是某個人的風格，"
-        "請看一眼下面抽出來的條目是不是你要的。"
-    )
+    if path and "/" not in path:
+        notices.append(
+            f"這份是從 repo 根目錄的 {path} 匯入的。有些 repo 根目錄放的是"
+            "「如何寫 persona」的方法論而不是某個人的風格，"
+            "請看一眼下面抽出來的條目是不是你要的。"
+        )
+
+    if profile is not None:
+        simplified = _simplified_source_notice(profile)
+        if simplified:
+            notices.append(simplified)
+
+    return " ".join(notices) if notices else None
 
 
 def _persona_import_result(
@@ -1036,7 +1104,7 @@ def _persona_import_result(
         raw_source=fetched.raw_text,
     )
 
-    notice = _persona_import_notice(fetched)
+    notice = _persona_import_notice(fetched, profile)
 
     existing = repo.find_persona_by_name(viewer_id, name)
     if existing is not None:
