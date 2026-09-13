@@ -176,7 +176,20 @@ class EdgeCaseTest(unittest.TestCase):
         self.assertEqual(0, borrowed[0]["from_index"])
         self.assertEqual([], adjustments_of(result, "merged"))
 
-    def test_借出之後不會有人歸零(self):
+    def test_借出不會讓借出方歸零(self):
+        """借出方保得住，借不到的那筆改走併入。
+
+        ### 這條原本寫錯了
+
+        它原本斷言「**所有人** units >= 1」，名字卻是「借出之後不會有人歸零」
+        ——兩者不是同一件事，而那個較寬的斷言正好放行了 2026-09-13 審查抓到的
+        缺陷：主群被連續借到只剩 0.5 小時，但因為每個人都 >= 1，它照樣是綠的。
+
+        加上借出額度（`_borrow_budget`）之後，借不到的 orphan 改走併入：
+        `units` 是 0，但帶著 `merged_into`，證據併進另一筆、不會消失。
+        這裡權重 0.01 的那筆佔全部的萬分之一，併掉比硬借走主群的 0.5 小時
+        更貼近事實。
+        """
         result = allocate(
             2.5,
             [
@@ -185,7 +198,13 @@ class EdgeCaseTest(unittest.TestCase):
                 item(0.01, "2026-09-11T11:00:00Z", "C"),
             ],
         )
-        self.assertTrue(all(e.units >= 1 for e in result.entries))
+        # 借出方（佔 99.98% 權重的那筆）不可以被借到歸零
+        self.assertGreaterEqual(result.entries[0].units, 1)
+        # units 為 0 的一定要有併入紀錄，不可以就這樣消失
+        for entry in result.entries:
+            if entry.units == 0:
+                self.assertIsNotNone(entry.merged_into)
+                self.assertGreater(result.entries[entry.merged_into].units, 0)
         self.assertEqual(
             Decimal("2.50"), sum(Decimal(h) for h in hours_of(result))
         )
@@ -416,7 +435,10 @@ class InvariantTest(unittest.TestCase):
     def _cases(self):
         rng = random.Random(self.SEED)
         for _ in range(self.ROUNDS):
-            count = rng.randint(1, 8)
+            # 上限刻意拉到 20（原本是 8）。保底借用的「抽乾」要十幾筆才顯著，
+            # 而 8 筆的上限讓這一整組隨機測試系統性地看不到它——2026-09-13
+            # 的審查就是這樣漏掉的。20 對得上 WORKLOG_MAX_SPACES。
+            count = rng.randint(1, 20)
             style = rng.random()
             items = []
             for i in range(count):
@@ -487,6 +509,102 @@ class InvariantTest(unittest.TestCase):
             with self.subTest(total=total, count=len(items)):
                 first = allocate(total, items).to_dict()
                 self.assertEqual(first, allocate(total, items).to_dict())
+
+    def test_沒被併掉的筆不會被借到低於應得的一半(self):
+        """保底借用是為了讓小筆不消失，**不是把大筆抽乾**。
+
+        這條是 2026-09-13 審查發現「借用會把權重最大的那筆抽到只剩 0.5 小時」
+        之後補的。前面那幾條不變量都看不到它——總和仍然正確、每筆都是漂亮的
+        0.5 倍數、每筆也都 >= 0.5，只有「誰該拿多少」整個顛倒了。
+        """
+        for total, items in self._cases():
+            with self.subTest(total=total, count=len(items)):
+                result = allocate(total, items)
+                weight_sum = sum(e.weight for e in result.entries)
+                if weight_sum <= 0:
+                    continue  # 零權重走平均分配，比例無從談起
+                for entry in result.entries:
+                    if entry.merged_into is not None:
+                        continue
+                    # 用 floor 而不是精確的比例值當基準——借出額度
+                    # （`_borrow_budget`）就是以 floor 算的，兩邊要用同一把尺。
+                    # 拿精確值比會在「floor 4／應得 4.3」這種邊界上誤報。
+                    floor = int(result.total_units * entry.weight / weight_sum)
+                    # 應得不到 2 小時的跳過：保底規則本來就可能借走它的 0.5，
+                    # 那是這條規則存在的理由，不是缺陷。要抓的是「同一筆被
+                    # 連續借十幾次」那種。
+                    if floor < 4:
+                        continue
+                    self.assertGreaterEqual(
+                        entry.units * 4,
+                        floor * 3,
+                        f"index={entry.index} 按比例應得 {floor} units，"
+                        f"實得 {entry.units}——被借走超過四分之一",
+                    )
+
+
+class BorrowDrainTest(unittest.TestCase):
+    """保底 0.5 的借用不可以把權重最大的那筆抽乾。
+
+    ### 這個 bug 長什麼樣
+
+    `_pick_lender` 每一輪都挑「當下 units 最多的那筆」，而那**永遠是同一筆**；
+    唯一的護欄是「借完不會歸零」，所以它可以被連續借到只剩 0.5 小時。
+
+    2026-09-13 審查實測（8 小時、一個佔 82.8% 權重的主群 ＋ N 個三言兩語的
+    小群）：
+
+        小群數   主群應得   主群實得
+           2       7.73      7.00
+           8       7.02      4.00
+          12       6.62      2.00
+          16       6.26      0.50
+
+    **沒有任何一個數字看起來不對**：總和正確、每筆都是 0.5 的倍數、每筆都
+    >= 0.5。壞掉的只有比例本身。而 `WORKLOG_MAX_SPACES = 20` 讓 16 個小群
+    完全寫實——一天在十幾個聊天室各講兩句話是很普通的一天。
+    """
+
+    def _run(self, small_count: int):
+        # 主群：十個大 commit。小群：各一則三言兩語的發言
+        items = [item(80.1, "2026-09-11T09:00:00+08:00", "MAIN-1")]
+        items += [
+            item(1.39, f"2026-09-11T{10 + (i % 10):02d}:00:00+08:00", f"SMALL-{i}")
+            for i in range(small_count)
+        ]
+        return allocate(8.0, items)
+
+    def test_主群不會被借到只剩零點五小時(self):
+        for small_count in (2, 8, 12, 16):
+            with self.subTest(小群數=small_count):
+                result = self._run(small_count)
+                main = result.entries[0]
+                self.assertGreaterEqual(
+                    Decimal(main.allocated_hours),
+                    Decimal("4.0"),
+                    f"佔 82.8% 權重的主群只拿到 {main.allocated_hours} 小時"
+                    f"（小群 {small_count} 個）",
+                )
+
+    def test_借不動的時候要改成併入而不是硬借(self):
+        # 借用有上限，超過之後剩下的小群應該走 merge——它們的證據不會消失，
+        # 只是不獨立成一筆
+        result = self._run(16)
+        merged = adjustments_of(result, "merged")
+        borrowed = adjustments_of(result, "borrowed")
+        self.assertTrue(merged, "小群這麼多卻一筆都沒有併入，代表全部硬借了")
+        # 每一筆併入都要說得出併去哪裡
+        for adj in merged:
+            self.assertIsNotNone(result.entries[adj["index"]].merged_into)
+        # 借用仍然存在（少量 orphan 時借比併好）
+        self.assertTrue(borrowed or merged)
+
+    def test_主群仍然是拿最多的那一筆(self):
+        # 單調性：權重最大的不該拿得比別人少
+        result = self._run(12)
+        main = result.entries[0]
+        for entry in result.entries[1:]:
+            self.assertGreaterEqual(main.units, entry.units)
 
 
 # --------------------------------------------------------------------------

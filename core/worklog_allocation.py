@@ -318,13 +318,55 @@ def _largest_remainder(
     return units, floors
 
 
-def _pick_lender(rows: Sequence[_Row], units: Sequence[int]) -> Optional[int]:
-    """挑一筆可以借出 1 unit 的：時數最多、且借完不會歸零（>= 2 units）。
+def _borrow_budget(floor_units: int) -> int:
+    """一筆最多能被借走幾個 unit。
+
+    **這是 2026-09-13 審查發現的缺陷所加的護欄。** 在此之前唯一的條件是
+    「借完不會歸零」，而 `_pick_lender` 每一輪都挑「當下最多的那筆」——
+    那永遠是同一筆，於是它可以被連續借到只剩 0.5 小時。
+
+    實測（8 小時、一個佔 82.8% 權重的主群 ＋ N 個三言兩語的小群）：
+
+        小群數   主群應得   修復前實得
+          12       6.62       2.00
+          16       6.26       0.50
+
+    **那種壞法沒有任何跡象**：總和仍然正確、每一筆都是漂亮的 0.5 倍數、
+    每一筆也都 >= 0.5。壞掉的只有比例本身，而比例正是這個功能的全部意義。
+    一天在十幾個聊天室各講兩句話是很普通的一天（`WORKLOG_MAX_SPACES` 是 20），
+    所以這不是邊緣情況。
+
+    四分之一這個數字的理由：它保證每筆至少留下應得的四分之三，而四分之三
+    仍然看得出「這件事是那天的主要工作」。借不到的 orphan 會改走合併——
+    它們的證據不會消失，只是不獨立成一筆。
+
+    `max(1, …)` 是為了不改變少量 orphan 時的既有行為：floor 很小的筆
+    原本就能被借走 1 個 unit，那沒有問題。
+    """
+    return max(1, floor_units // 4)
+
+
+def _pick_lender(
+    rows: Sequence[_Row],
+    units: Sequence[int],
+    floors: Sequence[int],
+    borrowed: Sequence[int],
+) -> Optional[int]:
+    """挑一筆可以借出 1 unit 的。
+
+    三個條件缺一不可：
+      1. 借完不會歸零（`>= 2 units`）
+      2. **已經被借走的量還沒到它的額度**（見 `_borrow_budget`）
+      3. 在符合前兩條的裡面挑時數最多的
 
     一樣多的時候借**優先度最低**的那筆（priority 反過來取最後一個）：
     同樣是拿走 0.5 小時，從證據最少的那筆拿，對 Viewer 讀到的比例失真最小。
     """
-    candidates = [i for i in range(len(rows)) if units[i] >= 2]
+    candidates = [
+        i
+        for i in range(len(rows))
+        if units[i] >= 2 and borrowed[i] < _borrow_budget(floors[i])
+    ]
     if not candidates:
         return None
     best = max(units[i] for i in candidates)
@@ -435,10 +477,12 @@ def allocate(total_hours: Any, items: Sequence[Any]) -> AllocationResult:
         (i for i in range(len(rows)) if units[i] == 0),
         key=lambda i: rows[i].priority,
     )
+    borrowed = [0] * len(rows)
     for orphan in orphans:
-        lender = _pick_lender(rows, units)
+        lender = _pick_lender(rows, units, floors, borrowed)
         if lender is not None:
             units[lender] -= 1
+            borrowed[lender] += 1
             units[orphan] = 1
             adjustments.append(
                 {
