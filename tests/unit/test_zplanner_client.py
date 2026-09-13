@@ -567,5 +567,90 @@ class ConfigHygiene(unittest.TestCase):
                 )
 
 
+# ----------------------------------------------------------------------
+# 9. 週工時（週檢視的資料來源）
+# ----------------------------------------------------------------------
+
+
+def weekly_payload():
+    """形狀照 2026-09-13 對正式站的實測，含那兩個會咬人的地方。"""
+    return {
+        "year": 2026,
+        "week": 37,
+        "week_start": "2026-09-07",
+        "week_end": "2026-09-13",
+        "total_hours": 15.5,
+        "target_hours": 40.0,
+        "completion_pct": 38.8,
+        "days": [
+            {
+                "date": "2026-09-07",
+                "weekday": "Mon",
+                "hours": 2.0,  # ← float
+                "entries": [
+                    {
+                        "id": 116412,
+                        "issue_id": 42069,
+                        "issue_key": "TPE01P2601-179",
+                        "date": "2026-09-07",
+                        "start_time": None,
+                        "hours": "1.50",  # ← 字串。與上一層同名，不同型別
+                        "note": "用戶管理介面",
+                        "is_correction": False,
+                        "is_locked": False,
+                    }
+                ],
+            }
+        ],
+    }
+
+
+class WeeklyWorklogs(unittest.TestCase):
+    def test_省略_week_start_時不送參數(self):
+        c, session = client(FakeResponse(envelope(weekly_payload())))
+        c.list_weekly_worklogs()
+        self.assertIsNone(session.calls[0]["params"])
+
+    def test_帶_week_start(self):
+        c, session = client(FakeResponse(envelope(weekly_payload())))
+        c.list_weekly_worklogs("2026-09-08")
+        self.assertEqual(session.calls[0]["params"], {"week_start": "2026-09-08"})
+        self.assertTrue(session.calls[0]["url"].endswith("/api/worklogs/weekly/"))
+
+    def test_回的是一個週報表物件不是清單(self):
+        c, _ = client(FakeResponse(envelope(weekly_payload())))
+        data = c.list_weekly_worklogs()
+        self.assertEqual(data["week_start"], "2026-09-07")
+        self.assertEqual(data["target_hours"], 40.0)
+
+    def test_回傳的那一週不必然等於你傳的那天(self):
+        # 實測：傳 09-08（週二），回來的 week_start 是 09-07（週一）。
+        # 要顯示「這是哪一週」一律讀回應裡的值，不要拿自己送出去的當答案
+        c, _ = client(FakeResponse(envelope(weekly_payload())))
+        data = c.list_weekly_worklogs("2026-09-08")
+        self.assertNotEqual(data["week_start"], "2026-09-08")
+
+    def test_hours_在兩個層級是不同型別(self):
+        # 這條不是在測我們的程式，是把 ZPlanner 的形狀**釘住**：
+        # 哪天它把 entries[].hours 改成 float，這裡會紅，而不是讓某一邊
+        # 的解析安靜地算錯。ZPlanner 的寫入端點吃字串，所以字串那邊是權威。
+        c, _ = client(FakeResponse(envelope(weekly_payload())))
+        data = c.list_weekly_worklogs()
+        day = data["days"][0]
+        self.assertIsInstance(day["hours"], float)
+        self.assertIsInstance(day["entries"][0]["hours"], str)
+
+    def test_形狀不對就拋而不是猜(self):
+        # 猜錯的代價是週檢視顯示一週零工時，而使用者會以為自己真的沒填
+        c, _ = client(FakeResponse(envelope([1, 2, 3])))
+        with self.assertRaises(ZPlannerApiError):
+            c.list_weekly_worklogs()
+
+    def test_body_說權限不足仍然照拋(self):
+        c, _ = client(FakeResponse(envelope(None, code=403, message="權限不足")))
+        with self.assertRaises(ZPlannerForbidden):
+            c.list_weekly_worklogs()
+
+
 if __name__ == "__main__":
     unittest.main()

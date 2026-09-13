@@ -393,6 +393,53 @@ class ZPlannerClient:
         data = self._request("GET", f"/api/projects/{pid}/members/")
         return _as_list(data, f"/api/projects/{pid}/members/")
 
+    # ------------------------------------------------------------------
+    # 工時
+    # ------------------------------------------------------------------
+
+    def list_weekly_worklogs(self, week_start: Optional[str] = None) -> Dict[str, Any]:
+        """某一週**已經填進 ZPlanner** 的工時（不是本地草稿）。
+
+        `week_start` 給 `YYYY-MM-DD`，省略就是本週。
+
+        ⚠️ **它會把日期正規化到那一週的週一。** 2026-09-13 實測：傳
+        `week_start=2026-09-08`（週二），回來的 `week_start` 是 `2026-09-07`。
+        所以呼叫端不必自己算週一，但**也不能假設回傳的那週就是你傳的那天所在
+        的週**——要顯示「這是哪一週」一律讀回應裡的 `week_start`／`week_end`，
+        不要拿自己傳出去的值當答案。
+
+        ⚠️ **`hours` 這個欄位名在兩個層級是不同型別**（同日實測）：
+        `days[].hours` 是 float（`2.0`），而 `entries[].hours` 是**字串**
+        （`"1.50"`）。混著用會在其中一邊安靜地算錯——而 ZPlanner 的寫入端點
+        吃的是字串，所以字串那一邊才是權威。
+
+        回應形狀（2026-09-13 實測）：
+
+            {year, week, week_start, week_end,
+             total_hours: float, target_hours: float, completion_pct: float,
+             days: [{date, weekday: "Mon", hours: float, entries: [...]}]}
+
+        `days` **固定七筆**（沒填工時的那天 `hours` 是 0、`entries` 是空陣列），
+        `weekday` 是英文縮寫，要中文得自己轉。每筆 entry 有 `id`、`issue_id`、
+        `issue_key`、`user_id`、`user_name`、`date`、`start_time`（可為 null）、
+        `hours`、`note`、`is_correction`、`is_locked`、`created_at`。
+
+        **`entries[].id` 就是修改與刪除要用的 worklog id**，也是本地草稿
+        `worklog_draft_entries.zplanner_worklog_id` 要對上的那個值。
+        """
+        params: Dict[str, Any] = {}
+        if week_start:
+            params["week_start"] = week_start
+        data = self._request("GET", "/api/worklogs/weekly/", params=params or None)
+        if not isinstance(data, dict):
+            # 這支回的是一個週報表物件，不是清單。形狀不對就拋，不要猜——
+            # 猜錯的代價是週檢視顯示一週零工時，而使用者會以為自己真的沒填
+            raise ZPlannerApiError(
+                "ZPlanner /api/worklogs/weekly/ 回傳了預期外的資料形狀",
+                detail=repr(data)[:400],
+            )
+        return data
+
 
 # ----------------------------------------------------------------------
 # 回應形狀的處理

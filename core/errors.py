@@ -168,6 +168,56 @@ class WorklogAllocationError(ChatPulseError):
     default_message = "這組數字無法分配成工時"
 
 
+class WorklogDraftNotFound(ChatPulseError):
+    """這一天還沒有存下來的工時草稿。
+
+    **這是完全正常的狀態，不是錯誤**——多數日子本來就還沒產過草稿。性質與
+    DRAFT_NOT_FOUND 相同：前端拿到它只要顯示「這天還沒產草稿」的空狀態，
+    不該當成失敗跳出來。
+
+    刻意與 DRAFT_NOT_FOUND 分開，雖然兩者都是「草稿不存在」：那個是某一則
+    Mention 的回話草稿，這個是某一天的工時草稿。下一步動作（產一份回話
+    vs 產一天的工時）與畫面都不一樣，共用一個碼會讓前端分不出該畫哪個。
+    """
+
+    code = "WORKLOG_DRAFT_NOT_FOUND"
+    http_status = 404
+    default_message = "這一天還沒有工時草稿"
+
+
+class WorklogAlreadySubmitted(ChatPulseError):
+    """這份草稿已經送進 ZPlanner 了，不能再當草稿改。
+
+    擋的是「重新產生」與「整組取代」：已經送出的那幾筆在 ZPlanner 那側有
+    worklog id，本地把它們蓋掉**不會讓遠端跟著變**，只會讓兩邊對不起來——
+    而對不起來的後果是下一次送出製造出重複的工時。
+
+    要改已經送出的內容得走 PATCH／DELETE（月結後則是 correction-request），
+    不是改草稿。
+    """
+
+    code = "WORKLOG_ALREADY_SUBMITTED"
+    http_status = 409
+    default_message = "這份工時草稿已經送出，不能再修改"
+
+
+class WorklogLocked(ChatPulseError):
+    """這筆工時已經月結鎖定，PATCH 與 DELETE 都不會生效。
+
+    ZPlanner 的 `is_locked` 為真時，唯一的更正途徑是
+    `POST /api/worklogs/{id}/correction-requests/`——那是要人審核的流程，
+    不是一次 API 呼叫就結束的事。
+
+    刻意與 ZPLANNER_FORBIDDEN 分開：那個是「你在這個專案沒有這項權限」
+    （要找該專案 PM），這個是「時間已經過了」（權限再大也改不動）。
+    對使用者說的話完全不同，共用一個碼會讓人去找錯的人。
+    """
+
+    code = "WORKLOG_LOCKED"
+    http_status = 409
+    default_message = "這筆工時已經月結鎖定，要更正得走 correction-request"
+
+
 class RouteNotFound(ChatPulseError):
     """API 路徑不存在。
 
