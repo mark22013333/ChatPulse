@@ -777,8 +777,9 @@ POST／PATCH／verify 都回帶 `verification` 的單筆：
 2. **任何送出動作都要二次確認對話框**（5.4、7.2 步驟 6）。
 3. **v1 的 ZPlanner 匯出按鈕已於 v2.0 移除**，不要在 Action Items 那裡保留任何
    剪貼簿 handler。（**Draft Worklog 是另一件事**，見 ADR-0008 與規格 5.3——它走真正的
-   API 串接、有自己的畫面。後端目前只完成 ZPlanner client 層與「我的工作 repo」
-   登錄端點，草稿本體與前端都尚未實作。）
+   API 串接、有自己的畫面。目前完成到：ZPlanner client 層、「我的工作 repo」
+   登錄端點與設定頁、工時工作台的導航與路由骨架。草稿本體（`/worklogs/*`）
+   尚未實作。）
 4. Action Items 萃取：從摘要 Markdown 中抓 `• [負責人] 任務` 這種行，轉為可勾選項目，
    支援「複製為 Markdown」。
 5. 空間清單有 436 個，列表需要虛擬滾動或分頁，並提供名稱搜尋。
