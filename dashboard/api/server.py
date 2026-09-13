@@ -53,6 +53,7 @@ from core import (
     prompts,
     providers,
     reply_profiles,
+    worklog_evidence,
 )
 from core import repository as repo
 from core.chat_client import (
@@ -998,73 +999,14 @@ def _clean_str_list(values: Optional[List[str]], *, label: str) -> List[str]:
     return out
 
 
-#: `detected_emails` 掃幾筆 commit。夠多到能涵蓋一個人常用的幾個信箱，
-#: 又不至於讓設定頁的「重新檢查」在大 repo 上等太久。
-WORK_REPO_EMAIL_SCAN_COMMITS = 200
+#: `detected_emails` 掃幾筆 commit。實際值在 `cfg.WORKLOG_EMAIL_SCAN_COMMITS`，
+#: 這裡只留一個指標，避免同一個數字在兩處各自漂移。
+WORK_REPO_EMAIL_SCAN_COMMITS = worklog_evidence.WORK_REPO_EMAIL_SCAN_COMMITS
 
-
-def _verify_work_repo(repo_path: str) -> Dict[str, Any]:
-    """確認路徑還是一個可讀的 git repo，順便回報偵測到的作者信箱。
-
-    回傳 `{"ok", "error", "head_sha", "detected_emails"}`，**不拋錯**：
-    設定頁要能同時顯示「這筆登錄」與「它現在壞了」，拋錯會讓整份清單拿不到。
-    真正要擋住動作的地方（產草稿時）才拋 `WorkRepoUnavailable`。
-
-    git 的呼叫慣例直接沿用 `core.code_search._git`，不另外複製一份：那裡把
-    argv list（repo_path 是使用者輸入，不組 shell 字串）、`GIT_OPTIONAL_LOCKS=0`
-    （不去搶使用者的 index.lock）、`GIT_TERMINAL_PROMPT=0`（憑證提示會把請求
-    卡到逾時）、`cfg.CODE_GIT_TIMEOUT` 綁在一起，複製出去就是第二個會各自漂移
-    的地方。
-
-    **全程不碰工作區**（ADR-0006 鐵律）：`rev-parse` 與 `log` 只讀 refs 與
-    object database，不 checkout、不動 index。
-
-    `detected_emails` 的去重在 **Python** 做，不在 shell 裡接 `| sort -u`——
-    接管線就得組 shell 字串，而 repo_path 是使用者輸入。
-    """
-    result: Dict[str, Any] = {
-        "ok": False,
-        "error": None,
-        "head_sha": None,
-        "detected_emails": [],
-    }
-    if not repo_path or not os.path.isdir(repo_path):
-        result["error"] = "路徑不存在或不是資料夾"
-        return result
-    proc = code_search._git(repo_path, "rev-parse", "--git-dir")
-    if proc.returncode != 0:
-        result["error"] = "這個路徑不是 git repo"
-        return result
-    result["ok"] = True
-
-    head = code_search._git(repo_path, "rev-parse", "--short", "HEAD")
-    if head.returncode == 0 and head.stdout.strip():
-        result["head_sha"] = head.stdout.strip()
-    # 沒有 HEAD 不是錯誤：剛 git init、還沒有任何 commit 的 repo 也是 repo。
-    # 回 head_sha=None 讓設定頁自己決定要不要提醒，不要在這裡判死。
-
-    log_proc = code_search._git(
-        repo_path,
-        "log",
-        "--all",
-        f"-n{WORK_REPO_EMAIL_SCAN_COMMITS}",
-        "--format=%aE",
-    )
-    if log_proc.returncode == 0:
-        emails: List[str] = []
-        seen = set()
-        for line in log_proc.stdout.splitlines():
-            addr = line.strip()
-            # 保留原始大小寫但用小寫比對：git 的信箱實務上就是大小寫混寫，
-            # 兩份只差大小寫的清單對使用者沒有意義。
-            if not addr or addr.lower() in seen:
-                continue
-            seen.add(addr.lower())
-            emails.append(addr)
-        # `git log` 預設就是時間由新到舊，所以這份清單的順序是「最近用過的
-        # 信箱排前面」——那正是使用者要填進 author_emails 的第一個。
-        result["detected_emails"] = emails
-    return result
+#: 這兩個驗證函式的本體住在 `core/worklog_evidence.py`——它們讀的是 git，
+#: 不是 HTTP request，和證據蒐集用的是同一組 git 慣例（`code_search._git`、
+#: ADR-0006 的「不碰工作區」）。這裡只留一個別名給端點與既有測試用。
+_verify_work_repo = worklog_evidence.verify_work_repo
 
 
 def _verify_and_record_work_repo(
@@ -1072,19 +1014,19 @@ def _verify_and_record_work_repo(
 ) -> Dict[str, Any]:
     """驗證並把結果寫回，回傳帶 `verification` 的 dict。
 
-    形狀與用途比照 `_verify_and_record`（參考專案那一組），但驗的東西不同：
-    那邊還要逐一確認每個環境對應的分支存不存在，這邊沒有釘死的分支可以驗。
+    本體在 `core/worklog_evidence.verify_and_record_work_repo`；這裡只負責
+    把 `viewer_id` 綁進寫回用的 callable。那個模組刻意不 import repository
+    （同 `code_search` 的可測性慣例），所以「寫哪張表」由這一層決定。
     """
-    verification = _verify_work_repo(work_repo["repo_path"])
-    error: Optional[str] = verification.get("error")
-    try:
-        repo.record_work_repo_verification(viewer_id, work_repo["id"], error)
-    except Exception:
-        log.exception("寫入工作 repo 驗證結果失敗（不影響回應）")
-    out = dict(work_repo)
-    out["verification"] = verification
-    out["last_verify_error"] = error
-    return out
+    return worklog_evidence.verify_and_record_work_repo(
+        work_repo,
+        record=lambda error: repo.record_work_repo_verification(
+            viewer_id, work_repo["id"], error
+        ),
+        on_record_error=lambda exc: log.exception(
+            "寫入工作 repo 驗證結果失敗（不影響回應）"
+        ),
+    )
 
 
 def _require_work_repo(viewer_id: int, repo_id: int) -> Dict[str, Any]:

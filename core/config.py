@@ -251,6 +251,57 @@ ZPLANNER_PAGE_SIZE_MAX = 200
 # 安全閥，用途同上面的 MAX_PAGES：分頁欄位異常時避免無限迴圈
 ZPLANNER_MAX_PAGES = 50
 
+# --- Draft Worklog 的證據蒐集（ADR-0008，core/worklog_evidence.py）---
+# 這一組全部是**啟發式的上限與權重**，不是量測出來的常數。放在這裡而不是散在
+# 模組裡，是為了「調一個數字不必改邏輯」；改動它們只會讓草稿的證據多一點或
+# 少一點，不會改變任何人看得到的判斷——專案歸屬永遠由 Viewer 自己選。
+
+# git log 的每個 repo 上限。一天之內同一個人 commit 超過這個數量，多半是
+# 批次匯入或 rebase 重寫，再多撈也只是把權重稀釋掉。
+WORKLOG_MAX_COMMITS_PER_REPO = int(
+    os.environ.get("CHATPULSE_WORKLOG_MAX_COMMITS", "200")
+)
+
+# ⚠️ `--since`／`--until` 濾的是 **committer date**，不是 `%aI`（author date）。
+# rebase／amend／cherry-pick 過的 commit 兩者可以差好幾天，只靠 git 篩會**靜默
+# 漏掉**那天真正寫的東西。所以 git 這一層只當粗篩（前後各放寬這麼多小時），
+# 真正的日界一律在 Python 用 author date ＋ Viewer 的 tz_offset 再切一次。
+WORKLOG_GIT_WINDOW_PADDING_HOURS = int(
+    os.environ.get("CHATPULSE_WORKLOG_GIT_PADDING_HOURS", "72")
+)
+
+# git 指令逾時。預設沿用參考專案那組（同一個 _git，同一種等待成本）。
+WORKLOG_GIT_TIMEOUT = int(
+    os.environ.get("CHATPULSE_WORKLOG_GIT_TIMEOUT", str(CODE_GIT_TIMEOUT))
+)
+
+# 設定頁「重新檢查」時掃幾筆 commit 來列 detected_emails。夠多到涵蓋一個人
+# 常用的幾個信箱，又不至於在大 repo 上讓按鈕轉太久。
+WORKLOG_EMAIL_SCAN_COMMITS = int(
+    os.environ.get("CHATPULSE_WORKLOG_EMAIL_SCAN", "200")
+)
+
+# 🔴 Chat 證據的母體上限。整個帳號有四百多個 Space，**絕不是全部都掃**：
+# 母體是「釘選的 Space ∪ 當天有 Mention 命中的 Space」，這個數字是那之上的
+# 硬上限，避免有人把幾百個 Space 全部釘起來之後把產草稿變成一次全帳號掃描。
+WORKLOG_MAX_SPACES = int(os.environ.get("CHATPULSE_WORKLOG_MAX_SPACES", "20"))
+WORKLOG_MAX_CHAT_MESSAGES_PER_SPACE = int(
+    os.environ.get("CHATPULSE_WORKLOG_MAX_CHAT_MESSAGES", "200")
+)
+
+# 短到沒有資訊量的發言（「好」「收到」「ok」）不當證據。設 2 是**刻意保守**：
+# 寧可多留幾則沒用的，也不要把一句「已修好，改用 utf8mb4」丟掉。
+WORKLOG_MIN_CHAT_CHARS = int(os.environ.get("CHATPULSE_WORKLOG_MIN_CHAT_CHARS", "2"))
+
+# @ 了人的發言權重加成。理由是它多半是在交辦或回報，而不是閒聊；
+# 倍率刻意壓在 2 以下——它只該讓同一天的排序稍微動一下，不該決定時數。
+WORKLOG_CHAT_MENTION_BONUS = float(
+    os.environ.get("CHATPULSE_WORKLOG_MENTION_BONUS", "1.5")
+)
+
+# 每則證據抽幾個關鍵字（拿去配 ZPlanner issue 候選）。與 CODE_MAX_TERMS 同量級。
+WORKLOG_MAX_TERMS = int(os.environ.get("CHATPULSE_WORKLOG_MAX_TERMS", "8"))
+
 # --- 儲存 ---
 DB_PATH = os.environ.get("CHATPULSE_DB", os.path.join(DATA_DIR, "chatpulse.db"))
 # 加密金鑰刻意不與資料庫同檔存放（SPECIFICATION.md 九節設計要點）
