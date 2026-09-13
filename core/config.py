@@ -220,6 +220,37 @@ CODE_SECRET_PATH_PATTERNS = (
     "**/*.pfx",
 )
 
+# --- ZPlanner 工時系統（Draft Worklog 的基礎層）---
+# **網址與 token 都純讀環境變數，兩者都沒有 fallback 預設值。**
+#
+# 這是缺陷 D-2 的處置直接套用過來（SPECIFICATION.md 3.3、787 行）：那次是
+# Gemini 金鑰被硬編碼成 fallback，理由寫得很清楚——「repo 要交給團隊使用，
+# 等於把金鑰一併發出」。ZPlanner 的網址不是憑證，但它是**公司內部系統位置**，
+# 同樣沒有理由跟著 repo 一起發出去；而且 GEMINI_API_BASE 那種公開服務的
+# endpoint 可以寫死，內部系統不行，兩者不是同一類東西。
+#
+# 缺少時不在這裡報錯（本檔一貫不做驗證），而是由 ZPlannerClient.available()
+# 回一句可讀的中文、_request() 拋 CONFIGURATION_ERROR，與 GEMINI_API_KEY 同型。
+ZPLANNER_BASE_URL = os.environ.get("ZPLANNER_BASE_URL", "")
+
+# **刻意不加 CHATPULSE_ 前綴**，與本檔其他每一個變數都不同。理由：這把 token
+# 由 ZPlanner 的 /api/tokens/ 發出，使用者的 shell 設定檔裡早就有 ZPLANNER_APIKEY
+# 這個名字了。改成 CHATPULSE_ZPLANNER_APIKEY 只會逼每個人多設一份同值的環境變數，
+# 然後在兩份之中挑一份忘記更新。前綴的用途是避免撞名，而這個名字本來就不會撞。
+ZPLANNER_APIKEY = os.environ.get("ZPLANNER_APIKEY", "")
+
+# (連線, 讀取)。ZPlanner 在內網，連得上就會很快；讀取給得比 persona_sources
+# 的 15 秒寬一點，是因為專案 issue 列舉在大專案上實測會慢。
+ZPLANNER_TIMEOUT = (5, 20)
+
+# 列舉時每頁抓幾筆。**參數名是 per_page，不是 page_size**——後者是無效參數，
+# 而且 ZPlanner 收到會**靜默忽略**、照樣回預設的 20 筆，不報任何錯。
+# 2026-09-11 實測：上限 200，超過會被夾到 200（同樣不報錯）。
+ZPLANNER_PAGE_SIZE = 200
+ZPLANNER_PAGE_SIZE_MAX = 200
+# 安全閥，用途同上面的 MAX_PAGES：分頁欄位異常時避免無限迴圈
+ZPLANNER_MAX_PAGES = 50
+
 # --- 儲存 ---
 DB_PATH = os.environ.get("CHATPULSE_DB", os.path.join(DATA_DIR, "chatpulse.db"))
 # 加密金鑰刻意不與資料庫同檔存放（SPECIFICATION.md 九節設計要點）

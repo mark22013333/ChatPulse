@@ -58,7 +58,19 @@ uv pip install -r requirements.txt
 
 # 3. Google OAuth：把 client_secret.json 放進 config/，然後跑授權精靈
 .venv/bin/python mcp_app/setup_wizard.py
+
+# 4. ZPlanner 工時系統（選用，只有 Draft Worklog 用得到）
+export ZPLANNER_BASE_URL='https://你們公司的-zplanner-網址'
+export ZPLANNER_APIKEY='zp_...'   # 在 ZPlanner 的 /api/tokens/ 建立，明文只顯示一次
+
+# 設定完可以驗一下（全部是唯讀 GET，不會寫入任何工時）
+.venv/bin/python scripts/zplanner_smoke.py
 ```
+
+> **ZPlanner 的兩個值都沒有預設，也刻意不寫進 repo。** `ZPLANNER_APIKEY` 是憑證這很
+> 明顯，`ZPLANNER_BASE_URL` 則是因為公司內部系統的位置沒有理由跟著一份公開的 repo
+> 一起發出去。這與 Gemini 金鑰當初的處置一致（`SPECIFICATION.md` 缺陷 D-2）。
+> 沒設這兩個值時，ZPlanner 相關功能會回一句可讀的中文說要設什麼，不會拖垮其他功能。
 
 ## AI 供應商（可切換）
 
