@@ -138,14 +138,28 @@ CREATE TABLE code_projects (
 
 
 class TestWorkRepoSchema(TempDbCase):
+    #: `work_repos` 是在這一版引入的。之後每加一張表版本都會再往上，
+    #: 所以這裡守的是「不低於它」，不是「等於它」。
+    INTRODUCED_IN = 6
+
     def test_schema_version_bumped(self):
-        self.assertEqual(db.SCHEMA_VERSION, 6, "新增 work_repos 必須遞增 SCHEMA_VERSION")
+        # **刻意不釘死成某個數字。** 原本寫的是 `assertEqual(SCHEMA_VERSION, 6)`，
+        # 結果下一次加表（worklog_drafts，第 7 版）時這條就紅了——而那個紅燈
+        # 什麼也沒說明，只是在抱怨「版本變了」，可是版本本來就該變。
+        # 釘死版本號的測試會讓每一次正常的 schema 演進都要回來改測試，
+        # 久了就沒有人相信它紅的時候代表什麼。
+        self.assertGreaterEqual(
+            db.SCHEMA_VERSION,
+            self.INTRODUCED_IN,
+            "新增 work_repos 必須遞增 SCHEMA_VERSION",
+        )
 
     def test_fresh_db_has_work_repos(self):
         db.init_db()
         self.assertIn("work_repos", table_names(self.db_path))
         version = db.query_one("SELECT value FROM schema_meta WHERE key='schema_version'")
-        self.assertEqual(version["value"], "6")
+        # 建完的 DB 要標上**程式碼當下宣告的**版本，而不是某個寫死的數字
+        self.assertEqual(version["value"], str(db.SCHEMA_VERSION))
 
     def test_columns_and_defaults(self):
         db.init_db()
@@ -219,7 +233,8 @@ class TestWorkRepoSchema(TempDbCase):
 
         self.assertIn("work_repos", table_names(self.db_path))
         version = db.query_one("SELECT value FROM schema_meta WHERE key='schema_version'")
-        self.assertEqual(version["value"], "6", "schema_version 要被更新")
+        # 同上：比對程式碼當下宣告的版本，不要釘死數字
+        self.assertEqual(version["value"], str(db.SCHEMA_VERSION), "schema_version 要被更新")
 
         viewer = db.query_one("SELECT * FROM viewers WHERE id = 7")
         self.assertIsNotNone(viewer)

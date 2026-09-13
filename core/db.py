@@ -18,7 +18,7 @@ from . import config as cfg
 
 _local = threading.local()
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -298,6 +298,99 @@ CREATE TABLE IF NOT EXISTS work_repos (
     UNIQUE(viewer_id, repo_path)
 );
 CREATE INDEX IF NOT EXISTS idx_work_repos_viewer ON work_repos(viewer_id, enabled);
+
+-- 工時草稿：一位 Viewer 的某一天（ADR-0008）
+--
+-- **草稿要落地，不重算。** 產一次要跑 N 個 repo 的 git log、查 ZPlanner、
+-- 再讓 AI 寫 note，十幾秒起跳；而且 AI 是非決定性的，明天重算出來的草稿
+-- 長得不一樣——證據欄會因此失去可信度（「昨天明明不是這樣」）。另外兩個
+-- 現實理由：改到一半離開必須留得住，以及送出後必須留著 ZPlanner 的
+-- worklog id，否則沒有任何修改與刪除的入口。
+CREATE TABLE IF NOT EXISTS worklog_drafts (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    viewer_id     INTEGER NOT NULL REFERENCES viewers(id) ON DELETE CASCADE,
+    work_date     TEXT NOT NULL,                    -- 'YYYY-MM-DD'
+    -- draft｜partial｜submitted。partial 是「有幾筆送成功、有幾筆沒有」，
+    -- 它必須是一個獨立狀態：把它算成 draft 會讓人以為整天都還沒送，
+    -- 再按一次就重複填了已經成功的那幾筆。
+    status        TEXT NOT NULL DEFAULT 'draft',
+    -- Viewer 輸入的「這天總共幾小時」。**與各筆之和不保證相等**——湊成 0.5
+    -- 倍數必然有餘數，而真正寫進 ZPlanner 的是各筆之和。兩個數字都要留著，
+    -- 確認畫面才講得出「你輸入 8.0，實際會送出 7.5」。
+    total_hours   TEXT,
+    -- 切日界用的時區偏移（例如 '+08:00'）。**一定要存**：git 的 author date
+    -- 帶偏移、Chat 的 createTime 是 UTC、ZPlanner 的 date 沒有時區，「半夜
+    -- 一點的 commit 算哪天」完全取決於這個值。不存的話，事後沒有人能重現
+    -- 這份草稿當初為什麼把某筆算進這一天。
+    tz_offset     TEXT NOT NULL,
+    -- 產生當下的 SSE meta 快照，**這是證據欄的唯一來源**（設計規格 §5：
+    -- 任何無法回溯到 meta 某個欄位的東西，不准進證據欄）。
+    --
+    -- ⚠️ 只存識別資訊（commit sha、message_name、space_id、時間），**不存
+    -- Chat 的訊息內容**——與 mentions 表同一條鐵律，對話文字顯示時才即時取回。
+    generation_meta_json TEXT NOT NULL DEFAULT '{}',
+    generated_at  TEXT,
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL,
+    -- 一天一份。同一天產第二次是覆蓋，不是並存——兩份草稿同時存在的話，
+    -- 「這天到底送了哪一份」就沒有答案了。
+    UNIQUE(viewer_id, work_date)
+);
+CREATE INDEX IF NOT EXISTS idx_worklog_drafts_viewer
+    ON worklog_drafts(viewer_id, work_date DESC);
+
+-- 草稿裡的一筆工時（一個 ZPlanner issue ＋ 幾小時 ＋ note）
+CREATE TABLE IF NOT EXISTS worklog_draft_entries (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    draft_id    INTEGER NOT NULL REFERENCES worklog_drafts(id) ON DELETE CASCADE,
+    seq         INTEGER NOT NULL,
+    -- 專案歸屬。**產生時一律是 NULL**——系統只給候選，選擇權在 Viewer
+    -- （ADR-0008 的唯一硬規則）。有值代表人已經選過了。
+    issue_id    INTEGER,
+    issue_key   TEXT,
+    project_id  INTEGER,
+    project_key TEXT,
+    -- 實際要送出的時數（人調整過的值）
+    hours       TEXT,
+    note        TEXT,
+    -- 系統原始分配，**與 hours 分開存**。合在一起的話，「這個數字是系統算的
+    -- 還是我自己改的」就再也分不出來——而那正是 review 自己的工時時最想知道
+    -- 的一件事。也讓「還原系統分配」有東西可以還原。
+    allocated_hours TEXT,
+    weight      REAL,
+    -- 這一筆有沒有拿到湊整的那 0.5 小時。UI 靠它顯示「≈ 湊整 +0.5」——
+    -- 餘數落在誰身上必須看得見，否則使用者只會覺得數字莫名其妙。
+    rounded_up  INTEGER NOT NULL DEFAULT 0,
+    -- 支撐這一筆的證據 ref 清單（"commit:<sha>" / "chat:<message_name>"），
+    -- 指回 generation_meta_json 裡的陣列。同樣只存 ref，不存內容。
+    evidence_json   TEXT NOT NULL DEFAULT '[]',
+    -- 候選 issue ＋ 信心度 ＋ 為什麼是它。**候選要留著**：人選了 A 之後，
+    -- 下次回來看仍要知道當初還有 B、C 可選，否則無從判斷自己選得對不對。
+    candidates_json TEXT NOT NULL DEFAULT '[]',
+    -- pending｜skipped｜submitted｜failed｜unknown
+    --
+    -- ⚠️ **unknown 是獨立狀態，不是 failed**：連線逾時**不保證沒有寫進去**
+    -- （見 ZPlannerUnavailable 的 docstring）。當成 failed 去重送，可能在
+    -- ZPlanner 那邊變成兩筆；而月結之後多出來的那筆刪不掉，要走
+    -- correction-request。這種筆一律不自動重試，改請人去對帳。
+    state       TEXT NOT NULL DEFAULT 'pending',
+    zplanner_worklog_id INTEGER,
+    zplanner_issue_key  TEXT,
+    is_locked   INTEGER NOT NULL DEFAULT 0,
+    submitted_at TEXT,
+    last_error_code    TEXT,
+    last_error_message TEXT,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    UNIQUE(draft_id, seq)
+);
+-- partial unique index：**同一筆 ZPlanner 工時不可以被兩筆草稿認領**。
+-- 這是重複送出的最後一道防線——UI 會擋、state 會擋，但兩者都擋不住
+-- 「逾時後人工重試」這條路徑。NULL 不受唯一性約束，所以還沒送出的那些
+-- 不會互相卡住。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_worklog_entry_remote
+    ON worklog_draft_entries(zplanner_worklog_id)
+    WHERE zplanner_worklog_id IS NOT NULL;
 """
 
 
