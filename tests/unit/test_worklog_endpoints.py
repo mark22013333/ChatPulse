@@ -636,5 +636,66 @@ class TestEvidenceWiring(EndpointCase):
         self.assertEqual(captured["work_repos"], [])
 
 
+class TestZplannerWeekParsing(unittest.TestCase):
+    """ZPlanner 週回應的解析。
+
+    形狀照 2026-09-13 對正式站的實測——這些欄位的真實樣子與 Notion 筆記
+    記的不完全一樣，所以這裡的 fixture 是「實際看到的」而不是「文件說的」。
+    """
+
+    def _weekly(self):
+        return {
+            "year": 2026,
+            "week": 37,
+            "week_start": "2026-09-07",
+            "week_end": "2026-09-13",
+            "total_hours": 15.5,
+            "target_hours": 40.0,
+            "completion_pct": 38.8,
+            "days": [
+                {
+                    "date": "2026-09-07",
+                    "weekday": "Mon",
+                    "hours": 2.0,
+                    "entries": [{"id": 1, "hours": "1.50"}, {"id": 2, "hours": "0.50"}],
+                },
+                {"date": "2026-09-08", "weekday": "Tue", "hours": 0.0, "entries": []},
+            ],
+        }
+
+    def test_筆數數的是_entries_的長度不是天數(self):
+        # ZPlanner 的 days[] **沒有** worklog_count 欄位。原本寫成
+        # `int(row.get("worklog_count") or 1)`，於是那天填 1 筆還是 5 筆都算成 1
+        # ——畫面上的「已填 n 筆」會恰好等於「有填工時的天數」，而那個數字
+        # 看起來完全合理，不會有人起疑。
+        days, err = server._zplanner_week_rows(self._weekly())
+        self.assertIsNone(err)
+        self.assertEqual(days["2026-09-07"]["worklog_count"], 2)
+        self.assertEqual(days["2026-09-08"]["worklog_count"], 0)
+
+    def test_沒有_entries_時退回舊欄位(self):
+        data = {"days": [{"date": "2026-09-07", "hours": 1.0, "worklog_count": 3}]}
+        days, err = server._zplanner_week_rows(data)
+        self.assertIsNone(err)
+        self.assertEqual(days["2026-09-07"]["worklog_count"], 3)
+
+    def test_取出目標時數與完成率(self):
+        out = server._zplanner_week_target(self._weekly())
+        self.assertEqual(out["target_hours"], "40.00")
+        self.assertEqual(out["completion_pct"], 38.8)
+
+    def test_取不到就整個不出現而不是補預設值(self):
+        # 編一個 40 小時的目標，會讓「完成 38.8%」變成一個看起來精確的假數字
+        self.assertEqual(server._zplanner_week_target({"total_hours": 8.0}), {})
+        self.assertEqual(server._zplanner_week_target(None), {})
+        self.assertEqual(server._zplanner_week_target({"target_hours": "四十"}), {})
+
+    def test_bool_不算數字(self):
+        # `isinstance(True, int)` 在 Python 是 True——不特別擋的話，
+        # target_hours 會變成 "1.00"，而那是一個完全編出來的目標
+        self.assertEqual(server._zplanner_week_target({"target_hours": True}), {})
+        self.assertEqual(server._zplanner_week_target({"completion_pct": False}), {})
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

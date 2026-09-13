@@ -772,7 +772,8 @@ POST／PATCH／verify 都回帶 `verification` 的單筆：
     { "work_date": "2026-09-08", "weekday": 2, "draft": null, "zplanner": null } ],
   "totals": { "draft_hours": "8.00", "days_with_draft": 1, "days_submitted": 0,
               "entries_unassigned": 3 },
-  "zplanner": { "available": true, "total_hours": "16.00", "worklog_count": 5 } }
+  "zplanner": { "available": true, "total_hours": "16.00", "worklog_count": 5,
+                "target_hours": "40.00", "completion_pct": 38.8 } }
 ```
 
 - **七天一律回滿**，沒有草稿的那天 `draft` 是 `null`。前端不必自己補空格——
@@ -788,8 +789,12 @@ POST／PATCH／verify 都回帶 `verification` 的單筆：
   `{"available": false, "reason": "…"}`，`days[].zplanner` 全部是 `null`，
   **本地草稿照常回**。沒設 ZPlanner 的人仍然看得到自己的草稿。
   `reason` 是可直接顯示的繁中句子（未設定／連線逾時／回應形狀不認得）。
-  ⚠️ 現況：`core/zplanner_client.py` **還沒有**週工時端點（六個唯讀端點裡不含
-  `GET /api/worklogs/weekly/`），所以目前一律回 `available: false`，理由會這樣寫。
+- `zplanner.worklog_count` 數的是**工時筆數**，不是有填工時的天數。ZPlanner 的
+  `days[]` 沒有筆數欄位，實際筆數在 `entries` 陣列的長度（2026-09-13 實測）。
+- `target_hours` 與 `completion_pct` **由 ZPlanner 算**，取不到時這兩個欄位
+  整個不出現（不是 `null`）。前端據此決定要不要畫「還差多少」那一行。
+  ⚠️ **不會補預設值**：編一個 40 小時的目標會讓完成率變成看起來精確的假數字。
+  `target_hours` 是字串（與其他時數一致），`completion_pct` 是 float。
 
 ### `POST /api/v1/worklogs/{date}/draft/stream`
 

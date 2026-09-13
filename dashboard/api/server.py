@@ -3264,8 +3264,42 @@ def _zplanner_week_rows(
             bucket["hours"] += float(row.get("hours") or 0)
         except (TypeError, ValueError):
             return None, f"ZPlanner 週工時的 hours 不是數字：{row.get('hours')!r}"
-        bucket["worklog_count"] += int(row.get("worklog_count") or 1)
+        # 筆數優先數 `entries` 的長度。
+        #
+        # ZPlanner 的 `days[]` **沒有 worklog_count 這個欄位**（2026-09-13 對
+        # 正式站實測），那天實際填了幾筆在 `entries` 裡。原本寫成
+        # `int(row.get("worklog_count") or 1)`，於是不管那天填了 1 筆還是 5 筆
+        # 都一律算成 1——畫面上「已填 n 筆」永遠等於「有填工時的天數」，
+        # 而且數字看起來很合理，不會有人起疑。
+        entries = row.get("entries")
+        if isinstance(entries, list):
+            bucket["worklog_count"] += len(entries)
+        else:
+            bucket["worklog_count"] += int(row.get("worklog_count") or 1)
     return {d: {**v, "hours": f"{v['hours']:.2f}"} for d, v in out.items()}, None
+
+
+def _zplanner_week_target(data: Any) -> Dict[str, Any]:
+    """從 ZPlanner 的週回應取出「目標時數」與「完成率」。
+
+    這兩個值回答週檢視最有用的那個問題——**這週還差多少**。ZPlanner 自己
+    算好了（`target_hours`／`completion_pct`，2026-09-13 實測），照抄就好，
+    不要在這裡自己除——它的目標時數會因人、因請假而不同，我們算的版本
+    遲早會與 ZPlanner 網頁上的數字對不起來。
+
+    取不到就整個不回報（回空字典），**不要填一個猜的 40 小時**：一個編出來
+    的目標會讓「完成 38.8%」這種話變成假的。
+    """
+    if not isinstance(data, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    target = data.get("target_hours")
+    if isinstance(target, (int, float)) and not isinstance(target, bool):
+        out["target_hours"] = f"{float(target):.2f}"
+    pct = data.get("completion_pct")
+    if isinstance(pct, (int, float)) and not isinstance(pct, bool):
+        out["completion_pct"] = float(pct)
+    return out
 
 
 def _zplanner_week_section(week_start: str) -> Dict[str, Any]:
@@ -3302,6 +3336,10 @@ def _zplanner_week_section(week_start: str) -> Dict[str, Any]:
         "days": days,
         "total_hours": f"{sum(float(v['hours']) for v in days.values()):.2f}",
         "worklog_count": sum(int(v["worklog_count"]) for v in days.values()),
+        # target_hours／completion_pct 取不到時整個不出現，前端據此決定要不要
+        # 畫「還差多少」那一行。**不要在這裡補預設值**——編出來的目標會讓
+        # 完成率變成一個看起來精確的假數字。
+        **_zplanner_week_target(data),
     }
 
 
