@@ -1,14 +1,7 @@
 import { useEffect, useState } from 'react'
 import { AlertTriangleIcon, CheckCircle2Icon, Loader2Icon, RefreshCwIcon, Trash2Icon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { WorkRepoForm } from '@/components/settings/WorkRepoForm'
 import { useWorkRepoStore } from '@/store/workRepos'
 import type { WorkRepo } from '@/lib/types'
@@ -346,28 +339,16 @@ function DeleteConfirm({
   onConfirm: () => void
 }) {
   return (
-    <Dialog open={repo !== null} onOpenChange={(open) => (open ? undefined : onCancel())}>
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle>刪除工作 repo「{repo?.name}」？</DialogTitle>
-          <DialogDescription>
-            之後產工時草稿不會再從這個 repo 撈 commit，這一筆登錄（含作者信箱與分支設定）
-            也會消失。已經產出的草稿不受影響。 只是這陣子不想撈的話，改用編輯裡的「產草稿時
-            要撈這個 repo」把它停用就好。
-          </DialogDescription>
-        </DialogHeader>
-        <p className="metric rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs break-words">
-          {repo?.repo_path}
-        </p>
-        <DialogFooter>
-          <Button variant="outline" onClick={onCancel}>
-            取消
-          </Button>
-          <Button variant="destructive" onClick={onConfirm}>
-            確認刪除
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <ConfirmDialog
+      open={repo !== null}
+      onOpenChange={(open) => (open ? undefined : onCancel())}
+      title={`刪除工作 repo「${repo?.name ?? ''}」？`}
+      description="之後產工時草稿不會再從這個 repo 撈 commit，這一筆登錄（含作者信箱與分支設定）也會消失。已經產出的草稿不受影響。只是這陣子不想撈的話，改用編輯裡的「產草稿時要撈這個 repo」把它停用就好。"
+      preview={repo?.repo_path}
+      previewLabel="要刪掉的路徑"
+      confirmLabel="確認刪除"
+      destructive
+      onConfirm={onConfirm}
+    />
   )
 }
