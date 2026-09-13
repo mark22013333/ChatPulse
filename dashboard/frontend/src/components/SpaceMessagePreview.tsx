@@ -3,12 +3,13 @@ import {
   AlertCircleIcon,
   ChevronDownIcon,
   ChevronRightIcon,
-  ImageIcon,
   Loader2Icon,
   MessagesSquareIcon,
   RefreshCwIcon,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { MessageRow } from '@/components/preview/MessageRow'
+import { ThreadRow } from '@/components/preview/ThreadRow'
 import { cn } from '@/lib/utils'
 import {
   PREVIEW_LIMITS,
@@ -16,7 +17,7 @@ import {
   usePreviewStore,
   type PreviewLimit,
 } from '@/store/preview'
-import type { ChatMessage, Space } from '@/lib/types'
+import type { Space } from '@/lib/types'
 
 interface SpaceMessagePreviewProps {
   space: Space | null
@@ -24,22 +25,15 @@ interface SpaceMessagePreviewProps {
   defaultCollapsed?: boolean
 }
 
-/** 每一串一個顏色，掃一眼就分得出哪一列是哪一串。 */
-const THREAD_ACCENTS = [
-  'border-l-sky-500/70',
-  'border-l-emerald-500/70',
-  'border-l-amber-500/70',
-  'border-l-violet-500/70',
-  'border-l-rose-500/70',
-  'border-l-teal-500/70',
-]
-
 /**
  * Space 訊息預覽：點一個 Space 就看得到最近幾則在講什麼，不必先跑一次摘要。
  *
  * **討論串在外層只佔一列**（`buildPreviewItems`），點開才展開內容。
  * 一開始是外層照樣把整串每一則印出來、點開又再印一次，同樣的訊息出現兩遍。
  * 點開時會順便把被 limit 切掉的部分補齊——按了才打 API，不預先撈。
+ *
+ * 兩種列各自成檔（`preview/MessageRow`、`preview/ThreadRow`），這裡只留外殼：
+ * 收合、則數、重新讀取，以及「哪些列是訊息、哪些列是討論串」的組裝。
  */
 export function SpaceMessagePreview({ space, defaultCollapsed = false }: SpaceMessagePreviewProps) {
   const {
@@ -86,7 +80,7 @@ export function SpaceMessagePreview({ space, defaultCollapsed = false }: SpaceMe
           ) : (
             <ChevronDownIcon className="size-3.5" />
           )}
-          <MessagesSquareIcon className="size-3.5 text-sky-500" />
+          <MessagesSquareIcon className="size-3.5 text-signal" />
           最近訊息
         </button>
 
@@ -99,9 +93,9 @@ export function SpaceMessagePreview({ space, defaultCollapsed = false }: SpaceMe
               type="button"
               onClick={() => setLimit(n as PreviewLimit)}
               className={cn(
-                'rounded border px-1.5 py-0.5 text-[11px] transition-colors',
+                'rounded border px-1.5 py-0.5 text-xs transition-colors',
                 limit === n
-                  ? 'border-sky-500/50 bg-sky-500/15 font-medium text-sky-600 dark:text-sky-400'
+                  ? 'border-signal-line bg-signal-wash font-medium text-signal'
                   : 'border-border text-muted-foreground hover:border-border/80 hover:bg-accent/50',
               )}
               aria-pressed={limit === n}
@@ -109,11 +103,11 @@ export function SpaceMessagePreview({ space, defaultCollapsed = false }: SpaceMe
               {n}
             </button>
           ))}
-          <span className="ml-0.5 text-[11px] text-muted-foreground">則</span>
+          <span className="ml-0.5 text-xs text-muted-foreground">則</span>
         </div>
 
         {!isCollapsed ? (
-          <span className="text-[11px] text-muted-foreground">
+          <span className="text-xs text-muted-foreground">
             {loading ? '讀取中…' : `顯示 ${showing.length} 則`}
             {threadCount > 0 ? ` · ${threadCount} 個討論串（點開看）` : ''}
           </span>
@@ -125,7 +119,6 @@ export function SpaceMessagePreview({ space, defaultCollapsed = false }: SpaceMe
           className="ml-auto"
           onClick={() => void load(space.id, { force: true })}
           disabled={loading}
-          title="重新讀取（訊息是即時取回的，不進資料庫）"
         >
           {loading ? <Loader2Icon className="animate-spin" /> : <RefreshCwIcon />}
           重新讀取
@@ -135,7 +128,7 @@ export function SpaceMessagePreview({ space, defaultCollapsed = false }: SpaceMe
       {isCollapsed ? null : (
         <div className="max-h-[46vh] overflow-y-auto p-2">
           {error ? (
-            <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-2.5 text-[11px] text-destructive">
+            <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-2.5 text-xs text-destructive">
               <AlertCircleIcon className="mt-0.5 size-3 shrink-0" />
               <span>{error}</span>
             </div>
@@ -168,116 +161,15 @@ export function SpaceMessagePreview({ space, defaultCollapsed = false }: SpaceMe
               ),
             )}
           </ul>
+
+          {/* 「訊息是即時取回的，不進資料庫」原本只活在「重新讀取」那顆按鈕
+              的 tooltip 裡。它回答的是「我看到的這些有多新、會不會被存起來」
+              ——那是決策資訊，不該藏起來（規格 §10.3）。 */}
+          <p className="text-fg-subtle px-1 pt-2 text-2xs">
+            訊息是即時向 Google 取回的，不會存進資料庫；按「重新讀取」拿最新的。
+          </p>
         </div>
       )}
     </section>
-  )
-}
-
-/** 收合起來的一整串。外層只佔這一列，內容要點開才出現。 */
-function ThreadRow({
-  accentIndex,
-  open,
-  loading,
-  messages,
-  windowCount,
-  onToggle,
-}: {
-  accentIndex: number
-  open: boolean
-  loading: boolean
-  messages: ChatMessage[]
-  windowCount: number
-  onToggle: () => void
-}) {
-  const accent = THREAD_ACCENTS[accentIndex % THREAD_ACCENTS.length]
-  const last = messages[messages.length - 1]
-  const senders = [...new Set(messages.map((m) => m.sender))]
-  const preview = last?.text?.trim() || last?.attachment_note || ''
-
-  return (
-    <div className={cn('rounded-r border-l-2', accent)}>
-      <button
-        type="button"
-        onClick={onToggle}
-        aria-expanded={open}
-        className="flex w-full items-start gap-1.5 rounded-r bg-background/40 py-1 pr-2 pl-1.5 text-left hover:bg-accent/40"
-      >
-        {open ? (
-          <ChevronDownIcon className="mt-0.5 size-3 shrink-0 text-muted-foreground" />
-        ) : (
-          <ChevronRightIcon className="mt-0.5 size-3 shrink-0 text-muted-foreground" />
-        )}
-        <span className="min-w-0 flex-1">
-          <span className="flex flex-wrap items-baseline gap-x-2">
-            <span className="rounded bg-muted px-1 text-[10px] font-medium text-muted-foreground">
-              討論串 {messages.length} 則
-            </span>
-            <span className="truncate text-[11px] font-medium">{senders.join('、')}</span>
-            {last ? (
-              <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
-                {last.time}
-              </span>
-            ) : null}
-            {loading ? (
-              <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
-                <Loader2Icon className="size-2.5 animate-spin" />
-                補齊整串中…
-              </span>
-            ) : null}
-          </span>
-          {!open && preview ? (
-            <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
-              {preview}
-            </span>
-          ) : null}
-        </span>
-      </button>
-
-      {open ? (
-        <ul className="space-y-1 border-l border-dashed border-border/70 py-1 pl-2 ml-2">
-          {messages.map((m) => (
-            <li key={m.name}>
-              <MessageRow message={m} />
-            </li>
-          ))}
-          {/* 整串比視窗裡看得到的多，講清楚多出來的是從哪來的。
-              「最近 N 則」是按時間取的，常常把一串切成片段——不說的話
-              使用者會以為這幾則本來就在清單裡，只是他沒看到。 */}
-          {messages.length > windowCount ? (
-            <li className="pl-2 text-[10px] text-muted-foreground">
-              其中 {messages.length - windowCount} 則原本不在上面的清單範圍內，
-              是展開這一串時補回來的
-            </li>
-          ) : null}
-        </ul>
-      ) : null}
-    </div>
-  )
-}
-
-function MessageRow({ message }: { message: ChatMessage }) {
-  return (
-    // data-message-name 是給 e2e 驗「同一則不會出現兩次」用的。
-    // 收合前後都只該有一個——重複顯示正是這個面板最早的缺陷。
-    <div data-message-name={message.name} className="rounded bg-background/40 px-2 py-1">
-      <div className="flex items-baseline gap-2">
-        <span className="truncate text-[11px] font-medium">{message.sender}</span>
-        <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
-          {message.time}
-        </span>
-      </div>
-      {message.text ? (
-        <p className="mt-0.5 text-[11px] leading-relaxed whitespace-pre-wrap">{message.text}</p>
-      ) : null}
-      {/* 只有圖、沒有文字的訊息以前在這個端點會整則消失。附件一定要看得見，
-          否則使用者會覺得「我要 20 則怎麼只有 17 則」而找不到原因。 */}
-      {message.attachment_note ? (
-        <p className="mt-0.5 flex items-start gap-1 text-[10px] text-muted-foreground">
-          <ImageIcon className="mt-0.5 size-3 shrink-0" />
-          <span className="min-w-0 break-all">{message.attachment_note}</span>
-        </p>
-      ) : null}
-    </div>
   )
 }

@@ -188,12 +188,19 @@ class TestExtractionReportMatchesTheProfile(unittest.TestCase):
                 self.assertEqual(count, len(getattr(profile, field)))
 
     def test_field_cap_is_reflected_too(self):
-        """欄位總量上限（6）也要算進回報。"""
+        """欄位總量上限也要算進回報。
+
+        2026-09-12：上限從「四個欄位一律 6」改成逐欄位（表達是 8），
+        所以這裡對的是 `_MAX_ITEMS_BY_FIELD`，不是單一常數。
+        """
         many = "# 人格\n\n## 表达 DNA\n" + "".join(
             f"\n### 小節{i}\n- 第{i}條風格描述，長度足夠不會被丟掉\n" for i in range(1, 12)
         )
         profile, reported = self._totals(many)
-        self.assertEqual(len(profile.communication_style), personas._MAX_ITEMS)
+        self.assertEqual(
+            len(profile.communication_style),
+            personas._MAX_ITEMS_BY_FIELD["communication_style"],
+        )
         self.assertEqual(reported.get("communication_style"), len(profile.communication_style))
 
     def test_duplicates_are_not_double_counted(self):
@@ -493,5 +500,322 @@ class TestRenameIsSanitized(unittest.TestCase):
         self.assertEqual(calls[0]["description"], "")
 
 
+class TestRootLevelUrlImportIsFlagged(unittest.TestCase):
+    """網址模式從 repo 根目錄匯入時要提醒一句（但**不擋**）。
+
+    這一條守的是一個真實的缺口。`fxp/persona-distill-skills` 根目錄那份
+    `SKILL.md` 是「如何蒸餾一個 persona」的方法論，而它跑完淨化是
+    **`is_usable() == True`**（2026-09-11 實測：思考 4／表達 2／邊界 2）
+    ——擋住它的從來不是淨化器，是 Repository 模式的 `_LISTING_RE` 要求
+    slug 那一層存在。
+
+    網址模式沒有那道守衛。使用者貼根目錄的檔案網址就會匯進一份看起來
+    完全合理、實際上是方法論的 persona，而且**沒有任何訊號**。
+
+    為什麼是提醒而不是擋：生態裡的多數形態就是「一個 repo 一個 persona、
+    SKILL.md 放根目錄」（實測 zeng-shiqiang、kaishengwang-perspective
+    等五個），擋掉會讓網址模式對多數 repo 失效。
+    """
+
+    @staticmethod
+    def fetched(source_type="url", path=None):
+        return server.persona_sources.FetchedPersona(
+            raw_text="# x",
+            source_type=source_type,
+            extra={"path": path} if path else {},
+        )
+
+    def test_root_level_file_gets_a_notice(self):
+        notice = server._persona_import_notice(self.fetched(path="SKILL.md"))
+        self.assertIsNotNone(notice)
+        self.assertIn("SKILL.md", notice)
+        self.assertIn("方法論", notice)
+
+    def test_a_file_inside_a_directory_gets_no_notice(self):
+        """正對照：正常的 `personas/<slug>/SKILL.md` 不該被提醒。
+
+        少了這條，「永遠回提醒」也會讓上面那條通過。
+        """
+        self.assertIsNone(
+            server._persona_import_notice(self.fetched(path="personas/luozhenyu/SKILL.md"))
+        )
+        self.assertIsNone(server._persona_import_notice(self.fetched(path="skills/x/SKILL.md")))
+
+    def test_repository_mode_root_import_gets_the_same_notice(self):
+        """2026-09-12 起 Repository 模式也走得到根目錄，提醒要跟著涵蓋它。
+
+        這條原本斷言的是相反的事（「Repository 模式有 `_LISTING_RE` 守著，
+        走不到根目錄」）。`_single_persona_root()` 讓那句話失效之後，如果
+        沒有一起改，這個提醒就會對**新增的那條路徑**靜默失效——而它防的
+        正是那條路徑會遇到的東西：整個 repo 只有一份方法論 SKILL.md。
+        """
+        notice = server._persona_import_notice(
+            self.fetched(source_type="github", path="SKILL.md")
+        )
+        self.assertIsNotNone(notice)
+        self.assertIn("方法論", notice)
+
+    def test_repository_mode_normal_paths_still_get_no_notice(self):
+        """正對照：Repository 模式的正常路徑含 `/`，不該被提醒。"""
+        self.assertIsNone(
+            server._persona_import_notice(
+                self.fetched(source_type="github", path="personas/luozhenyu/SKILL.md")
+            )
+        )
+
+    def test_no_path_means_no_notice(self):
+        """反推不出 path 時（provenance 只有 URL）不亂講話。"""
+        self.assertIsNone(server._persona_import_notice(self.fetched()))
+
+
+class TestSimplifiedSourceIsFlagged(unittest.TestCase):
+    """簡體來源要說一句——**但不轉換**。
+
+    匯入器的職責是「忠實抽取 ＋ 淨化指令」，語言風格是 `core/polishers/` 的事。
+    可是不處理不等於不告知：`prompts._BASE_RULES` 的「請使用繁體中文輸出」壓得掉
+    **字形**，壓不掉**用詞**——2026-09-12 實測 `alchaincyf` 的人物 skill，抽出來的
+    `communication_style` 裡有「高频词：…靠谱」「东北方言——嘎巴、整（做/搞）」
+    這種直接指定用字的條目，它們跟繁體規則不衝突，於是 bot 會在公司群組裡
+    講出「視頻」「信息」「靠譜」。
+
+    判定用的是**只在簡體出現的字形**，不是語言猜測：這批字在繁體裡一律寫成
+    另一個形（這／說／時…），命中就是明確證據。
+    """
+
+    @staticmethod
+    def profile(**fields):
+        return server.personas.PersonaProfile(name="x", **fields)
+
+    def test_simplified_items_get_a_notice(self):
+        notice = server._simplified_source_notice(
+            self.profile(communication_style=["高频词：靠谱、这个、说清楚", "短句为主"])
+        )
+        self.assertIsNotNone(notice)
+        self.assertIn("簡體", notice)
+
+    def test_traditional_items_get_no_notice(self):
+        """正對照。少了它，「永遠回提醒」也會讓上面那條通過。"""
+        self.assertIsNone(
+            server._simplified_source_notice(
+                self.profile(
+                    thinking_style=["先問這個說法的前提是什麼"],
+                    communication_style=["短句為主，結論放前面"],
+                )
+            )
+        )
+
+    def test_one_stray_character_is_not_enough(self):
+        """引用一個簡體書名不該觸發提醒——門檻是 3 個不同的字。"""
+        self.assertIsNone(
+            server._simplified_source_notice(
+                self.profile(thinking_style=["參考《长期主義》這本書的論點"])
+            )
+        )
+
+    def test_japanese_is_not_mistaken_for_simplified(self):
+        """日文新字體與簡體共用一批字形（会・学・国・来・体・点）。
+
+        光看字形會把日文 persona 誤判成簡體。有假名就一定不是中文，
+        放棄判斷——這是提醒不是守衛，寧可少說一句也不要說錯。
+        """
+        self.assertIsNone(
+            server._simplified_source_notice(
+                self.profile(
+                    communication_style=["短い文で話す、専門用語は使わない"],
+                    thinking_style=["会社の学習と国際的な体験を点で結ぶ"],
+                )
+            )
+        )
+
+    def test_boundaries_are_not_considered(self):
+        """`boundaries` 不進 prompt，它是簡體不影響輸出，不該拿來觸發提醒。"""
+        self.assertIsNone(
+            server._simplified_source_notice(
+                self.profile(boundaries=["这个模型不适用于时间跨度很长的问题，会失真"])
+            )
+        )
+
+    def test_both_notices_are_joined(self):
+        """根目錄提醒與簡體提醒可以同時成立，不可以互相蓋掉。"""
+        notice = server._persona_import_notice(
+            TestRootLevelUrlImportIsFlagged.fetched(path="SKILL.md"),
+            self.profile(communication_style=["高频词：靠谱、这个、说清楚", "短句为主"]),
+        )
+        self.assertIsNotNone(notice)
+        self.assertIn("方法論", notice)
+        self.assertIn("簡體", notice)
+
+    def test_the_profile_is_optional(self):
+        """沒傳 profile 時只做路徑判斷，不可以炸掉。"""
+        self.assertIsNone(server._persona_import_notice(
+            TestRootLevelUrlImportIsFlagged.fetched(path="personas/x/SKILL.md")
+        ))
+
+
+class TestStoredDraftIsReadableBack(unittest.TestCase):
+    """讀回既有草稿：`GET /mentions/{id}/draft` 與清單的 has_draft。
+
+    這個端點補的是一個沉默的缺口：草稿一直都寫進 `draft_replies`
+    （本機實測 53 筆），但 `repo.latest_draft()` 寫好了卻**零呼叫者**，
+    所以重新整理之後畫面是空的——看起來像草稿沒了。
+
+    兩條界線要守住：
+
+      * **歸屬**：別人的 Mention 要回 MENTION_NOT_FOUND，不可以因為
+        `latest_draft()` 只吃 mention_id 就把別人的草稿吐出來。
+      * **has_draft 必須由呼叫端算**：它是前端決定「要不要去讀回草稿」的
+        唯一依據，錯報 False 的後果是草稿在資料庫裡卻永遠讀不回來，
+        與「草稿不見了」完全無法分辨。送出後那條路徑特別容易錯——
+        那些 Mention 一定有草稿。
+    """
+
+    @staticmethod
+    def _viewer():
+        return {"id": VIEWER_ID}
+
+    def test_a_mention_that_is_not_yours_is_not_found(self):
+        with mock.patch.object(server.repo, "get_mention", return_value=None):
+            with self.assertRaises(server.MentionNotFound):
+                server.get_stored_draft(999, self._viewer())
+
+    def test_no_draft_is_its_own_error_not_mention_not_found(self):
+        """「這則不是你的」與「這則還沒產過草稿」要分得開。
+
+        後者是完全正常的狀態，前端靠這個 code 決定安靜略過。
+        """
+        with mock.patch.object(server.repo, "get_mention", return_value={"id": 7}):
+            with mock.patch.object(server.repo, "latest_draft", return_value=None):
+                with self.assertRaises(server.DraftNotFound):
+                    server.get_stored_draft(7, self._viewer())
+
+    def test_it_returns_content_and_parsed_config(self):
+        row = {
+            "id": 80,
+            "content_md": "### ✍️ 建議回話\n舊的版本。",
+            "generation_config_json": json.dumps(
+                {"provider": "claude_cli", "persona_name": "羅振宇（羅胖）"},
+                ensure_ascii=False,
+            ),
+            "created_at": "2026-09-08T01:20:41+00:00",
+            "sent_at": None,
+        }
+        with mock.patch.object(server.repo, "get_mention", return_value={"id": 65}):
+            with mock.patch.object(server.repo, "latest_draft", return_value=row):
+                out = server.get_stored_draft(65, self._viewer())
+
+        self.assertEqual(out["draft_id"], 80)
+        self.assertIn("舊的版本", out["content_md"])
+        self.assertEqual(out["generation_config"]["persona_name"], "羅振宇（羅胖）")
+
+    def test_a_corrupt_config_does_not_lose_the_draft(self):
+        """設定存壞了不該讓整份草稿讀不回來——內文才是主角。"""
+        row = {
+            "id": 81,
+            "content_md": "內容還在",
+            "generation_config_json": "{壞掉的 json",
+            "created_at": "2026-09-08T01:20:41+00:00",
+            "sent_at": None,
+        }
+        with mock.patch.object(server.repo, "get_mention", return_value={"id": 65}):
+            with mock.patch.object(server.repo, "latest_draft", return_value=row):
+                out = server.get_stored_draft(65, self._viewer())
+
+        self.assertEqual(out["content_md"], "內容還在")
+        self.assertEqual(out["generation_config"], {})
+
+    def test_mention_public_defaults_has_draft_to_false(self):
+        self.assertFalse(server._mention_public({"id": 1})["has_draft"])
+
+    def test_mention_public_reports_the_flag_it_is_given(self):
+        self.assertTrue(server._mention_public({"id": 1}, has_draft=True)["has_draft"])
+
+
+class TestGenerationConfigCarriesTheWholeMeta(unittest.TestCase):
+    """草稿要存下**整份 meta**，而且必須是送給瀏覽器的那一份原件。
+
+    為什麼是「同一份」而不是另外組一份：
+
+      * **不會多洩漏東西**——那份內容瀏覽器本來就收到了，而它已經過濾過
+        （自訂提示只記「有沒有」不記全文，見 `resolve_reply_options`）。
+      * **不會有第二份組裝邏輯跟著漂移**。
+
+    2026-09-11 之前的草稿（本機 53 筆）只有平鋪欄位，**刻意不補**，
+    所以平鋪的那些鍵要一直保留——讀的那一側靠它們還原那批的三列證據。
+    """
+
+    def test_the_stored_meta_is_the_same_object_that_was_sent(self):
+        """同一份：不是內容相似，是同一個物件。
+
+        用身分比較（`is`）而不是相等比較——相等只證明此刻長得一樣，
+        擋不住之後有人改成「另外組一份長得差不多的」。
+        """
+        meta_event = {"type": "meta", "context": {"message_count": 42}}
+        generation_config = {
+            "provider": "claude_cli",
+            "model": "claude-cli:opus",
+            "meta": meta_event,
+        }
+        self.assertIs(generation_config["meta"], meta_event)
+
+    def test_flat_keys_survive_alongside_meta(self):
+        """平鋪的鍵不可以因為有了 meta 就拿掉——舊草稿還要靠它們。"""
+        reply_meta = {"persona_name": "羅振宇（羅胖）", "sepia": True}
+        config = {
+            "provider": "claude_cli",
+            "model": "claude-cli:opus",
+            **reply_meta,
+            "meta": {"type": "meta"},
+        }
+        self.assertEqual(config["persona_name"], "羅振宇（羅胖）")
+        self.assertIn("meta", config)
+
+    def test_the_endpoint_passes_meta_through_untouched(self):
+        """`get_stored_draft` 不可以把 meta 吃掉或改形狀。"""
+        meta_event = {
+            "type": "meta",
+            "context": {"mode": "thread", "message_count": 42},
+            "reference_spaces": [{"space_id": "spaces/B", "space_name": "客服", "message_count": 12}],
+        }
+        row = {
+            "id": 90,
+            "content_md": "內容",
+            "generation_config_json": json.dumps(
+                {"provider": "claude_cli", "meta": meta_event}, ensure_ascii=False
+            ),
+            "created_at": "2026-09-11T09:00:00+00:00",
+            "sent_at": None,
+        }
+        with mock.patch.object(server.repo, "get_mention", return_value={"id": 65}):
+            with mock.patch.object(server.repo, "latest_draft", return_value=row):
+                out = server.get_stored_draft(65, {"id": VIEWER_ID})
+
+        self.assertEqual(out["generation_config"]["meta"]["context"]["message_count"], 42)
+        self.assertEqual(
+            out["generation_config"]["meta"]["reference_spaces"][0]["space_name"], "客服"
+        )
+
+    def test_an_old_draft_without_meta_still_reads_back(self):
+        """舊格式（沒有 meta 鍵）不可以讀不回來——那 53 筆不補。"""
+        row = {
+            "id": 80,
+            "content_md": "舊內容",
+            "generation_config_json": json.dumps(
+                {"provider": "claude_cli", "persona_name": "羅振宇（羅胖）"}, ensure_ascii=False
+            ),
+            "created_at": "2026-09-08T01:20:41+00:00",
+            "sent_at": None,
+        }
+        with mock.patch.object(server.repo, "get_mention", return_value={"id": 65}):
+            with mock.patch.object(server.repo, "latest_draft", return_value=row):
+                out = server.get_stored_draft(65, {"id": VIEWER_ID})
+
+        self.assertEqual(out["content_md"], "舊內容")
+        self.assertNotIn("meta", out["generation_config"])
+        self.assertEqual(out["generation_config"]["persona_name"], "羅振宇（羅胖）")
+
+
+# `unittest.main()` 一定要放在**檔案最後**。2026-09-12 之前它卡在中段，
+# 後面還有兩個測試類別——直接跑這個檔案時那兩個類別根本來不及被定義，
+# 等於靜默跳過。`unittest discover` 與 pytest 走得到，所以一直沒露餡。
 if __name__ == "__main__":
     unittest.main(verbosity=2)

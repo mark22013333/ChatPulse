@@ -65,6 +65,7 @@ from core.errors import (
     ChatPulseError,
     CodeProjectNotFound,
     ConfigurationError,
+    DraftNotFound,
     InvalidParameter,
     MentionNotFound,
     NotAuthenticated,
@@ -964,6 +965,101 @@ class PersonaUpdateRequest(BaseModel):
     enabled: Optional[bool] = None
 
 
+#: 只在簡體中文出現、繁體中文不會用到的字形。用來判斷來源的書寫系統。
+#:
+#: 比對字形而不是猜語言：這批字在繁體中文裡一律寫成另一個形（這／說／時…），
+#: 所以命中就是明確證據，不是機率判斷。
+_SIMPLIFIED_ONLY_CHARS = frozenset(
+    "这说时会对应实现样边过还让认识语见进问间关开义张长门风马齐专业东车书买卖"
+    "华单变点为无与众体亲头转记论设该则给结经统级绝继续观规视觉"
+    "个们么来学国电产质题传处务广总类选价组数断满术双区医压参离罗员责权证"
+    "议计讲谈调达输运连远迟适递复杂难济领导习惯态势创频谱发"
+)
+
+#: 要命中幾個**不同**的字才算數。設 3 是為了擋掉偶發的單字誤判
+#: （引用一個簡體書名、一個人名），那種情況不值得提醒。
+_SIMPLIFIED_HITS_NEEDED = 3
+
+
+def _simplified_source_notice(profile: personas.PersonaProfile) -> Optional[str]:
+    """抽出來的風格條目是簡體中文時說一句。
+
+    **這裡刻意不做任何轉換。** 匯入器的職責是「忠實抽取 ＋ 淨化指令」，
+    語言風格是輸出層的事（`core/polishers/`，`language="zh-TW"`）。在匯入時
+    改寫第三方原文等於竄改來源語意，而且會讓 `raw_source` 與 profile 對不起來。
+
+    但**不處理不等於不告知**。`prompts._BASE_RULES` 的「請使用繁體中文輸出」
+    會把字形壓成繁體，壓不掉的是**用詞**：抽出來的條目裡有「高频词：…靠谱」
+    「东北方言——嘎巴、整（做/搞）」這種直接指定用字的句子，它們跟繁體規則
+    不衝突（字形轉了就是），於是 bot 會在公司群組裡講出「視頻」「信息」
+    「靠譜」。使用者選 persona 之前應該知道這件事。
+    """
+    text = "".join(profile.thinking_style + profile.communication_style + profile.avoid)
+
+    # 日文的新字體與簡體有一批共同的字形（会・学・国・来・体・点），光看字形
+    # 會把日文 persona 誤判成簡體。有假名就一定不是中文，直接放棄判斷——
+    # 這是提醒不是守衛，寧可少說一句也不要說錯。
+    if any("぀" <= char <= "ヿ" for char in text):
+        return None
+
+    hits = {char for char in text if char in _SIMPLIFIED_ONLY_CHARS}
+    if len(hits) < _SIMPLIFIED_HITS_NEEDED:
+        return None
+    return (
+        "這份來源是簡體中文。回話會照設定輸出繁體，但抽出來的表達習慣裡"
+        "可能帶著中國用語（例如「視頻」「信息」「靠譜」），"
+        "請看一眼下面的條目再決定要不要啟用。"
+    )
+
+
+def _persona_import_notice(
+    fetched: persona_sources.FetchedPersona,
+    profile: Optional[personas.PersonaProfile] = None,
+) -> Optional[str]:
+    """匯入成功了，但有件事值得說一句。
+
+    回傳的是**所有適用提醒串起來的一句**（各自的判斷見下面各函式），
+    都不適用就回 `None`——不要為了「有東西可顯示」而硬湊一句廢話。
+
+    **repo 根目錄的 SKILL.md 有可能不是 persona。** 實測
+    `fxp/persona-distill-skills` 根目錄那份是「如何蒸餾一個 persona」的
+    方法論，而它跑完淨化是 `is_usable() == True`（抽到思考 4／表達 2／
+    邊界 2）——也就是說**擋住它的不是淨化器，是 Repository 模式的
+    `_LISTING_RE` 要求 slug 那一層存在**（見 `persona_sources/github.py`）。
+
+    網址模式沒有那道守衛：使用者可以直接貼根目錄的檔案網址，而抽出來的
+    東西看起來完全像一份合理的 persona。所以這裡**不擋**（那會擋掉真的把
+    persona 放在根目錄的 repo，那是生態裡的多數形態），只提醒一句，
+    讓他去看一眼抽出來的條目對不對。
+
+    2026-09-12：這裡原本先擋掉 `source_type != "url"`，理由寫的是
+    「Repository 模式有 `_LISTING_RE` 守著，走不到根目錄」。**那句話不再成立**
+    ——Repository 模式現在會在沒有任何 `personas/`／`skills/` 結構時採用根目錄的
+    檔案（見 `persona_sources/github.py` 的 `_single_persona_root()`）。
+    那道新守衛擋得住 `fxp/persona-distill-skills`（它兩種結構都有），但擋不住
+    「整個 repo 就只有一份方法論 SKILL.md」的情況，所以這句提醒對它一樣需要。
+
+    改成只看路徑形狀就同時涵蓋兩種模式：Repository 模式正常取到的路徑一定含
+    `/`（`personas/<名稱>/SKILL.md`），只有根目錄那條不含。
+    """
+    notices: List[str] = []
+
+    path = (fetched.extra or {}).get("path") or ""
+    if path and "/" not in path:
+        notices.append(
+            f"這份是從 repo 根目錄的 {path} 匯入的。有些 repo 根目錄放的是"
+            "「如何寫 persona」的方法論而不是某個人的風格，"
+            "請看一眼下面抽出來的條目是不是你要的。"
+        )
+
+    if profile is not None:
+        simplified = _simplified_source_notice(profile)
+        if simplified:
+            notices.append(simplified)
+
+    return " ".join(notices) if notices else None
+
+
 def _persona_import_result(
     viewer_id: int, fetched: persona_sources.FetchedPersona, override_name: Optional[str]
 ) -> Dict[str, Any]:
@@ -981,10 +1077,15 @@ def _persona_import_result(
     if not profile.is_usable():
         # 這是**可預期的正常結果**，不是 bug：來源檔案可能整份都是角色扮演
         # 指令與工作流程，那些一律不採用，淨化完就空了。
+        #
+        # 訊息一定要帶 `describe_unusable()` 的診斷。少了它，使用者只知道
+        # 「這份不能用」卻不知道是「拿錯檔案」還是「只差一個章節標題」，
+        # 而那兩件事的下一步完全不同（換來源 vs 改標題）。
         raise PersonaInvalid(
             "這份來源淨化之後沒有留下任何可用的風格資訊"
             "（角色扮演指令、工作流程、工具呼叫一律不採用）。"
-            "你可以改用自訂 Persona 手動填寫風格描述。"
+            f"{personas.describe_unusable(fetched.raw_text)}"
+            "也可以改用自訂 Persona 手動填寫風格描述。"
         )
 
     name = (override_name or profile.name or fetched.name_hint or "").strip()
@@ -1003,6 +1104,8 @@ def _persona_import_result(
         raw_source=fetched.raw_text,
     )
 
+    notice = _persona_import_notice(fetched, profile)
+
     existing = repo.find_persona_by_name(viewer_id, name)
     if existing is not None:
         # 同名視為「更新」而不是報衝突：使用者按「更新 Persona」時走的就是
@@ -1018,12 +1121,16 @@ def _persona_import_result(
             raw_source=payload["raw_source"],
             touch_refreshed=True,
         )
-        return {"persona": updated, "created": False}
+        return {"persona": updated, "created": False, "notice": notice}
 
     persona_id = repo.create_persona(
         viewer_id, source_type=fetched.source_type, **payload
     )
-    return {"persona": repo.get_persona(viewer_id, persona_id), "created": True}
+    return {
+        "persona": repo.get_persona(viewer_id, persona_id),
+        "created": True,
+        "notice": notice,
+    }
 
 
 @app.get("/api/v1/personas")
@@ -1126,7 +1233,15 @@ def post_persona(req: PersonaCreateRequest, viewer: Dict[str, Any] = ViewerDep):
             json.dumps({**req.profile, "name": req.name}, ensure_ascii=False)
         )
         if not profile.is_usable():
-            raise PersonaInvalid("填寫的內容淨化之後沒有留下可用的風格資訊")
+            # 這條走的是**結構化輸入**，沒有原文可以做章節診斷，所以講的是
+            # 欄位：`is_usable()` 刻意不含 boundaries，只填能力邊界會走到這裡
+            # 而使用者看不出原因（見 `PersonaProfile.is_usable`）。
+            raise PersonaInvalid(
+                "填寫的內容淨化之後沒有留下可用的風格資訊。"
+                "thinking_style、communication_style、avoid 至少要有一個有內容"
+                "——只填 boundaries（能力邊界）不算，它描述的是不擅長什麼，"
+                "單獨存在不構成 persona。"
+            )
         name = req.name.strip()
         if not name:
             raise InvalidParameter("Persona 需要名稱")
@@ -1323,7 +1438,14 @@ def create_draft_target(req: DraftTargetRequest, viewer: Dict[str, Any] = Viewer
     return {
         "mention_id": mention_id,
         "mention": (
-            _mention_public(rows[0], name_resolver_for(viewer), viewer_id=viewer_id)
+            _mention_public(
+                rows[0],
+                name_resolver_for(viewer),
+                viewer_id=viewer_id,
+                # 通常是剛建立的手動 Mention（沒有草稿），但這個端點對同一則
+                # 按第二次會拿到既有的那筆——那時它可能已經有草稿了
+                has_draft=repo.latest_draft(mention_id) is not None,
+            )
             if rows
             else None
         ),
@@ -1862,7 +1984,11 @@ def _hydrate_mention_content(
 
 
 def _mention_public(
-    row: Dict[str, Any], resolve=None, *, viewer_id: Optional[int] = None
+    row: Dict[str, Any],
+    resolve=None,
+    *,
+    viewer_id: Optional[int] = None,
+    has_draft: bool = False,
 ) -> Dict[str, Any]:
     sender = row.get("sender_display")
     if not sender and resolve:
@@ -1894,6 +2020,11 @@ def _mention_public(
         "resolved_at": row.get("resolved_at"),
         "text": row.get("text"),
         "content_error": row.get("content_error"),
+        # 有沒有存下來的草稿。**呼叫端一定要算**（不要讓它預設 False 就送出）
+        # ——這個旗標是前端決定「要不要去讀回草稿」的唯一依據，錯報 False
+        # 的後果是草稿明明在資料庫裡卻永遠不會被載回來，與「草稿不見了」
+        # 完全無法分辨。
+        "has_draft": has_draft,
     }
 
 
@@ -1913,10 +2044,17 @@ def get_mentions(
 
     # 名錄要在 hydrate 之後才建（那一步會學到新名字）
     resolve = name_resolver_for(viewer)
+    # 一次查完整個 Viewer 的草稿分佈，不要每列各查一次——這裡預設就是 200 列
+    with_drafts = repo.mention_ids_with_drafts(viewer["id"])
     return {
         "count": len(rows),
         "counts": repo.count_mentions(viewer["id"]),
-        "mentions": [_mention_public(r, resolve, viewer_id=viewer["id"]) for r in rows],
+        "mentions": [
+            _mention_public(
+                r, resolve, viewer_id=viewer["id"], has_draft=r.get("id") in with_drafts
+            )
+            for r in rows
+        ],
     }
 
 
@@ -1939,7 +2077,14 @@ def patch_mention(
     if not repo.get_mention(viewer["id"], mention_id):
         raise MentionNotFound()
     row = repo.set_mention_state(viewer["id"], mention_id, req.state)
-    return _mention_public(row or {}, name_resolver_for(viewer), viewer_id=viewer["id"])
+    # 這一列也要帶對 has_draft：前端會拿這個回應覆蓋清單裡的那一列，
+    # 用預設的 False 會把「這則有草稿」這件事洗掉。單筆查詢，很便宜。
+    return _mention_public(
+        row or {},
+        name_resolver_for(viewer),
+        viewer_id=viewer["id"],
+        has_draft=repo.latest_draft(mention_id) is not None,
+    )
 
 
 @app.post("/api/v1/mentions/refresh")
@@ -2332,6 +2477,49 @@ def resolve_reply_options(
     return options, sepia_enabled, meta
 
 
+@app.get("/api/v1/mentions/{mention_id}/draft")
+def get_stored_draft(mention_id: int, viewer: Dict[str, Any] = ViewerDep):
+    """取回這一則**已經存下來**的最新草稿。
+
+    為什麼需要這個端點：草稿一直都有存進 `draft_replies`，但在這之前沒有
+    任何路徑把它讀回來——`repo.latest_draft()` 寫好了卻零呼叫者。於是重新
+    整理、切回收件匣再點進來、或隔天再開，畫面都是空的，看起來像草稿沒了。
+    實際上它在資料庫裡（本機實測 53 筆）。
+
+    **`generation_config` 不等於產生當下的完整 meta。** 存下來的只有
+    `{provider, model} ＋ reply_meta ＋ polish_meta`——也就是證據欄的
+    「生成」「回話設定」「潤稿」三列。脈絡（讀了幾則、涵蓋範圍、時間範圍）、
+    參考 Space、程式碼佐證、合併回覆對象**沒有存**，所以還原不了。
+    前端要把這件事明講（見 `toEvidence` 的 `restored`），不可以讓一份
+    只有一半證據的草稿看起來像完整的——這個分支整個設計前提就是
+    「證據要對得上」，半套的證據比沒有更糟。
+    """
+    viewer_id = viewer["id"]
+    if not repo.get_mention(viewer_id, mention_id):
+        raise MentionNotFound()
+
+    row = repo.latest_draft(mention_id)
+    if not row:
+        raise DraftNotFound(f"Mention {mention_id} 還沒有存下來的草稿")
+
+    raw = row.get("generation_config_json")
+    try:
+        config = json.loads(raw) if raw else {}
+    except ValueError:
+        # 存壞的設定不該讓整個草稿讀不回來——內文才是主角
+        log.warning("Draft %s 的 generation_config_json 不是合法 JSON", row.get("id"))
+        config = {}
+
+    return {
+        "draft_id": row.get("id"),
+        "mention_id": mention_id,
+        "content_md": row.get("content_md") or "",
+        "generation_config": config,
+        "created_at": row.get("created_at"),
+        "sent_at": row.get("sent_at"),
+    }
+
+
 @app.post("/api/v1/mentions/{mention_id}/draft/stream")
 def draft_stream(
     mention_id: int, req: DraftRequest, viewer: Dict[str, Any] = ViewerDep
@@ -2367,6 +2555,10 @@ def draft_stream(
         # finally 仍要看得到已收到的內容才補存得了（見 save_partial）
         collected: List[str] = []
         saved = False
+        # 與 `collected` 同樣放在 try 外面：斷線補存那條路在 finally 裡，
+        # 而 meta 是在 try 中段才組好的——沒有這個初始值，「meta 還沒組好就
+        # 出錯」會讓 finally 自己噴 NameError，把真正的錯誤蓋掉。
+        meta_event: Optional[Dict[str, Any]] = None
         try:
             client = get_client(viewer_id)
             ai = get_provider(viewer_id, req_provider)
@@ -2476,8 +2668,16 @@ def draft_stream(
                 resolved_code_refs, code_terms
             )
 
-            yield sse(
-                {
+            # 先組好再送，因為**同一份**要一起存進 `generation_config_json`。
+            #
+            # 存「送給瀏覽器的那一份」而不是另外組一份，有兩個理由：
+            #   1. 不會多洩漏任何東西——這份內容瀏覽器本來就收到了，
+            #      而它已經過濾過（例如自訂提示只記「有沒有」不記全文，
+            #      見 `resolve_reply_options`）。
+            #   2. 不會有第二份組裝邏輯可以跟這裡漂移。
+            # 少了這一步，重新載入的草稿就只還原得了「生成／回話設定／潤稿」
+            # 三列，脈絡與參考來源永遠回不來（見 `get_stored_draft`）。
+            meta_event = {
                     "type": "meta",
                     "mention_id": mention_id,
                     "space": mention.get("space_name") or mention["space_id"],
@@ -2531,8 +2731,8 @@ def draft_stream(
                     # 這次套用的回覆設定（ADR-0007）。與 code_refs 同一個理由：
                     # 讓 Viewer 在模型開口之前就看得到「系統以為我選了什麼」。
                     "reply": reply_meta,
-                }
-            )
+            }
+            yield sse(meta_event)
 
             prompt = prompts.draft_reply_prompt(
                 anchor_text=ctx.anchor_text or mention_text,
@@ -2605,6 +2805,10 @@ def draft_stream(
                 "model": ai.model,
                 **reply_meta,
                 **polish_meta,
+                # 整份 meta，讓重新載入時證據欄能完整還原（不只三列）。
+                # 上面那些平鋪的鍵**刻意保留**：2026-09-11 之前產生的草稿只有
+                # 平鋪版本，讀回來時還得靠它們，不能因為有了 meta 就拿掉。
+                "meta": meta_event,
             }
             draft_id = (
                 repo.create_draft(mention_id, content, generation_config)
@@ -2641,6 +2845,11 @@ def draft_stream(
                     "partial": True,
                     "polished": False,
                 }
+                # meta 已經送給瀏覽器了就一起存——中斷的草稿同樣讀得回完整
+                # 證據。還沒組好（更早就出錯）就不放，讀回來時那幾列會照
+                # 既有邏輯畫成「沒有保存」。
+                if meta_event is not None:
+                    partial_config["meta"] = meta_event
                 save_partial(
                     lambda text: repo.create_draft(mention_id, text, partial_config),
                     "草稿",
@@ -2701,12 +2910,23 @@ def reply_to_mention(
     # 訊息已經送出去了，收不回來。這裡任何一則標記失敗都不該讓整個請求變成
     # 500——那會讓使用者以為沒送出而再送一次，對方就收到兩則。
     resolver = name_resolver_for(viewer)
+    # 這條路徑上的 Mention **一定**有草稿（剛剛才送出去），所以不能讓
+    # has_draft 用預設的 False——前端會拿這些列覆蓋清單，洗掉之後就再也
+    # 讀不回那份草稿了。一次查完整組，不在迴圈裡逐筆查。
+    with_drafts = repo.mention_ids_with_drafts(viewer_id)
     updated_rows = []
     for t in targets:
         try:
             row = repo.set_mention_state(viewer_id, t["id"], "resolved")
             if row:
-                updated_rows.append(_mention_public(row, resolver, viewer_id=viewer_id))
+                updated_rows.append(
+                    _mention_public(
+                        row,
+                        resolver,
+                        viewer_id=viewer_id,
+                        has_draft=row.get("id") in with_drafts,
+                    )
+                )
         except Exception:
             log.exception("回話已送出，但 Mention %s 標記已處理失敗", t["id"])
 

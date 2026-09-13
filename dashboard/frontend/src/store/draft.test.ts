@@ -24,6 +24,7 @@ import type { SseDone, SseMeta } from '@/lib/types'
 const INITIAL = {
   referenceSpaceIds: [],
   codeRefs: [],
+  codeTerms: '',
   referenceSearch: '',
   refLimit: LIMIT_DEFAULT,
   refLimitError: null,
@@ -172,6 +173,33 @@ describe('generate 的 request body', () => {
     expect(body.merge_mention_ids).toEqual([8, 9])
   })
 
+  it('**沒填檢索關鍵字時整個 code_terms 欄位不出現**', async () => {
+    // 空陣列與省略在後端是同一件事，送空的只是噪音。這條同時守著上面那條
+    // 「什麼都沒選時的 key 清單」不會因為加了新欄位而變長。
+    const captured = captureStream()
+    useDraftStore.getState().toggleCodeRef(2, 'production')
+    await useDraftStore.getState().generate(7)
+    expect('code_terms' in (captured.body as Record<string, unknown>)).toBe(false)
+  })
+
+  it('**填了就送 code_terms（完全取代後端的自動抽詞）**', async () => {
+    const captured = captureStream()
+    useDraftStore.getState().toggleCodeRef(2, 'production')
+    useDraftStore.getState().setCodeTerms('sendPush, retryCount')
+    await useDraftStore.getState().generate(7)
+    expect((captured.body as Record<string, unknown>).code_terms).toEqual([
+      'sendPush',
+      'retryCount',
+    ])
+  })
+
+  it('只有空白／逗號的關鍵字視為沒填，欄位不出現', async () => {
+    const captured = captureStream()
+    useDraftStore.getState().setCodeTerms('  ,  ，  ')
+    await useDraftStore.getState().generate(7)
+    expect('code_terms' in (captured.body as Record<string, unknown>)).toBe(false)
+  })
+
   it('抓取則數不合法時不發請求（既有行為，不可被回覆設定破壞）', async () => {
     const captured = captureStream()
     useDraftStore.getState().setRefLimit('abc')
@@ -286,6 +314,16 @@ describe('reset 不可以清掉跨 Mention 的偏好', () => {
     expect(after.referenceSearch).toBe('關鍵字')
   })
 
+  it('**保留手動指定的檢索關鍵字**（與參考專案同一類的跨 Mention 偏好）', () => {
+    // 切一則 Mention 就把它洗掉的話，使用者每次都得重打一次——而參考專案
+    // 的勾選還留著，所以他不會想到關鍵字被清了，只會覺得搜出來的結果變了
+    useDraftStore.getState().setCodeTerms('sendPush retryCount')
+
+    useDraftStore.getState().reset()
+
+    expect(useDraftStore.getState().codeTerms).toBe('sendPush retryCount')
+  })
+
   it('清掉這一次草稿的結果（含 polish）', () => {
     useDraftStore.setState({
       raw: '內容',
@@ -375,5 +413,182 @@ describe('send 用 meta.answering 決定要結掉哪幾則', () => {
       draft_id: 3,
       merge_mention_ids: [8],
     })
+  })
+})
+
+/**
+ * `loadStored()`：把已經存進 `draft_replies` 的草稿讀回來。
+ *
+ * 三道守衛各有各的代價，所以都要守住：
+ *   * 正在串流不讀 —— 會把使用者眼前正在長出來的內容換成舊的
+ *   * 同一則已經有內容不讀 —— 會把他編到一半的東西洗掉
+ *   * 404 不設 error —— 多數 Mention 本來就沒草稿，那是正常狀態
+ *
+ * 還有一條是「不要無中生有」：`generation_config` 沒存脈絡／參考 Space／
+ * 合併對象，拼 meta 時**不可以**替它們填預設值。填了證據欄就會畫出一個
+ * 看起來完整、實際上是編的脈絡。
+ */
+describe('loadStored（讀回既有草稿）', () => {
+  const STORED = {
+    draft_id: 80,
+    mention_id: 65,
+    content_md: '### ✍️ 建議回話\n舊的版本。',
+    generation_config: {
+      provider: 'claude_cli',
+      model: 'claude-cli:opus',
+      persona_id: 1,
+      persona_name: '羅振宇（羅胖）',
+      sepia: true,
+      polished: true,
+      polisher: 'sepia',
+      polish_model: 'claude-cli:opus',
+    },
+    created_at: '2026-09-08T01:20:41Z',
+    sent_at: null,
+  }
+
+  it('**讀回內容並標記成 restored**', async () => {
+    const spy = vi.spyOn(api, 'storedDraft').mockResolvedValue(STORED as never)
+
+    const ok = await useDraftStore.getState().loadStored(65)
+
+    expect(ok).toBe(true)
+    expect(spy).toHaveBeenCalledWith(65)
+    const s = useDraftStore.getState()
+    expect(s.raw).toContain('舊的版本')
+    expect(s.replyText).toContain('舊的版本')
+    expect(s.draftId).toBe(80)
+    expect(s.mentionId).toBe(65)
+    expect(s.restored).toBe(true)
+    expect(s.restoredAt).toBe('2026-09-08T01:20:41Z')
+  })
+
+  it('存下來的回覆設定要還原得出來（證據欄那三列靠它）', async () => {
+    vi.spyOn(api, 'storedDraft').mockResolvedValue(STORED as never)
+    await useDraftStore.getState().loadStored(65)
+
+    const { meta, polish } = useDraftStore.getState()
+    expect(meta?.provider).toBe('claude_cli')
+    expect(meta?.reply?.persona_name).toBe('羅振宇（羅胖）')
+    expect(polish?.polished).toBe(true)
+  })
+
+  it('**沒存過的那幾項一律留空，不可以編一個出來**', async () => {
+    vi.spyOn(api, 'storedDraft').mockResolvedValue(STORED as never)
+    await useDraftStore.getState().loadStored(65)
+
+    const { meta } = useDraftStore.getState()
+    // 這四項 generation_config 從來沒有存過。留 undefined 才會讓 toEvidence
+    // 把它們畫成 missing；給預設值（0 則、空陣列）會變成一個看起來完整的謊。
+    expect(meta?.context).toBeUndefined()
+    expect(meta?.reference_spaces).toBeUndefined()
+    expect(meta?.answering).toBeUndefined()
+    expect(meta?.image_count).toBeUndefined()
+  })
+
+  it('沒有草稿（404）安靜回 false，不設 error', async () => {
+    vi.spyOn(api, 'storedDraft').mockRejectedValue(new Error('DRAFT_NOT_FOUND'))
+
+    const ok = await useDraftStore.getState().loadStored(65)
+
+    expect(ok).toBe(false)
+    expect(useDraftStore.getState().error).toBeNull()
+    expect(useDraftStore.getState().raw).toBe('')
+  })
+
+  it('正在串流時不讀（不可以把長出來一半的內容換成舊的）', async () => {
+    const spy = vi.spyOn(api, 'storedDraft')
+    useDraftStore.setState({ streaming: true })
+
+    expect(await useDraftStore.getState().loadStored(65)).toBe(false)
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('同一則已經有內容時不讀（不可以洗掉編到一半的東西）', async () => {
+    const spy = vi.spyOn(api, 'storedDraft')
+    useDraftStore.setState({ mentionId: 65, raw: '我改到一半的內容' })
+
+    expect(await useDraftStore.getState().loadStored(65)).toBe(false)
+    expect(spy).not.toHaveBeenCalled()
+    expect(useDraftStore.getState().raw).toBe('我改到一半的內容')
+  })
+
+  it('重新產生會把 restored 清掉（那份不再是還原的）', async () => {
+    vi.spyOn(api, 'storedDraft').mockResolvedValue(STORED as never)
+    await useDraftStore.getState().loadStored(65)
+    expect(useDraftStore.getState().restored).toBe(true)
+
+    captureStream()
+    await useDraftStore.getState().generate(65)
+
+    expect(useDraftStore.getState().restored).toBe(false)
+    expect(useDraftStore.getState().restoredAt).toBeNull()
+  })
+})
+
+/**
+ * 兩種 `generation_config` 形狀都要吃得下。
+ *
+ * 2026-09-11 起後端把整份 meta 一起存（就是送給瀏覽器的那一份原件），
+ * 更早的那批（本機 53 筆）只有平鋪欄位。**舊的不補**，所以讀的那一側
+ * 必須永久支援兩種格式——把舊分支拿掉，那 53 筆就會變成讀回來一片空白。
+ */
+describe('loadStored — 新舊兩種 generation_config', () => {
+  const FULL_META = {
+    type: 'meta',
+    mention_id: 65,
+    space: '工程討論',
+    context: { mode: 'thread', message_count: 42, coverage: 'full', blocks: [] },
+    reference_spaces: [{ space_id: 'spaces/B', space_name: '客服回報', message_count: 12 }],
+    answering: [{ mention_id: 65, sender_display: '陳柏元', create_time: '2026-09-10T02:16:39Z' }],
+    image_count: 2,
+    provider: 'claude_cli',
+    model: 'claude-cli:opus',
+    reply: { persona_name: '羅振宇（羅胖）', sepia: true },
+  }
+
+  it('**新格式：整份 meta 直接用，證據欄還原得回脈絡與參考來源**', async () => {
+    vi.spyOn(api, 'storedDraft').mockResolvedValue({
+      draft_id: 90,
+      mention_id: 65,
+      content_md: '新的草稿',
+      generation_config: { provider: 'claude_cli', meta: FULL_META },
+      created_at: '2026-09-11T09:00:00Z',
+      sent_at: null,
+    } as never)
+
+    await useDraftStore.getState().loadStored(65)
+
+    const { meta } = useDraftStore.getState()
+    expect(meta?.context?.message_count).toBe(42)
+    expect(meta?.reference_spaces?.[0].space_name).toBe('客服回報')
+    expect(meta?.answering).toHaveLength(1)
+    expect(meta?.image_count).toBe(2)
+  })
+
+  it('**舊格式仍然讀得回來**（那 53 筆不補，永遠走這條）', async () => {
+    vi.spyOn(api, 'storedDraft').mockResolvedValue({
+      draft_id: 80,
+      mention_id: 65,
+      content_md: '舊的草稿',
+      generation_config: {
+        provider: 'claude_cli',
+        model: 'claude-cli:opus',
+        persona_name: '羅振宇（羅胖）',
+        sepia: true,
+      },
+      created_at: '2026-09-08T01:20:41Z',
+      sent_at: null,
+    } as never)
+
+    await useDraftStore.getState().loadStored(65)
+
+    const { meta, raw } = useDraftStore.getState()
+    expect(raw).toBe('舊的草稿')
+    // 存下來的那三列照樣讀得出來
+    expect(meta?.reply?.persona_name).toBe('羅振宇（羅胖）')
+    // 沒存過的仍然留空——不可以因為新增了 meta 分支就順手補預設值
+    expect(meta?.context).toBeUndefined()
+    expect(meta?.reference_spaces).toBeUndefined()
   })
 })

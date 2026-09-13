@@ -30,6 +30,15 @@ interface MentionsState {
   setTab: (tab: MentionState) => void
   select: (id: number | null) => void
   toggleMerge: (id: number) => void
+  /**
+   * 整批指定勾選（給 `useRouteSync` 從 `?merge=` 反向套用）。
+   *
+   * 與 `toggleMerge` 分開是刻意的：`toggleMerge` 有「勾第一則時順便把它設成
+   * 當前選取、清掉 external」的副作用，那對「使用者剛點了一下」是對的，
+   * 對「照著網址還原狀態」則會把摘要工作台建立的草稿目標清掉（見
+   * `useRouteSync` 的註解）。這個只動 mergeIds，什麼都不碰。
+   */
+  setMergeIds: (ids: number[]) => void
   clearMerge: () => void
   /** 送出成功後把整組一起就地更新，不必重新拉整份清單 */
   applyResolvedMany: (mentions: Mention[]) => void
@@ -46,7 +55,24 @@ interface MentionsState {
    */
   external: Mention | null
   selectExternal: (mention: Mention) => void
+
+  /**
+   * 開始自動重新拉取（規格 6.3 的輪詢節奏）。重複呼叫是安全的。
+   *
+   * 在此之前這個計時器住在 `MentionInbox` 的 useEffect 裡。輪詢屬於這份資料、
+   * 不屬於那個畫面——住在元件裡的話，人在摘要工作台時頂列的未處理數字就不會
+   * 動，而且元件一卸載重掛就重新開始計時。
+   */
+  startPolling: () => void
+  stopPolling: () => void
 }
+
+/** 自動重新拉取間隔。 */
+export const AUTO_RELOAD_MS = 45_000
+
+// 模組層只存 handle，不在這裡碰 window——vitest 跑在 node 環境，
+// module top-level 取用瀏覽器 API 會讓整個檔案 import 失敗。
+let pollTimer: ReturnType<typeof setInterval> | null = null
 
 export const useMentionsStore = create<MentionsState>((set, get) => ({
   items: [],
@@ -68,6 +94,18 @@ export const useMentionsStore = create<MentionsState>((set, get) => ({
   select: (id) => set({ selectedId: id, external: null }),
   selectExternal: (mention) => set({ external: mention, selectedId: mention.id, mergeIds: [] }),
 
+  startPolling: () => {
+    if (pollTimer !== null) return
+    void get().load()
+    pollTimer = setInterval(() => void get().load({ silent: true }), AUTO_RELOAD_MS)
+  },
+
+  stopPolling: () => {
+    if (pollTimer === null) return
+    clearInterval(pollTimer)
+    pollTimer = null
+  },
+
   toggleMerge: (id) =>
     set((current) => {
       const next = current.mergeIds.includes(id)
@@ -76,6 +114,8 @@ export const useMentionsStore = create<MentionsState>((set, get) => ({
       // 勾第一則時順便把它設成當前選取，讓右邊的工作區跟著顯示同一個對話
       return next.length === 1 ? { mergeIds: next, selectedId: next[0], external: null } : { mergeIds: next }
     }),
+
+  setMergeIds: (ids) => set({ mergeIds: ids }),
 
   clearMerge: () => set({ mergeIds: [] }),
 
@@ -162,16 +202,28 @@ export const useMentionsStore = create<MentionsState>((set, get) => ({
 }))
 
 /**
+ * 這則還沒處理完嗎。
+ *
+ * `manual`（從摘要工作台按「產生回覆草稿」挑的）算待處理——使用者按下那個
+ * 按鈕的意思就是「我要回這則」，與被 @ 一樣是一件待辦。後端的 list_mentions
+ * 與 count_mentions 都是這樣算的，前端三處判準必須跟它一致。
+ *
+ * 這個 export 存在的理由就是「不要有第二份定義」：計數（bucket）、分頁歸類
+ * （selectMentionsByState）、收件匣的按鈕文案三處曾經各寫各的，其中按鈕那處
+ * 漏了 manual，於是自選對話在待處理分頁裡顯示成「退回待處理」。
+ */
+export function isOutstanding(state: MentionStateValue): boolean {
+  return state !== 'resolved'
+}
+
+/**
  * 依「從哪個狀態變到哪個狀態」重算計數。
  *
  * 一定要知道 `from`：只看新狀態的話，任何東西變成 resolved 都會把 pending
  * 減一，包括本來就不在 pending 的項目——數字會慢慢失真而沒人發現。
- *
- * manual 併進 pending 計算（與 repository.count_mentions 一致）：
- * 從摘要工作台挑的草稿目標也是「待我回覆」的事。
  */
 function bucket(state: MentionStateValue): keyof MentionCounts {
-  return state === 'resolved' ? 'resolved' : 'pending'
+  return isOutstanding(state) ? 'pending' : 'resolved'
 }
 
 function recount(
@@ -193,9 +245,7 @@ export function selectMentionsByState(items: Mention[], state: MentionState): Me
     .filter((item) =>
       // manual（自己從摘要工作台挑的草稿目標）歸在待處理，
       // 與後端的 list_mentions 保持一致——兩邊分歧會讓計數對不上清單
-      state === 'pending'
-        ? item.state === 'pending' || item.state === 'manual'
-        : item.state === state,
+      state === 'pending' ? isOutstanding(item.state) : item.state === state,
     )
     .sort((a, b) => new Date(b.create_time).getTime() - new Date(a.create_time).getTime())
 }

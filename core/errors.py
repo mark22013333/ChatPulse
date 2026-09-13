@@ -69,6 +69,19 @@ class MentionNotFound(ChatPulseError):
     default_message = "找不到指定的 Mention"
 
 
+class DraftNotFound(ChatPulseError):
+    """這則 Mention 還沒有存下來的草稿。
+
+    刻意與 MENTION_NOT_FOUND 分開：前者是「這則不是你的／不存在」，
+    要擋；這個是**完全正常的狀態**——多數 Mention 本來就還沒產過草稿，
+    前端拿到它只要安靜地不顯示還原區塊即可，不該當成錯誤跳出來。
+    """
+
+    code = "DRAFT_NOT_FOUND"
+    http_status = 404
+    default_message = "這則 Mention 還沒有草稿"
+
+
 class CodeProjectNotFound(ChatPulseError):
     code = "CODE_PROJECT_NOT_FOUND"
     http_status = 404

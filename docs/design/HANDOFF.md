@@ -1,0 +1,722 @@
+# 交接：ChatPulse 介面改版的下一個 session
+
+> 建立於 2026-09-10。範圍是分支 `feature/ui-redesign-evidence-first` 上的介面改版。
+> 設計決策的單一事實來源是同目錄的 `2026-09-09-ui-redesign.md`，這份只講「接下來要做什麼」。
+> 專案層級的交接（安裝、AI 配額、Google Chat API 的坑）仍看 `docs/HANDOFF.md`。
+
+---
+
+## 直接可用的提示詞
+
+把下面整段貼進新 session：
+
+````text
+接手 ChatPulse 的介面改版收尾。專案在 /Users/cheng/google-chat-bot。
+
+先讀 docs/design/HANDOFF.md（交接：現況、不要破壞的東西、驗證陷阱、
+四支本來就紅的 E2E 及其根因）。設計決策的單一事實來源是
+docs/design/2026-09-09-ui-redesign.md，需要時再查對應章節，不必全讀。
+
+現況：分支 feature/ui-redesign-evidence-first，main 未動，工作區乾淨。
+**規格只剩一項未實作，而且是刻意不做的**（§16.3 的 dev token sheet，
+理由寫在規格的實作進度表）。§11.1 的快捷鍵表、§12 的 768–1024 主從切換、
+§10.6 的串流宣告、§14 P4 的行數門檻、§15.1 的 lib/mergeCopy.ts 都收掉了。
+P4 的門檻本身在 2026-09-10 修訂成「元件與 hook < 250 行，store 與 lib
+另計」，理由寫在 §9.1（原文那條只在元件上站得住）。
+測試 517 項 / 36 檔全綠（node 純函式 ＋ jsdom 元件兩個 project）。
+瀏覽器 E2E tests/e2e/test_ui_redesign.cjs 61 項全綠。
+
+這次要做的，依序：
+
+1. **改版前那四支既有 E2E 全都是紅的，而且是本來就紅的。** 已經做過基準
+   比對：把 dist 換回本次收尾之前的 commit 重跑，四支的失敗訊息一模一樣，
+   與後面幾輪的改動無關。根因見第七節「四支本來就紅的 E2E」那一段。
+   一句話版本：那四支各自帶了一份改版前的認證樣板，**不吃
+   CHATPULSE_SESSION**，走「匯入既有憑證」那條路之後進不到 app shell；
+   其中 test_message_preview.cjs 另外還寫死了錯的 8010 埠。
+2. 修好之後就是合併：照專案慣例 `git merge --no-ff` 回 `main`。
+
+工作方式：
+- 每一項獨立 commit，Conventional Commits、繁體中文。
+- 每個 commit 前跑 typecheck ＋ test，並透過 scripts/webapp.py 重建
+  （單獨 npm run build 會讓 dist 被判 stale，指令在 HANDOFF 第四節）。
+- 宣告修好之前要有本 session 的實際證據：測試輸出或瀏覽器實測。
+  新測試寫完做一次反向對照（把修復還原，確認測試真的會紅）。
+- 動到既有元件時照第四節的做法：**先寫特徵測試、先拿它跑改動前的程式碼
+  確認會過**，再跑改動後。只跑改動後的版本證明不了任何事。
+- HANDOFF 第三節那十三條約束是踩過坑寫出來的，動到相關程式碼前先看一眼。
+````
+
+
+---
+
+## 30 秒現況
+
+> **2026-09-10 更新（第四輪）**：規格只剩 §16.3 的 dev token sheet 未實作，
+> 而那是**刻意不做**的（理由在規格的實作進度表）。§11.1 的快捷鍵表補完
+> （十個缺鍵）、§12 的 768–1024 主從切換做了、§10.6 的完成宣告改成告知真的
+> 存在的快捷鍵、§14 P4 的行數門檻收掉（門檻本身修訂過，見 §9.1）、
+> §15.1 漏了三輪的 `lib/mergeCopy.ts` 也建了。
+> 剩下的只有改版前那**四支本來就紅**的既有 E2E。
+
+- **分支**：`feature/ui-redesign-evidence-first`，**`main` 未動**。
+  commit 數用 `git rev-list --count main..HEAD` 查——寫死在這裡的話，
+  下一個「更新這份文件」的 commit 自己就會讓它過期。
+- **狀態**：八個 Phase ＋ 兩個回報的 bug ＋ 五項未完成工項 ＋ §10.6 ＋ §10.3
+  ＋ §11.1 ＋ §12 ＋ §14 P4 全部完成。
+- **測試**：
+  - 單元／元件：**517 項 / 36 檔**全綠（`npm --prefix dashboard/frontend run test`）
+  - 瀏覽器 E2E：`tests/e2e/test_ui_redesign.cjs` **81 項**全綠（真 Chromium）
+  - **改版前那四支全是紅的，但基準就是紅的**（見第七節）：
+    `test_message_preview.cjs`、`test_draft_from_summary.cjs`、
+    `test_tab_switch_streaming.cjs`、`test_merge_reply.cjs`。
+    `tests/e2e/run_browser.py` 一次跑五支，所以會看到 1 綠 4 紅
+- **啟動**：`./chatpulse.sh web`。注意 **`chatpulse.sh` 不吃 `--port`**，一律起在 8000
+  （第一版交接寫的 `--port 8010` 是錯的，那個參數會被忽略；
+  `test_message_preview.cjs` 現在還寫死那個錯的埠）。
+
+```bash
+# 接手後先跑這幾個確認基準
+npm --prefix dashboard/frontend run typecheck        # 應為零錯誤
+npm --prefix dashboard/frontend run test             # 應為 517 passed / 36 files
+.venv/bin/python -c "import sys; sys.path.insert(0,'scripts'); import webapp; print(webapp.frontend_state())"
+# 期望輸出：ready
+
+# 瀏覽器 E2E（先設 CHATPULSE_SESSION，那條路零資料庫寫入，說明見
+# tests/e2e/e2e_browser.cjs 開頭）
+node tests/e2e/test_ui_redesign.cjs                  # 應為 81/81
+```
+
+### 這一輪最值得記住的一件事
+
+**jsdom 的綠燈證明不了瀏覽器行為。** 我修「Esc 同時關掉命令面板與設定」時
+用 `paletteOpen` 當守衛，元件測試是綠的——但那個測試只 `setState` 了旗標、
+沒有掛真正的面板，等於在測「守衛讀不讀 store」。真瀏覽器 E2E 第一次跑就
+證明修法無效：面板的 `close()` 是同步的 zustand set，事件冒泡到設定的 window
+監聽器時 `paletteOpen` 已經變回 false。**寫元件測試時，凡是涉及事件冒泡順序、
+瀏覽器歷史、真實焦點的行為，要嘛掛上真正的相關元件，要嘛就交給 E2E。**
+
+---
+
+## 一、兩個已定位的 bug（**兩個都已修復**，2026-09-10）
+
+> 這一節保留原本的根因分析，因為它解釋了「為什麼那樣修」。
+> 修復狀態與實際做法補在各自的「已修復」段。
+
+### Bug 1：從摘要工作台產生的草稿，在待處理分頁卻顯示「退回待處理」
+
+> **已修復** — commit `8e89c22`。判準抽成 `store/mentions.ts` 的 `isOutstanding()`，
+> 原本分歧的三處都改用它。`MentionInbox.test.tsx` 有 5 項元件測試蓋住
+> （含「按下去送出的是 resolved 不是 pending」），`mentions.test.ts` 另加 4 項。
+> 反向對照做過：把修復還原，那兩項立刻紅在「找不到『標記已處理』按鈕」。
+
+**現象**（使用者回報）：摘要工作台按「產生回覆草稿」→ 跳到收件匣 → 那則出現在「待處理」分頁，但按鈕寫的是「退回待處理」。
+
+**根因：「什麼算待處理」有兩份定義，其中一份漏掉了 `manual`。**
+
+| 位置 | 判準 | 有沒有把 `manual` 算進待處理 |
+| :--- | :--- | :--- |
+| `core/repository.py:404-413`（後端查詢） | `state IN ('pending', 'manual')` | ✅ 有 |
+| `dashboard/frontend/src/store/mentions.ts:225-227`（分頁歸類） | `item.state === 'pending' \|\| item.state === 'manual'` | ✅ 有 |
+| `dashboard/frontend/src/store/mentions.ts:202-204` 的 `bucket()`（計數） | `state === 'resolved' ? 'resolved' : 'pending'` | ✅ 有 |
+| **`dashboard/frontend/src/components/MentionInbox.tsx:235`（按鈕分支）** | **`mention.state === 'pending'`** | ❌ **沒有** |
+
+三處把 `manual` 算成待處理，只有按鈕那一處沒有。於是 `manual` 落進 else 分支，拿到「退回待處理」。
+
+**資料佐證**（2026-09-10 實查 `data/chatpulse.db`）：
+
+```
+各 state 筆數：manual 1、pending 2、resolved 35
+最近的 manual：(65, 'manual', '（未命名空間）', '陳柏元', '2026-09-10T02:16:39Z')
+```
+
+id=65 正是截圖那一則，而頂列 badge 顯示「待處理 3」＝ 2 pending ＋ 1 manual，與 `bucket()` 一致。
+
+**這不只是文案錯。** 按下「退回待處理」會呼叫 `setMentionState(id, 'pending')`，把它從 `manual` 改成 `pending`——「自選對話」這個來源標記就被無聲抹掉了，而且不可逆（沒有把 pending 改回 manual 的路徑）。
+
+**建議修法**：把判準抽成一個 export，讓三處不可能再漂移。
+
+```ts
+// store/mentions.ts —— 新增一個 export（`MentionStateValue` 同檔已從 lib/types 匯入）
+/**
+ * 這則還沒處理完嗎。
+ *
+ * `manual`（從摘要工作台按「產生回覆草稿」挑的）算待處理——使用者按下那個
+ * 按鈕的意思就是「我要回這則」，與被 @ 一樣是一件待辦。後端的 list_mentions
+ * 與 count_mentions 都是這樣算的，前端三處判準必須跟它一致。
+ */
+export function isOutstanding(state: MentionStateValue): boolean {
+  return state !== 'resolved'
+}
+```
+
+三處都改用它：
+
+| 位置 | 改法 | 行為變化 |
+| :--- | :--- | :--- |
+| `MentionInbox.tsx:235` | `isOutstanding(mention.state) ? （標記已處理） : （退回待處理）` | **這是修 bug 的那一處** |
+| `store/mentions.ts:225-227` 的 `selectMentionsByState` | 內部條件換成 `isOutstanding(item.state)` | **無**——只是把定義集中，不要動它的**簽章與回傳**（`mentions.test.ts` 有 6 項打在上面） |
+| `store/mentions.ts:202-204` 的 `bucket()` | 換成 `isOutstanding(state) ? 'pending' : 'resolved'` | **無** |
+
+換句話說：**可以改那兩處的實作，不要改它們的介面。** 目的是讓「什麼算待處理」只剩一個定義，下次不會再漂移。
+
+**驗收**
+- [ ] 摘要工作台按「產生回覆草稿」→ 收件匣那則顯示「標記已處理」，不是「退回待處理」
+- [ ] 按下「標記已處理」後它移到「已處理」分頁，且該處按鈕才是「退回待處理」
+- [ ] 頂列 badge 的數字與「待處理」分頁的筆數一致（現在也一致，不要改壞）
+- [ ] `mentions.test.ts` 的 6 項仍全綠；新增至少一項「manual 顯示為待處理」的測試
+
+**已經檢查過的同族位置**：`grep -rn "state === 'pending'" dashboard/frontend/src` 另外命中
+`DraftReplyWorkspace.tsx:178` 與 `:183`（草稿工作區標題列的狀態 badge）。**那兩處是對的，不要一起改。**
+它刻意做成三分：只有 `pending` 帶訊號色，`manual` 與 `resolved` 都安靜下來，再用文字
+（「自選對話」／「✓ 已處理」）分辨——因為 `--verified` 與 `--signal` 是同一個色，
+不這樣做的話兩種狀態會長得一模一樣。改判準的時候把它排除在外。
+
+---
+
+### Bug 2：設定頁點了五個分頁，要按五次「關閉」才出得去
+
+> **已修復** — commit `8e71ab9`。照下面建議的兩步做：分頁列改 replace、
+> router 新增 `previousHash`、`openedAt` 與整段啟發式條件刪掉。
+> `SettingsOverlay.test.tsx` 有 8 項元件測試蓋住。反向對照做過，訊息正是回報
+> 的症狀：`expected 5 to be +0`（點五個分頁 push 了五筆）、
+> `expected '#/settings/spaces' to be '#/mentions/65'`（按一次只退一個分頁）。
+>
+> **下面「陷阱」段講的那件事是真的**：設定開著又開命令面板時，按一次 Esc
+> 會同時關掉面板與設定。但**第一次的修法是錯的**——commit `8e71ab9` 只用
+> `paletteOpen` 當守衛，元件測試綠燈，真瀏覽器 E2E 卻證明無效：面板的
+> `close()` 是同步的 zustand set，事件冒泡到設定的 window 監聽器時
+> `paletteOpen` 已經變回 false。commit `adf7c84` 補上 `event.defaultPrevented`
+> 才真的修好。**兩道守衛都要**：`defaultPrevented` 管「內層已經處理掉這個
+> 按鍵」，`paletteOpen` 管「面板開著但按鍵不是它處理的（焦點在輸入框外）」。
+
+**現象**（使用者回報）：在設定中心切換多個分頁後，每按一次「關閉」只退回上一個分頁。
+
+**根因：分頁切換用裸 `<a href>`，每次都往瀏覽器歷史 push 一筆；而「關閉」只 `history.back()` 一步。**
+
+- `components/settings/SettingsOverlay.tsx:116-117` —— 分頁是 `<a href={hashForSettings(item.id)}>`。點擊會改 `location.hash`，瀏覽器**推入一筆新歷史**。
+- `components/settings/SettingsOverlay.tsx:60-68` —— `close()` 呼叫 `window.history.back()`，只退一步，於是退到上一個設定分頁。
+
+點 N 個分頁 → N 筆歷史 → 要按 N 次。
+
+**建議修法（兩步，缺一不可）**
+
+**① 分頁切換改成 replace。** 切換設定分頁不是「值得用返回鍵走回去」的導覽，它應該只占一筆歷史。保留 `href` 讓中鍵開新分頁與螢幕閱讀器仍然正確，但攔截左鍵：
+
+```tsx
+<a
+  href={hashForSettings(item.id)}
+  onClick={(event) => {
+    // 讓中鍵／⌘＋點擊維持瀏覽器原生行為
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return
+    event.preventDefault()
+    navigate(hashForSettings(item.id), { replace: true })
+  }}
+  aria-current={active ? 'page' : undefined}
+>
+```
+
+**② `close()` 不要再靠 `history.length` 猜。** 現在的條件是
+`window.history.length > openedAt.current || window.history.state !== null`——
+改成 replace 之後 `history.length` 不再成長，這個條件會變成永遠 false，
+於是每次關閉都掉到 fallback 的 `#/summary`，**使用者會離開他原本在看的 Space／Mention**。
+
+正確做法是讓 router 記住「進設定之前在哪」。`router/useRouter.tsx` 要動三個地方：
+
+```ts
+// ① import 補上 useRef（目前那一行只有 createContext/useCallback/useContext/
+//    useEffect/useMemo/useState/ReactNode，沒有 useRef）
+
+// ② RouterValue 介面加一個欄位（目前只有 route 與 navigate）
+interface RouterValue {
+  route: Route
+  navigate: (hash: string, options?: NavigateOptions) => void
+  /** 進入設定覆蓋層之前所在的位置。直接貼設定連結進來時是 '#/summary' */
+  previousHash: string
+}
+
+// ③ RouterProvider 內部，放在 `const route = useMemo(...)` 之後
+//    （route 與 hash 在那個 scope 都拿得到）
+const lastNonSettings = useRef('#/summary')
+useEffect(() => {
+  if (route.section !== 'settings') lastNonSettings.current = hash || '#/summary'
+}, [route.section, hash])
+// 併進 value 的 useMemo，相依加上 lastNonSettings.current
+```
+
+`close()` 就變成：
+
+```ts
+const close = () => navigate(previousHash, { replace: true })
+```
+
+**要帶 `{ replace: true }`。** 不帶的話會再 push 一筆，於是「進設定 → 關閉 → 按瀏覽器返回鍵」
+又回到設定裡——驗收條件第 2 條（返回鍵一次離開設定）會過不了。用 replace 之後，
+整段設定操作在歷史上只留下一筆，關閉就是把那一筆換回原本的位置。
+
+這個做法完全不依賴 `history.length` 或 `history.state` 的啟發式，也就順手解掉上面說的
+「條件永遠 false」問題——**`openedAt` 這個 ref 與整段條件式可以一併刪掉**。
+
+**驗收**
+- [ ] 進設定 → 依序點五個分頁 → **按一次「關閉」就回到原本的位置**（原本在哪個 Space／Mention 就回哪）
+- [ ] 在設定中按瀏覽器返回鍵，一次就離開設定（不是逐個分頁退）
+- [ ] 直接貼 `#/settings/personas` 開新分頁 → 按「關閉」落到 `#/summary`，不是白畫面
+- [ ] ⌘K 命令面板跳到某個設定分頁後，「關閉」行為一樣正確
+- [ ] `Esc` 與「關閉」按鈕行為一致
+
+**陷阱**：`SettingsOverlay` 的 `Esc` 監聽掛在 `window` 上，而命令面板也監聽 `Esc`。目前面板開著時全域快捷鍵整組停用（`useGlobalHotkeys` 有擋），但設定的 `Esc` 是**元件自己**掛的、不走那條路。改 `close()` 時順手確認「設定開著又打開命令面板，按 Esc 只關面板」。
+
+---
+
+## 二、未完成工項（依價值排序）
+
+> **2026-09-10 進度（第四輪收尾）**：**這一節列的每一項都完成了**，
+> 連改版收工時沒列進來的 §10.6、§11.1、§12 也補完了。下面保留每一項的
+> 實作紀錄與踩到的坑，因為那些是「為什麼那樣做」的唯一出處。
+
+### 1. 虛擬清單的 roving tabindex（規格 §10.5）— **已完成**（commit `880e4ea`）
+
+實作照下面寫的做了，另外踩到三個下面沒預料到的坑，程式碼裡都留了註解：
+
+1. **roving tabindex 配虛擬滾動有個洞**：active 那一列捲出可視範圍就不在 DOM 裡，
+   於是整份清單沒有任何 `tabIndex=0` 的節點、**Tab 進不去**。解法是這時把 tab
+   停留點讓給第一個還掛著的列。
+2. **取焦要等目標列掛出來**：`scrollToIndex` 之後那一列不保證在同一個 tick 就存在，
+   所以用不設相依的 `useLayoutEffect` 每次 render 試一次，取到才收手。
+3. **改名鈕不能放進 `role="option"` 裡**（option 內不該有可互動元素）。`li` 改成
+   `role="none"` 只當定位容器，option 是它裡面那一層，改名鈕是 option 的兄弟。
+
+測試：`lib/listNavigation.test.ts` 8 項（純函式）＋ `SpaceList.test.tsx` 10 項。
+jsdom 沒有佈局、真虛擬清單一列都掛不出來，所以測試裡把 virtualizer 換成
+「固定只掛前 13 列」的假件，保留「只有一部分列在 DOM 裡」這個唯一相關的性質。
+
+<details>
+<summary>原本的規劃內容（保留供對照）</summary>
+
+436 筆 Space 目前仍是**逐個 Tab**，鍵盤使用者要走很久。⌘K 命令面板提供了替代路徑，所以不是死路，但這條該補。
+
+做法（規格 §10.5 有完整說明）：`<ul role="listbox">` ＋ `<li role="option" aria-selected>`，`tabIndex` 只有 active 那列是 0；`↑↓ Home End PageUp PageDown Enter`；移動時先 `virtualizer.scrollToIndex({ align: 'auto' })`（**不要 `center`**）再取焦。按鍵→index 的計算抽到 `lib/listNavigation.ts` 純函式測。
+
+**不要用 `aria-activedescendant`**：它要求被指向的節點常駐 DOM，而虛擬滾動只掛可視範圍 ＋ overscan 12 列。
+
+檔案：`components/SpaceList.tsx`。注意它同時服務單選（摘要）與複選（Reference Space）兩種模式。
+
+</details>
+
+### 2. `?merge=` 的 URL 同步 — **已完成**（commit `796be65`）
+
+照原訂做法做的（新增 `setMergeIds`，不動 `toggleMerge`）。兩件原本沒寫到、但會咬人的事：
+
+- **網址不表達「只勾了一則」。** `hashForMentions` 兩則以上才帶 `merge`
+  （`route.test.ts` 有一條守著這個設計決定）。所以 URL→store 反向同步時，
+  網址上沒有 merge **不可以**清掉單獨一則的勾選——照清的話，使用者勾第一則的
+  瞬間它會自己彈回去。突變測試確認過這條守衛。
+- **`App.tsx` 的 `onMergedGenerate` 原本導航時丟掉 `mergeIds`。** 加了反向同步
+  之後，那會在按下「合併產生草稿」的瞬間把勾選清空，`DraftReplyWorkspace` 的
+  `activeMergeIds` 跟著變空——合併就散了。已一併改成把 mergeIds 帶進網址。
+
+測試：`MentionInbox.test.tsx` +5、`useRouteSync.test.tsx` +6（後者順便把紅線 4
+的去重鎖住，含正對照）。
+
+### 3. `QuickReplySettings` 與 `ReplyDefaultsPage` 的共用元件 — **已完成**（commit `14579bf`）
+
+範圍比原訂的大一些：兩邊**讀寫的是同一份 store**，所以重複的不只是
+`SelectContent`，連 `toneItems`／`personaValue` 這些推導也逐字重複。抽出來的是
+四個完整元件（`ToneSelect`／`PersonaSelect`／`PromptSelect`／`PersonaNotice`），
+呼叫端只給真正有差異的 trigger id、寬度、`disabled`。
+
+行數 365 → **200**、312 → **139**，新檔 237。
+
+重構的驗證方式值得照抄：**先寫特徵測試，拿它跑重構前的程式碼確認會過，
+再跑重構後。** `replyControls.test.tsx` 的 6 項在前後兩版都全過——這才是
+「外部行為沒變」的證據，只跑重構後的版本證明不了任何事。
+
+### 3b. 檔案大小門檻（規格 P4）— **已收掉，門檻本身也改了**
+
+一次講清楚，因為這條的收法與其他項不同：**規格改了**。
+
+**最後的實測**（2026-09-10 第四輪收尾後）：
+
+| 種類 | 最大 | 結論 |
+| :--- | ---: | :--- |
+| 元件（`.tsx`） | 243（`components/SpaceList.tsx`） | ✅ 全部 < 250 |
+| hook（`hooks/*.ts`） | 249（`useGlobalHotkeys.ts`） | ✅ 全部 < 250 |
+| `store/` 與 `lib/` | 560（`lib/types.ts`） | 依修訂後的規格**另計** |
+
+**為什麼改規格而不是硬拆**（完整理由寫進了規格 §9.1，這裡只留摘要）：
+
+門檻當初的理由寫得很清楚——「兩個 913／650 行的元件難維護」。那是**元件**的
+問題：一個檔同時管版面、狀態、副作用與四五個子區塊，改任何一處都要先讀完整份。
+`store/` 與 `lib/` 不是那個形狀：zustand store 是一組扁平的 action，
+`lib/api.ts` 是一張端點對照表，`lib/evidence.ts` 是一串純函式。拆成「上半部／
+下半部」換到的只是「每個檔都在 250 行以下」這個數字，付出的是多一層 import
+間接與「這個 action 在哪一半」的認知成本。
+
+所以規格改成 **「元件與 hook < 250 行；`store/` 與 `lib/` 另計，判準是責任數量
+而不是行數」**，`lib/types.ts` 因此不再需要當成「例外」。
+
+**上一版交接在這裡有一個錯**，值得記著：它建議「改規格：元件 < 250、store 與
+lib 另計」，但當時**沒有實測**——八個超標檔裡有三個是元件
+（`SummaryWorkspace` 383、`MentionInbox` 337、`SpaceMessagePreview` 287），
+只改規格收不掉這條。所以第四輪是「先拆那三個元件，再改規格」。
+**寫「改規格就能收掉」這種話之前，先把清單逐檔分類數一遍。**
+
+元件側逐一拆完的紀錄：
+
+| 檔案 | 拆前 | 拆後 | commit |
+| :--- | ---: | :--- | :--- |
+| `components/DraftReplyWorkspace.tsx` | 478 | **86** ＋ 八個兄弟檔 | `fa268d8` |
+| `App.tsx` | 428 | `AppShell` ＋ `TopBar` ＋ `useBootstrap` | `748f94a` |
+| `components/draft/QuickReplySettings.tsx` | 365 | **200** | `14579bf` |
+| `components/settings/ReplyDefaultsPage.tsx` | 312 | **139** | `14579bf` |
+| `components/CodeProjectSettings.tsx` | 256 | 檔名消失 → `CodeProjectsPage` 177 ＋ `CodeProjectForm` 144 | `08c0df5` |
+| `lib/hotkeys.ts` | 259 | **135** ＋ `lib/shortcutHelp.ts` 135 | `08c0df5` |
+| `components/SummaryWorkspace.tsx` | 383 | **61** ＋ `summary/` 三檔 | `c7a2e38` |
+| `components/MentionInbox.tsx` | 337 | **224** ＋ `inbox/` 兩檔 | `c7a2e38` |
+| `components/SpaceMessagePreview.tsx` | 287 | **175** ＋ `preview/` 兩檔 | `c7a2e38` |
+| `app/AppShell.tsx` | 279 | **234**（抽出 `Pane`／`StreamLiveRegions`／`common/SkipLink`） | `c7a2e38` |
+
+**每一次拆檔的驗證方式都一樣，值得照抄**：先寫特徵測試、**先拿它跑拆檔前的
+程式碼確認會過**，再跑拆檔後。只跑拆檔後的版本證明不了任何事——那只證明新
+程式碼自己一致。`MentionInbox` 用既有那 15 項當基準；另外兩個是新寫的
+（預覽 14 項、摘要 21 項）。
+
+### 4. 元件層測試（規格 §15.4）— **已完成**（commit `64d6733`、`4db3303`）
+
+工具決策照規格：`@testing-library/react` ＋ `jsdom`，用 `test.projects` 讓
+`*.test.tsx` 走 jsdom、`*.test.ts` 維持 node。**既有純函式測試的執行環境完全沒變。**
+
+目前 31 項元件測試，分佈：`MentionInbox` 10、`SettingsOverlay` 8、`SpaceList` 10、
+`useRouteSync` 6、`replyControls` 6（跨兩個 project 合計 291 項 / 22 檔）。
+
+**§15.4 的四條全部寫完了**（commit `4db3303`）：
+
+1. **送出流程** → `components/draft/DraftReplyWorkspace.test.tsx`（29 項）
+2. **Sepia 三態** → `components/evidence/EvidenceList.test.tsx`（8 項）
+3. **EvidenceList 逐項可讀** → 同上，含「渲染結果裡 `[title]` 選得到 0 個」
+4. **命令面板** → `components/CommandPalette.test.tsx`（13 項）
+
+前一版交接把這件事寫錯了，說「還沒寫的是第 1 與第 2 條」——其實第 3、4 條
+現有的也只是純函式測試（`evidence.test.ts`／`commands.test.ts`），驗不到渲染。
+
+**寫元件測試時記住兩件本輪學到的事**：
+
+- **每個「0／沒發生」的斷言都要配一條正對照。** 例：「切分頁 +0 筆歷史」旁邊
+  放「一次 push 導覽 +1」，證明 `history.length` 在 jsdom 真的會動。
+- **新測試寫完要做反向對照**：把被測的修復還原，確認測試真的會紅。本輪四次都做了，
+  其中兩次抓到「斷言其實沒在咬」的問題。
+
+### 5. `code_terms` 手動指定檢索關鍵字 — **已完成**（commit `ff601f3`）
+
+規格 §1.4 要求的「自帶 store 測試更新」做到了：`lib/codeTerms.test.ts` 7 項
+純函式 ＋ `draft.test.ts` 新增 4 項（含把 `INITIAL` 補上 `codeTerms` 避免測試
+互相污染）＋ 元件測試 4 項。
+
+實作上最值得記的一點：**全角逗號與頓號也要當分隔符**。中文輸入法下最容易
+打出來的就是它們，而「打了全角逗號結果整串被當成一個詞」是完全看不出來的
+失敗——只會得到「什麼都沒命中」。
+
+### 6. 串流的螢幕閱讀器宣告（規格 §10.6）— **已完成**（commit `dbfdc11`）
+
+三層都做了：內容層 `aria-busy`（`Markdown` **絕不加 `aria-live`**）、狀態層
+`AppShell` 常駐兩個 sr-only region（`role="status"` ＋ `role="alert"`）只在
+狀態機轉換時寫入、節流層每 10 秒一次進度。字串在 `lib/streamAnnouncements.ts`
+（22 項純函式測試），接線在 `hooks/useStreamAnnouncer.ts`（12 項）。
+
+**這一節曾經有一半做不到，已經補完了**（commit `aa479d2`）。§10.6 說「完成時
+不搶焦點，改在宣告文字裡告知快捷鍵」——但當時 §11.1 表上的鍵都還沒實作，
+所以只能講 landmark（「內容在主要內容區」）。§11.1 補完之後回來改了：現在
+宣告是「…內容在主要內容區，按 ⌘⇧C 複製全文。」（草稿側說「複製建議回話」
+——前半段的脈絡分析不是要送出去的東西）。
+
+**兩件事都要講，不能只講快捷鍵**：landmark 不依賴自訂鍵，⌘⇧C 則讓使用者
+不必離開現在的位置就拿到全文（§11.1 沒有「跳到產出」這個鍵）。
+`streamAnnouncements.test.ts` 另外有一條把宣告與解析器綁在一起的守衛：
+斷言 `resolveHotkey` 對 ⌘⇧C 真的回傳 `copy`——**沒有的快捷鍵不可以拿來宣告**，
+而 sr-only 的錯誤在畫面上完全看不出來。
+
+效能上最要小心的一點：`useStreamAnnouncer` **絕對不訂閱 `text` 與 `raw`**。
+那兩個每個 chunk 都變，訂閱它們等於讓整個 App 每個 chunk 重繪一次——正是
+§9.3 要修掉的問題。它只訂閱布林值，字數等轉換發生的那一刻才 `getState()`
+讀一次。`store/draft.ts` 為此多了一個 `hasReplyHeading()`（只做 regex test、
+不切字串）。
+
+### 其他小項
+- **`title=` 已清完**（commit `26b495c`）。29 → 2，只剩
+  `components/summary/PublishConfirm.tsx` 與 `components/draft/SendReplyConfirm.tsx`
+  兩處 `ConfirmDialog` 的 title **prop**（對話框標題，不是 tooltip）。
+  前者原本在 `components/SummaryWorkspace.tsx`，`c7a2e38` 拆檔時連同
+  `TITLE_BUDGET` 那一筆一起搬（見第七節第 4 條）。`TITLE_BUDGET` 已從 8 檔 12 處
+  收緊到 2 檔 2 處，而且加了一條「ConfirmDialog 的 title prop 不會變成 DOM 屬性」
+  的斷言證明那個白名單的理由。
+- **768–1024 的主從切換做了**（commit `89672fe`）。上一版的判斷是「實測兩欄
+  並存可用、無功能損失」——可用不等於做完，規格寫的是主從切換。做法照 §12：
+  判準直接來自網址（`#/summary` 是清單、`#/summary/:key` 是工作區），
+  沒有另外一個「現在在主還是從」的狀態。兩個實測踩出來的決定記在第三節
+  第 8、9 條。
+
+---
+
+## 三、不要不小心破壞的東西
+
+這幾條是踩過坑寫出來的，程式碼裡都有註解說明理由：
+
+1. **串流狀態住在 store，切頁籤不中止生成。** `DraftReplyWorkspace.tsx` 與 `SummaryWorkspace.tsx` 都刻意**不在 unmount 時 abort**。（`docs/api-contract.md:684-685` 寫的「unmount 要 abort」與程式碼相反，那份文件還沒更新。）
+2. **`store/draft.ts` 的 `reset()` 不清跨 Mention 的偏好**（Reference Space、參考專案、口氣、Persona…）。切一則就洗掉會很難用。
+3. **`meta.answering` 才是送出時要結掉哪幾則的依據**，不是送出前的勾選。伺服器會擋掉不合規的項目。
+4. **`useRouteSync` 的去重不可拿掉。** `mentions.select` 有個副作用是清空 `external`，而摘要工作台建立的草稿目標正是靠 `external` 撐著——少了去重，切過去的瞬間工作區就會被清成空白。**Bug 1 的那條路徑就是走這裡，改的時候特別小心。**
+5. **`pinned_space_ids` 送 `null` 是「不改」不是「清除」。** 取消最後一個釘選要送 `[]`。（與四個回覆設定欄位相反，`docs/api-contract.md:130` 有對照表。）
+6. **合併回覆的規則有前後端兩份實作**（`resolve_merge_targets` 與 `lib/merge.ts`），改一邊要改兩邊。
+7. **守門測試 `lib/tokens.test.ts`** 會擋下具名色、任意字級、新增的 `title=`、Tooltip、硬編碼色碼。它不是形式主義——那五條各自對應一個實際發生過的問題。
+8. **主從切換收起來的那一半不可以用 `display:none`。** 兩半都含虛擬清單
+   （左欄 436 筆 Space；草稿工作區的 Reference Space 選擇器是同一個
+   `SpaceList`），而 `display:none` 的容器量到的高度是 0（§7.2 早就寫了）。
+   2026-09-10 實測：第一版用 `max-lg:hidden`，捲動位置 0 的清單進工作區再退
+   回來，`scrollTop` 自己跳到 1296；先捲到 3000 的情況連 `scrollTop = 3000`
+   都設不進去。改用 `Pane` 那一套（留著掛載、`absolute inset-0` 移出版面流、
+   `opacity-0`、`inert`）之後 3026 → 3026。`app/Pane.tsx` 的註解記著這件事。
+9. **`useRouteSync` 導覽到沒有 id 的位置時不清 store 的選取。**
+   `#/mentions`（沒有 id）表達的是「不指定哪一則」，不是「忘掉剛才那個」
+   ——與同一個檔裡「網址不表達只勾了一則」是同一種情況。這條是主從切換的
+   配套：「返回清單」就是導覽到 `#/mentions`，而 `select(null)` 會清掉
+   `external`（摘要工作台建立的草稿目標），而那一則不在收件匣清單裡、
+   清掉就找不回來（紅線 4 的同族問題）。
+10. **`lib/shortcutHelp.ts` 的說明表與 `lib/hotkeys.ts` 的解析器之間有漂移
+    守衛。** `shortcutHelp.test.ts` 拿表上每一列的 `probe` 重建事件，證明
+    「說明面板上寫的每一個全域鍵都真的解析得出它宣稱的動作」。說明上有、
+    實作沒有，使用者按了沒反應只會以為自己記錯，而畫面上看不出任何錯誤
+    ——§10.6 的完成宣告就曾因此只能改講 landmark。另外 `HotkeyAction` 有
+    編譯期窮盡檢查：加了新動作卻沒進說明表，`tsc` 就會紅。
+11. **草稿左欄的設定堆疊必須自己有捲軸，而產生鈕必須留在捲動區外面。**
+    這一欄是「固定高度 ＋ 四塊 shrink-0」，內容總量會超過欄高（1440×900 實測
+    989 vs 748）。外層救不了——`AppShell` 是 `h-dvh` ＋ `overflow-hidden`，
+    刻意沒有頁面級捲動。少了那個捲動容器，溢出的部分會被直接**裁掉**，
+    排在最後的產生鈕整顆按不到（2026-09-10 使用者實機回報，commit `432bcd2`）。
+    同一處還有第二個陷阱：`SpaceList` 內建 `flex-1 overflow-y-auto`（那是為
+    `SpacesRail` 的「吃剩餘空間」設計的），搬進捲動容器要**改成確定高度**
+    （`h-64 flex-none`），不然 `basis-0` 仍會對容器高度解析、被壓成一條縫
+    （實測只有 8px、內容 22708px，使用者因此完全看不到 Reference Space 清單）。
+    `max-h-*` 修不了這件事——`max-height` 只設上限。
+12. **app 外框永遠不是捲動容器，而且一定要用 `overflow-clip` 不是
+    `overflow-hidden`。** hidden 仍然建立捲動容器、只是藏起捲軸——程式化捲動
+    與「瀏覽器把焦點元素捲進畫面」照樣有效，於是整個 app 連頂列一起被捲上去，
+    而使用者連捲回來的捲軸都沒有。2026-09-11 使用者實機回報：點參考專案的
+    環境 chip（`<label>` 包一個 `sr-only` 的 checkbox）就會觸發，實測
+    `scrollTop` 457、頂列 −457。現在 `html`／`body`／`#root` 都
+    `height: 100%`、`html`／`body` 是 `overflow: clip`，外框是
+    `h-full overflow-clip`（不再依賴 `100dvh` 等於 `innerHeight`）。
+    **代價**：每個「整頁視圖」要自己 `overflow-y-auto`（載入中、LoginScreen、
+    SmallScreenNotice、DiagnosticsPage 四個），而且 **`items-center` 不可以與
+    `overflow-y-auto` 同層**——居中會把溢出平分到上下、`scrollTop` 不能為負，
+    上緣就捲不到（LoginScreen 在 1000×320 實測卡片上緣 −32px）。
+13. **裸 ⌘C／Ctrl+C 絕對不可以攔。** `resolveHotkey` 的 `copy` 分支一定要
+    帶 `event.shiftKey === true`。攔掉裸 ⌘C 的後果是使用者選了一段文字按
+    複製、剪貼簿裡卻是別的東西——那是靜默的資料錯誤。`hotkeys.test.ts` 與
+    `useGlobalHotkeys.test.tsx` 各有一條正對照守著。
+
+---
+
+## 四、驗證方法與已知的探針陷阱
+
+改版期間用瀏覽器探針驗證時踩到九個坑，都值得記住：
+
+1. **「0 次」必須有正對照。** 量「切頁籤沒有多打 API」時，`fetch` 攔截器回報 0 —— 但那也可能是攔截器根本沒生效。補上「按強制刷新應該記到 1 次」的正對照之後，那個 0 才有意義。
+2. **DOM 探針要限縮範圍。** 兩個工作台**常駐掛載**、設定是**覆蓋層**，所以 `document.querySelector` 會選到背景那一份。要先取「沒有 `inert` 屬性的那個 pane」再往下找。我曾因此誤判釘選功能壞掉，實際上是選到了背景的 SummaryHistory。
+3. **Tailwind 會樹搖沒被使用的 token。** 建置產物裡找不到 `--container-rail` 不代表壞了，只代表還沒有人用它。要驗 utility 有沒有生成，得在原始碼裡真的用一次再建置。
+4. **Playwright 的 `isVisible()` 對 `opacity-0` 仍然回 `true`。** 它只看
+   bounding box 與 `display`／`visibility`。改版用的隱藏手法是「留著掛載 ＋
+   `opacity-0` ＋ `inert`」，所以拿 `isVisible()` 判斷「哪一半看得見」會讓
+   四條斷言**全部假通過**。要看的是 computed `opacity` 與 `inert` 屬性。
+5. **Playwright 的 `click()` 會先把元素聚焦，而聚焦一個部分捲出可視範圍的列
+   會讓瀏覽器把它捲進來。** 2026-09-10 實測：清單捲到 3026、用
+   `locator.click()` 點第一個掛著的列（它在 overscan 區、看不見），
+   `scrollTop` 立刻變成 2082。那個位移與「隱藏那一半」完全無關，混在一起量
+   會得到一個假的「捲動位置掉了」。要隔離就用 `page.evaluate` 裡的
+   `element.click()`（不移動焦點）。
+6. **jsdom 量不到「內容比容器高」。** `clientHeight`／`scrollHeight` 在那裡
+   恆為 0，所有捲動、溢出、可視範圍的斷言在 jsdom 都是假的綠燈。那一類迴歸
+   守衛只能寫在瀏覽器 E2E（`test_ui_redesign.cjs` 第 14 節就是為此存在的）。
+7. **量位移要量「看得見的東西動了沒」，不是量 `documentElement.scrollHeight`。**
+   2026-09-11 我為了查「畫面整個往上移動」，量的是 `document.scrollHeight` 與
+   `window.scrollY`——兩者從頭到尾都正常，於是我在六種組合下都判定「無法重現」。
+   實際上畫面一直在動，只是動的是 **app 外框自己的 `scrollTop`**（`overflow:
+   hidden` 讓它是捲動容器）。**正確的量法是斷言 `header.getBoundingClientRect()
+   .top === 0`**，那個數字不管是哪一層在捲都抓得到。同族教訓：量錯對象時
+   「沒重現」與「沒問題」長得一模一樣。
+8. **要測「焦點造成的捲動」，一定要用真實點擊。** `page.evaluate` 裡的
+   `element.click()` 不移動焦點，走不到那條路。這一輪的 bug 成因正是「點 label
+   → 聚焦 `sr-only` checkbox → 瀏覽器捲動」，用 JS click 測完全測不到。
+9. **改動既有元件時先寫特徵測試，並拿它跑改動前的程式碼。** 這一輪五次重構
+   都這樣做，其中一次順便證明了「那 15 條真的是特徵測試」——把程式碼還原之後
+   只有新加的那一條變紅，其餘全綠。只跑改動後的版本證明不了任何事。
+
+**建置一律透過 `scripts/webapp.py`**（它才會蓋章 `.buildinfo.json`），單獨 `npm run build` 會讓 dist 永遠被判 stale：
+
+```bash
+.venv/bin/python -c "import sys; sys.path.insert(0,'scripts'); import webapp; \
+  print(webapp.build_frontend(webapp.find_npm()), webapp.frontend_state())"
+# 期望輸出：True ready
+```
+
+還有一個實際踩到的：**改完原始碼後第一次建置，Tailwind 的 Vite plugin 可能沿用上一輪的 class 候選集**。我曾在暫時加了測試用 class 又移除之後，建置出來的 CSS 仍含那些 class；再建一次才乾淨。**不要只看建置成功訊息，要 grep 產物確認。**
+
+---
+
+## 五、檔案地圖（改版新增的部分）
+
+```
+docs/design/
+  2026-09-09-ui-redesign.md   設計規格書（單一事實來源，含八個 Phase 的驗收條件）
+  HANDOFF.md                  這份
+
+dashboard/frontend/src/
+  app/                 AppShell（route gate）、TopBar、PulseMark、SmallScreenNotice
+    Pane.tsx           常駐掛載的其中一半（§7.2 的 inert 手法）
+    StreamLiveRegions  §10.6 的兩個 sr-only live region
+    MasterDetailBack   768–1024 主從切換的返回麵包屑（§12）
+  router/              useRouter（薄層 hash router）、useRouteSync（URL → store 單向同步）
+  hooks/               useBreakpoint（版面斷點）、useGlobalHotkeys（全域快捷鍵）
+                       useStreamAnnouncer（§10.6 的接線）
+  components/
+    evidence/          EvidenceColumn／EvidenceList／EvidenceDrawer（改版主角）
+    settings/          SettingsOverlay ＋ 七個設定頁 ＋ DiagnosticsPage
+                       CodeProjectsPage／CodeProjectForm（§9.1 的拆檔）
+    draft/             QuickReplySettings（工作區的「這一次」設定）
+    summary/           SummaryToolbar／SummaryOutput／PublishConfirm
+    inbox/             MentionCard／MergeBar
+    preview/           ThreadRow／MessageRow
+    common/            SkipLink
+    CommandPalette.tsx ⌘K
+    ShortcutHelp.tsx   `?` 快捷鍵說明覆蓋層
+  lib/
+    evidence.ts        SseMeta → 證據項（純函式）
+    route.ts           hash 解析與組裝（純函式）
+    commands.ts        命令面板資料層（純函式）
+    hotkeys.ts         快捷鍵判斷（純函式）
+    shortcutHelp.ts    `?` 說明表（與 hotkeys.ts 之間有漂移守衛）
+    listNavigation.ts  按鍵 → index、stepId（`[`／`]` 的計算層）
+    merge.ts           合併規則（前後端各一份，改一邊要改兩邊）
+    mergeCopy.ts       不能合併的原因文案（與規則分家，§15.1）
+    streamAnnouncements.ts  串流狀態 → 宣告字串（純函式）
+    tokens.test.ts     設計 token 守門測試（含三條正對照）
+  store/
+    ui.ts              抽屜開合（分斷點記憶）、命令面板與 `?` 說明的開合
+    usage.ts           Token 用量（天數可切）
+```
+
+---
+
+## 六、commit 一覽
+
+| commit | 內容 |
+| :--- | :--- |
+| `abb5013` | 設計規格書 |
+| `bb385d4` | P0 設計 token 地基與脈搏識別 |
+| `757ad07` | P1 hash 路由與深連結 |
+| `472f0c7` | P2 兩個工作台常駐掛載 |
+| `7d51444` | P3 獨立設定中心、釘選 Space |
+| `e3cbed3` | P4 證據欄 |
+| `02ab318` | P5 色彩與排版退役、守門測試 |
+| `323d691` | P7 響應式（證據抽屜、小螢幕說明頁） |
+| `e7fecdd` | 無障礙 landmark、skip link、文案去術語化 |
+| `164ddc1` | P6 命令面板與快捷鍵 |
+| `414d54c` | 規格書回填實作進度 |
+| `5a65de9` | 這份交接文件 |
+| `8e89c22` | fix：自選對話顯示成「退回待處理」（Bug 1） |
+| `8e71ab9` | fix：設定頁要按 N 次關閉（Bug 2）＋ Esc 同時關掉面板與設定 |
+| `64d6733` | test：元件測試環境（jsdom project）＋ 兩個 bug 的場景 |
+| `880e4ea` | feat：虛擬清單 roving tabindex（工項 1） |
+| `796be65` | feat：`?merge=` URL 同步（工項 2） |
+| `14579bf` | refactor：兩處回覆設定共用下拉元件（工項 3） |
+| `c5a3889` | 交接文件回填第二輪進度 |
+| `4db3303` | test：補完規格 §15.4 的四條元件測試（＋修 CommandPalette 缺 role="combobox"） |
+| `fa268d8` | refactor：拆分 DraftReplyWorkspace（478 → 86） |
+| `ff601f3` | feat：`code_terms` 手動指定檢索關鍵字（工項 5） |
+| `748f94a` | refactor：拆分 App.tsx（→ AppShell／TopBar／useBootstrap） |
+| `adf7c84` | test：瀏覽器 E2E（26 項）＋ 修掉它抓到的 Esc 真 bug |
+| `9ab3207` | 交接文件回填第三輪 |
+| `5880cf8` | test：元件測試逾時放寬到 15 秒（忙碌機器上的假紅燈） |
+| `dbfdc11` | feat：串流的螢幕閱讀器宣告（§10.6 三層） |
+| `26b495c` | refactor：`title=` 清到只剩兩個對話框標題（§10.3） |
+| `0e5c1ae` `769ce07` `3c9d19a` | 交接文件回填第三輪的更正 |
+| `b9e55ce` | feat：補完規格 §11.1 的快捷鍵表（五分之二 → 全部） |
+| `aa479d2` | feat：串流完成宣告改成告知真的存在的快捷鍵（§10.6 補完） |
+| `08c0df5` | refactor：拆掉兩個超過 250 行門檻的檔（§9.1、§14 P4） |
+| `89672fe` | feat：768–1024 的主從切換（§12 最後一塊） |
+| `c7a2e38` | refactor：元件檔全部拆到 250 行以下，門檻改成 store/lib 另計 |
+
+| `432bcd2` | fix：草稿設定堆疊加上捲軸，產生鈕釘在欄底不再被裁掉 |
+| `9b079fa` | style：深色的地板抬離黑色（`#121416` → `#181b20`），順手修掉三個既有的對比未達標 |
+
+分支尚未推送，`main` 未動。要合併時照專案慣例 `git merge --no-ff`。
+
+---
+
+## 七、下一輪接手的人請注意
+
+1. **Bug 2 已經在真瀏覽器上驗過了**（`tests/e2e/test_ui_redesign.cjs`）。
+   `history.length` 在點過五個設定分頁前後都是 6，按一次「關閉」精確回到
+   原本的位置，返回鍵一次離開設定。第一輪之所以只有 jsdom 證據，是因為
+   Playwright 用全新 profile 會停在登入頁——現在 `e2e_browser.cjs` 用
+   `CHATPULSE_SESSION` 重用既有 session 解決了（而且零資料庫寫入）。
+2. **`chatpulse.sh` 不吃 `--port`。** 前一版交接寫的 `--port 8010` 會被忽略，
+   一律起在 8000。
+3. **zsh 預設 `noclobber`**：腳本裡用 `>` 覆寫已存在的檔案會失敗（訊息是
+   `file exists`）。要覆寫用 `>|`。
+4. **`tokens.test.ts` 的規則③（`title=` 預算）用的是檔案路徑當 key。** 搬動
+   檔案時記得把那一筆一起搬。這一輪又踩到一次：`SummaryWorkspace.tsx` 的
+   ConfirmDialog 搬去 `components/summary/PublishConfirm.tsx`，白名單那一筆
+   要跟著改，不然新路徑的預算是 0、直接紅。
+5. **寫瀏覽器 E2E 時，選擇器一定要限縮。** 兩個工作台常駐掛載（§7.2），看不見
+   的那一半仍在 DOM 裡；而 Playwright 的 `name` 預設是**子字串**比對，所以
+   `getByRole('button', { name: '設定' })` 會連收件匣裡「內文剛好提到設定」的
+   Mention 卡片一起選中，撞上 strict mode。它是**資料相關的偶發**——換一批
+   Mention 就不會發生，看起來像功能壞掉。`tests/e2e/test_ui_redesign.cjs` 開頭
+   有現成的 helper（`topBarButton`／`settingsDialog`／`blur`／`SUMMARY_LISTBOX`），
+   照用就好。
+
+### 四支本來就紅的 E2E（唯一還沒收的事）
+
+**先講結論：這四支的失敗與後面幾輪的改動無關。** 2026-09-10 做過基準比對
+——把 `dashboard/frontend/dist` 與 `.buildinfo.json` 換回收尾之前的 commit
+（`git checkout <ref> -- dashboard/frontend/dist dashboard/frontend/.buildinfo.json`，
+伺服器是從磁碟讀 dist，不必重啟），四支的失敗訊息一模一樣。做完記得
+`git checkout HEAD -- …` 再重新建置。
+
+**這個基準比對的手法值得記住**：改動打在哪、失敗就長得像是誰造成的
+（`test_message_preview` 打的正好是這一輪拆過的 `SpaceMessagePreview`，
+`test_merge_reply` 打的正好是拆過的 `MentionInbox`）。換 dist 重跑是這裡最便宜
+的「這到底是不是我弄壞的」判準——不必開第二個服務、不必動原始碼。
+
+6. **共同根因：那四支不吃 `CHATPULSE_SESSION`。** 它們是改版前的舊測試，
+   各自帶了一份 launch ＋ 認證 ＋ 記分的樣板（`e2e_browser.cjs` 開頭有說明：
+   「既有那四支沒有改，它們現在是綠的，不值得為了去重去動」——那句話現在
+   已經不成立了）。所以它們走「匯入既有憑證」那條路，然後卡在等頂列元素：
+   - `test_draft_from_summary.cjs:76` 等 `nav button` 裡的「摘要工作台」，20 秒逾時
+   - `test_merge_reply.cjs:80` 等「Mention 收件匣」按鈕，30 秒逾時
+   - `test_tab_switch_streaming.cjs` 同一條路徑的同一種逾時
+   唯讀探針確認過：**登入畫面上「匯入既有憑證」那顆按鈕是在的**
+   （`auth/status` 回 `can_bootstrap: true`、`legacy_token_available: true`），
+   所以卡的是點下去之後——2500ms 之後仍然沒進到 app shell。
+   **修法是把那三十行換成 `e2e_browser.cjs` 的 `open()`／`goHash()`／
+   `scoreboard()`**（吃 `CHATPULSE_SESSION`、零資料庫寫入），不是把等待時間
+   拉長。**注意那條匯入路徑會在 sessions 表 INSERT 一筆**，跑之前要知道自己
+   在動正式資料庫——這也是不該繼續依賴它的理由。
+7. **`test_message_preview.cjs` 另外還有兩個獨立問題。**
+   - 它把 `BASE` 寫死成 `http://127.0.0.1:8010`（第 37 行）。服務一律起在
+     8000，所以第一步就 `ERR_CONNECTION_REFUSED`。可以先用
+     `CHATPULSE_URL=http://127.0.0.1:8000` 繞過，但那一行該直接改掉。
+   - 埠修好之後下一關是 `page.getByText('P.S.公部門夥伴').first().click()`。
+     那個 Space **確實存在**（`/api/v1/spaces` 回 436 筆、名稱查得到），
+     但左欄是虛擬滾動、只掛二十幾列，那個名稱不在 DOM 裡。修法是先用左欄
+     搜尋框過濾再點，不要直接用 `getByText` 撈全清單。
+     **注意這個形態**：Space 名稱查得到、清單也在，但 `getByText` 找不到
+     ——很容易誤判成「預覽面板壞了」。
+8. **`test_tab_switch_streaming.cjs` 與 `test_merge_reply.cjs` 的串流是在瀏覽器
+   裡假造的，不燒 AI 額度**（兩支的檔頭都寫了）。所以修好之後可以放心常跑
+   ——它們蓋的正是這一輪拆過的摘要工作台（「開始摘要」）與收件匣（合併勾選），
+   是很值得的迴歸網。
+9. **規格只剩 §16.3 的 dev token sheet 未實作，那是刻意不做的。** 往後發現
+   落差請寫回規格的「實作進度」表，**不要只寫在正文**——`lib/mergeCopy.ts`
+   就是因為只寫在 §15.1 正文與 §9.2 目錄結構裡、沒進進度表，漏了三輪才被
+   盤點抓到。

@@ -15,14 +15,24 @@ interface SpacesState {
   search: string
   selectedId: string | null
 
+  /** 釘選寫入進行中 */
+  pinning: boolean
+
   load: (options?: { refresh?: boolean }) => Promise<void>
   setSearch: (value: string) => void
   select: (id: string | null) => void
   /** 給空間取別名。傳空字串＝清除，回到自動辨識的名字。 */
   rename: (spaceId: string, alias: string) => Promise<void>
+  /**
+   * 切換釘選。
+   *
+   * 後端從一開始就支援（`preferences.pinned_space_ids` 有 DB 欄位、
+   * `GET /spaces` 每一筆都帶 `pinned`），只是前端一直沒有介面。
+   */
+  togglePin: (space: Space) => Promise<void>
 }
 
-export const useSpacesStore = create<SpacesState>((set) => ({
+export const useSpacesStore = create<SpacesState>((set, get) => ({
   items: [],
   total: 0,
   cached: false,
@@ -32,6 +42,7 @@ export const useSpacesStore = create<SpacesState>((set) => ({
   error: null,
   search: '',
   selectedId: null,
+  pinning: false,
 
   load: async (options = {}) => {
     const refresh = options.refresh === true
@@ -77,15 +88,51 @@ export const useSpacesStore = create<SpacesState>((set) => ({
       ),
     }))
   },
+
+  togglePin: async (space) => {
+    const next = !space.pinned
+    const ids = get()
+      .items.filter((s) => (s.id === space.id ? next : s.pinned))
+      .map((s) => s.id)
+
+    set({ pinning: true, error: null })
+    try {
+      // **一定要送陣列，不能送 null。** `pinned_space_ids` 的 null 語意是
+      // 「不改」（與四個回覆設定欄位相反，見 api-contract 的對照表），
+      // 所以取消最後一個釘選要送 `[]`，送 null 會靜默地什麼都沒發生。
+      await api.updatePreferences({ pinned_space_ids: ids })
+      set((state) => ({
+        items: state.items.map((s) => (s.id === space.id ? { ...s, pinned: next } : s)),
+      }))
+    } catch (err) {
+      set({ error: errorMessage(err) })
+    } finally {
+      set({ pinning: false })
+    }
+  },
 }))
 
-/** 依搜尋字串過濾（不分大小寫），並把已釘選的排前面。 */
+/** 依搜尋字串過濾（不分大小寫）。排序見 `sortByPinned`。 */
 export function filterSpaces(items: Space[], search: string): Space[] {
   const keyword = search.trim().toLowerCase()
   const filtered = keyword
     ? items.filter((space) => (space.displayName ?? '').toLowerCase().includes(keyword))
     : items
   return filtered
+}
+
+/**
+ * 把釘選的排前面，其餘維持原順序（後端已依最後活動時間排好）。
+ *
+ * 刻意**不**塞進 `filterSpaces`：那支有 14 項既有測試打在上面，而排序與過濾
+ * 是兩件事。呼叫端自己組合 `sortByPinned(filterSpaces(...))`。
+ */
+export function sortByPinned(items: Space[]): Space[] {
+  if (!items.some((space) => space.pinned)) return items
+  const pinned: Space[] = []
+  const rest: Space[] = []
+  for (const space of items) (space.pinned ? pinned : rest).push(space)
+  return [...pinned, ...rest]
 }
 
 export function findSpace(items: Space[], id: string | null): Space | null {

@@ -1,0 +1,4 @@
+# 截圖是可重現的產物（2.7MB），不進版控——用 shoot.js 重跑即可。
+# 設計稿本身（*.html）、spec 與決策紀錄（*.md）都要進。
+shots/
+app-shots/

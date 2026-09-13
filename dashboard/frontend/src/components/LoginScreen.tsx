@@ -1,4 +1,5 @@
-import { AlertCircleIcon, KeyRoundIcon, Loader2Icon, LogInIcon, ZapIcon } from 'lucide-react'
+import { AlertCircleIcon, KeyRoundIcon, Loader2Icon, LogInIcon } from 'lucide-react'
+import { PulseMark } from '@/app/PulseMark'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { useAuthStore } from '@/store/auth'
@@ -17,12 +18,17 @@ export function LoginScreen() {
   const busy = loginPending || bootstrapPending
 
   return (
-    <div className="flex min-h-dvh items-center justify-center bg-background p-6">
+    // 外層只負責捲、不居中；居中放在 min-h-full 的內層。
+    // **`items-center` 不可以與 `overflow-y-auto` 放在同一層**：內容比容器高時
+    // 居中會把溢出平分到上下，而 `scrollTop` 不能為負，卡片上緣就永遠捲不到。
+    // 2026-09-11 實測：1000×320 時卡片上緣在 −32px、怎麼捲都上不去。
+    <div className="h-full overflow-y-auto bg-background">
+      <div className="flex min-h-full items-center justify-center p-6">
       <Card className="w-full max-w-md">
         <CardHeader>
           <div className="mb-2 flex items-center gap-2.5">
-            <span className="flex size-9 items-center justify-center rounded-lg bg-sky-500/15 text-sky-500 ring-1 ring-sky-500/25">
-              <ZapIcon className="size-4.5" />
+            <span className="flex size-9 items-center justify-center rounded-lg bg-signal-wash text-signal ring-1 ring-signal-line">
+              <PulseMark className="size-4.5" />
             </span>
             <div>
               <CardTitle className="text-base">ChatPulse</CardTitle>
@@ -61,7 +67,7 @@ export function LoginScreen() {
             <>
               <div className="flex items-center gap-3 py-1">
                 <span className="h-px flex-1 bg-border" />
-                <span className="text-[11px] text-muted-foreground">或</span>
+                <span className="text-xs text-muted-foreground">或</span>
                 <span className="h-px flex-1 bg-border" />
               </div>
               <Button
@@ -74,21 +80,21 @@ export function LoginScreen() {
                 {bootstrapPending ? <Loader2Icon className="animate-spin" /> : <KeyRoundIcon />}
                 匯入既有憑證
               </Button>
-              <p className="text-[11px] leading-relaxed text-muted-foreground">
-                把 Phase 1 之前留下的 <code>config/google_chat_token.json</code> 匯入為你的身分。
-                只有三個 chat scope，沒有身分 scope 時可能需要設定{' '}
-                <code>CHATPULSE_BOOTSTRAP_USER_ID</code>。
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                把這台機器上既有的授權檔匯入成你的身分。適用於在 ChatPulse 加入 Google
+                登入之前就設定過的環境。匯入後若認不出你是誰，診斷頁有排查步驟。
               </p>
             </>
           ) : null}
 
           {status ? (
-            <p className="pt-1 text-[11px] text-muted-foreground">
+            <p className="pt-1 text-xs text-muted-foreground">
               目前已授權的 Viewer 數：{status.viewer_count}
             </p>
           ) : null}
         </CardContent>
       </Card>
+      </div>
     </div>
   )
 }

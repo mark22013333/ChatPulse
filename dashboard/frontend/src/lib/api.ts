@@ -20,9 +20,11 @@ import type {
   ReplyToneConfig,
   SepiaRulesInfo,
   SpacesResponse,
+  StoredDraft,
   StylesResponse,
   SummariesResponse,
   SummaryStyleValue,
+  HealthResponse,
   UsageResponse,
 } from './types'
 
@@ -147,6 +149,8 @@ export const api = {
    *   是使用者會主動選的狀態，必須存得下去。
    */
   updatePreferences: (body: {
+    /** 取消最後一個釘選要送 `[]`——送 `null` 是「不改」，會靜默地沒有效果 */
+    pinned_space_ids?: string[]
     default_provider?: string | null
     default_limit?: number
     default_style?: string
@@ -181,7 +185,12 @@ export const api = {
     url?: string
     ref?: string
     name?: string
-  }) => post<{ persona: Persona; created: boolean }>('/personas/import', body as unknown as Json),
+    /** `notice` 是「匯進來了，但有件事值得看一眼」——目前只有根目錄那一種。 */
+  }) =>
+    post<{ persona: Persona; created: boolean; notice?: string | null }>(
+      '/personas/import',
+      body as unknown as Json,
+    ),
   /** 列出某個來源 repo 有哪些 Persona 可以匯入。 */
   personaSourceList: (sourceType: string, repository: string, ref?: string) =>
     request<{ personas: Array<Record<string, unknown>> }>(
@@ -261,6 +270,13 @@ export const api = {
   updateMention: (id: number, state: MentionState) =>
     request<Mention>(`/mentions/${id}`, { method: 'PATCH', body: JSON.stringify({ state }) }),
   refreshMentions: () => post<MentionRefreshResponse>('/mentions/refresh'),
+  /**
+   * 讀回這一則**已經存下來**的最新草稿。
+   *
+   * 沒有草稿時後端回 404 `DRAFT_NOT_FOUND`，那是**正常狀態**不是錯誤
+   * （多數 Mention 本來就沒產過草稿），呼叫端要自己吞掉。
+   */
+  storedDraft: (id: number) => request<StoredDraft>(`/mentions/${id}/draft`),
   sendReply: (
     id: number,
     body: { text: string; draft_id?: number | null; merge_mention_ids?: number[] },
@@ -295,6 +311,11 @@ export const api = {
 
   // ── 維運 ────────────────────────────────────────────────
   usage: (days = 14) => request<UsageResponse>(`/usage${query({ days })}`),
+  /**
+   * 服務健康狀態。**未登入也能打**——「後端起來了嗎、AI 供應商設好了嗎」
+   * 正是還沒登入時最需要問的事，所以診斷頁排在登入 gate 之前。
+   */
+  health: () => request<HealthResponse>('/health', {}, { skipAuthRedirect: true }),
 }
 
 /** 串流端點的絕對路徑，交給 lib/sse.ts 使用。 */

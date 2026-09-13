@@ -318,6 +318,43 @@ export interface Mention {
   resolved_at: string | null
   text?: string | null
   content_error?: string | null
+  /**
+   * 這一則有沒有**存下來**的草稿。
+   *
+   * 草稿一直都寫進 `draft_replies`，但在這之前沒有任何路徑讀得回來，
+   * 於是重新整理之後畫面是空的、看起來像草稿沒了。這個旗標是前端決定
+   * 「要不要去 GET 回那份草稿」的唯一依據。
+   */
+  has_draft?: boolean
+}
+
+/**
+ * 從資料庫讀回來的既有草稿（`GET /mentions/{id}/draft`）。
+ *
+ * `generation_config` 有**兩種形狀**，讀的時候要都吃得下：
+ *
+ * * **2026-09-11 之後**：多一個 `meta`，就是產生當下送給瀏覽器的那份
+ *   SSE meta 原件。證據欄可以完整還原。
+ * * **更早**（本機 53 筆）：只有平鋪的 `{provider, model} ＋ 回覆設定 ＋
+ *   潤稿結果`，也就是證據欄的「生成」「回話設定」「潤稿」三列。脈絡、
+ *   參考 Space、程式碼佐證、合併回覆對象當時沒有存，**補不回來**。
+ */
+export interface StoredDraft {
+  draft_id: number
+  mention_id: number
+  content_md: string
+  generation_config: Partial<DraftReplySettingsMeta> & {
+    provider?: string
+    model?: string
+    polished?: boolean
+    polisher?: string
+    polish_model?: string
+    fallback_reason?: string
+    /** 完整的產生當下 meta（新版才有）。 */
+    meta?: SseMeta
+  }
+  created_at: string
+  sent_at: string | null
 }
 
 export interface MentionsResponse {
@@ -539,3 +576,22 @@ export interface SseError {
 }
 
 export type SseEvent = SseMeta | SseChunk | SseDone | SseError
+
+/**
+ * `GET /api/v1/health` 的回應（`dashboard/api/server.py` 的 `health`）。
+ *
+ * 這支端點不需要登入——診斷頁排在登入 gate 之前，因為「後端起來了嗎、
+ * AI 供應商設好了嗎」正是還沒登入時最需要問的事。
+ */
+export interface HealthResponse {
+  status: string
+  /** SQLite 的 journal mode，正常是 `wal` */
+  db: string
+  ai_provider_default: string
+  ai_provider_active: string
+  gemini_configured: boolean
+  collector_running: boolean
+  /** 採集器實作（ADR-0004 目前是 `polling`） */
+  collector_implementation: string
+  viewer_count: number
+}

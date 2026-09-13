@@ -54,17 +54,56 @@ from .errors import InvalidParameter
 #: 落地在 `personas.profile_json`，舊資料在新程式碼下必須還能讀。
 SCHEMA_VERSION = 1
 
-#: 每個清單型欄位最多留幾條。
+#: 每個清單型欄位最多留幾條。**條數本身不再是安全上限**——那個角色
+#: 2026-09-12 起由 `_MAX_FIELD_CHARS` 承擔。
 #:
-#: 上限存在的理由不是省 token，是**限制 persona 的表達能力**：
-#: 6 條短句足以描述一種風格，但不足以夾帶一套行為協定。
+#: 原本四個欄位一律 6 條，理由是「6 條短句足以描述一種風格，但不足以夾帶
+#: 一套行為協定」。2026-09-12 拿 `alchaincyf` 的 14 份人物 skill 實測：
+#: 14 份的 `thinking_style` **全部**剛好卡在 6，`communication_style` 有 11 份
+#: 卡在 6——這個上限對真實輸入是恆定生效的約束，不是偶爾觸發的保險絲。
+#: 而那些檔案普遍有 5–6 個心智模型，6 條連逐一點名都不夠。
+#:
+#: 所以思考與表達放寬到 8，安全保證改由字元預算承擔：條數變多，
+#: **總表達量不變**。`avoid` 與 `boundaries` 維持 6——實測沒有一份用得完。
+_MAX_ITEMS_BY_FIELD: Dict[str, int] = {
+    "thinking_style": 8,
+    "communication_style": 8,
+    "avoid": 6,
+    "boundaries": 6,
+}
+
+#: 沒列在 `_MAX_ITEMS_BY_FIELD` 裡的欄位用這個。不該發生，但 `_coerce()`
+#: 吃的是任意 dict，留一個保守的預設值比 KeyError 好。
 _MAX_ITEMS = 6
+
+#: 每個欄位**所有條目加起來**的字元上限。這是接替條數的那道安全上限。
+#:
+#: 值取 720＝改版前的 6 × `_MAX_ITEM_CHARS`，所以放寬條數之後 persona
+#: 能表達的總量與改版前**完全相同**，只是切得更碎。而「夾帶一套行為協定」
+#: 需要的是篇幅，不是條數——換成字元計量之後這句話才真的成立：
+#: 舊的條數上限擋不住「6 條各 120 字的長指令」，字元預算擋得住。
+_MAX_FIELD_CHARS = 720
 
 #: 單一章節最多貢獻幾條。
 #:
-#: 存在的理由是**涵蓋面**而不是安全：見 `normalize_persona` 裡的註解，
-#: 不限制的話第一個子章節就會把整個欄位的額度吃光。
+#: 存在的理由是**涵蓋面**而不是安全。注意它算的單位是 `_walk_sections()`
+#: 切出來的章節，那個單位不足以達成涵蓋面——見 `_MAX_ITEMS_PER_SUBTREE`。
 _MAX_ITEMS_PER_SECTION = 2
+
+#: 單一「子樹」最多貢獻幾條。子樹＝命中 allowlist 的那一層底下的直屬章節
+#: （`## 核心心智模型` 底下的 `### 模型1: 命名 ≠ 理解`），定義見 `_subtree_key()`。
+#:
+#: **為什麼逐章節配額不夠。** 它的註解寫著「不限制的話第一個子章節就會把
+#: 整個欄位的額度吃光」，但一個心智模型底下有 `一句话`／`来源证据`／
+#: `应用方式`／`检测问题`／`局限` 五六個子章節，每個各拿 2 條——單一模型的
+#: 潛在貢獻是 12 條，遠大於欄位總額。於是被擋住的是「第一個子章節」，
+#: 吃光額度的卻是「第一個子樹」，配額沒擋到它要擋的東西。
+#:
+#: 2026-09-12 實測 feynman：`模型1` 一個人就吃滿 6 條（本體 2 ＋ 一句话 1
+#: ＋ 来源证据 2 ＋ 应用方式 1），`explain_extraction()` 的回報裡模型 2 到
+#: 模型 5 每一段都是 `kept_items: 0`。使用者拿到的「費曼思維」只有第一個
+#: 心智模型，而且六條裡有兩條是逐字稿佐證。
+_MAX_ITEMS_PER_SUBTREE = 2
 
 #: 單條目的字數上限（以字元計，中文一字算一個）。
 #:
@@ -144,11 +183,34 @@ _SECTION_RULES: Tuple[Tuple[Tuple[str, ...], str], ...] = (
     # **要追求**的東西——被當成「要避開的東西」抽進 profile，語意正好相反。
     # 移掉之後父章節不命中任何欄位，`### 明确反对的事` 自己命中 avoid，
     # `### 核心价值观` 則被忽略（不在 allowlist），兩邊都正確。
+    #
+    # 2026-09-12 補「拒绝／拒絕／禁用」。實測 16 個已匯入的 persona，有 11 個
+    # 的 `avoid` 是 0 條——而 `avoid` 是唯一直接約束輸出的欄位，空著等於那一路
+    # 約束沒生效。診斷結果是**關鍵字沒涵蓋**，不是來源沒有：這批檔案的寫法是
+    #
+    #     ## 价值观与反模式
+    #     ### 追求（排序）        ← 要追求的，**不可以**進 avoid
+    #     ### 拒绝                ← ❌ 條列，這才是 avoid
+    #     ### 内在张力            ← 已在 `_DROPPED_SECTIONS`
+    #
+    # 跨 16 份出現 `我拒绝的` 7 次、`拒绝（明确的反模式）` 2 次、`拒绝` 2 次、
+    # `我绝对拒绝的` 1 次、`禁用句式` 1 次，內容都是乾淨的短條列。
+    #
+    # 關鍵是加在**子章節**的字眼上。父章節 `价值观与反模式` 仍然不命中任何
+    # 欄位，所以上面那條「不放反模式」的規則沒有被繞過——`核心价值观`／
+    # `追求` 照樣被忽略，不會語意顛倒地跑進 avoid。
+    #
+    # 刻意**不放**「反例黑名单」「绝不要做」：那兩種章節在這批檔案裡的內容是
+    # markdown 表格（`| 1 | 反模式 | 为什么不要做 | 替代做法 |`），逐列抽出來
+    # 是帶 `|` 的整行雜質，不是條目。要收它們得先會解表格，那是另一件事。
     (
         (
             "明确反对",
             "明確反對",
+            "拒绝",
+            "拒絕",
             "禁忌",
+            "禁用",
             "避免",
             "avoid",
             "anti-pattern",
@@ -212,6 +274,33 @@ _DROPPED_SECTIONS: Tuple[str, ...] = (
     "爭議",
     "内在张力",
     "內在張力",
+)
+
+#: 佐證型章節——內容講的是「這個判斷有什麼依據」，不是「這個人怎麼想」。
+#:
+#: **與 `_DROPPED_SECTIONS` 分開列，因為性質不同。** 那一組的標題本來就不會
+#: 命中 `_SECTION_RULES`，列出來只是讓意圖可讀、讓 `explain_extraction()` 講得
+#: 出「這幾段是刻意丟掉的」；**這一組會命中**——它們是 `## 核心心智模型` 的
+#: 子章節，靠祖先鏈繼承到 `thinking_style`（見 `_resolve_field()`）。
+#: 所以這一組是真的在改變抽取結果，不是文件註記。
+#:
+#: 2026-09-12 跨 14 份人物 skill 統計「實際貢獻條目的葉章節」：`证据` 22 條、
+#: `来源证据` 5 條、`案例` 2 條，合計 29 條，佔 `thinking_style` 的三分之一。
+#: 那些條目長這樣——「两本书直接以此命名：《方向比努力更重要》…」、
+#: 「引用Alan Kay: "People who are really serious about software…"」、
+#: 「WWDC 1997: "People think focus means saying yes to the thing…」（截在句中）。
+#: 它們讀起來像有料的思考風格，實際上是調研佐證：引文、書名、年份、逐字稿。
+#:
+#: 刻意**不放**「引用」：它會命中「引用習慣」這種真的在講表達方式的標題。
+_EVIDENCE_SECTIONS: Tuple[str, ...] = (
+    "证据",
+    "證據",
+    "案例",
+    "原文摘录",
+    "原文摘錄",
+    "语录",
+    "語錄",
+    "evidence",
 )
 
 
@@ -350,18 +439,58 @@ _MD_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
 _CHECKMARK = re.compile(r"^[\s✅❌⚠️※→←▶◀·※]+")
 _WHITESPACE = re.compile(r"\s+")
 
+#: 區塊引言。markdown 的 `>` 在 persona 檔案裡幾乎只有一種用途：
+#: 放人物的名言原文，或緊接在後的出處署名。
+#:
+#: 2026-09-12 跨 14 份人物 skill 實測共 85 行，抽樣全是這兩種形態：
+#: `> "The first principle is that you must not fool yourself…"`、
+#: `> —— 费曼复述父亲的教导`、`> —— Cargo Cult Science, 1974`。
+#:
+#: 為什麼是**整行丟棄**而不是剝掉 `>` 留內容：留下來就是把逐字引文與
+#: 出處當成風格描述。實測 steve-jobs 的 `thinking_style` 前兩條正是
+#: `WWDC 1997: "People think focus means…`（在 120 字處截在句中）與
+#: `引用Alan Kay: …`——那不是他的思考方式，是它的佐證。
+#:
+#: 同一批語料裡 `——` 開頭的獨立行是 **0** 行，所以不另外寫署名規則；
+#: 而 `--` 開頭的 236 行全部是 `---` 分隔線，已經被下面的 `strip()` 清成空字串。
+_BLOCKQUOTE = re.compile(r"^\s*>")
+
 
 def _clean_item(raw: str) -> Optional[str]:
     """把一行原文整理成一個安全的條目；不合格回 `None`。
 
     順序有意義：先剝裝飾再判長度，否則 `**（一句話）**：從第一原理拆問題`
     這種條目會因為裝飾字元被誤判成過長。
+
+    區塊引言的判定要在剝裝飾**之前**：`_LIST_PREFIX` 與 `strip()` 會把
+    `> —— 出處` 前面的記號吃掉，剝完就看不出它原本是引言。
     """
+    if _BLOCKQUOTE.match(raw):
+        return None
+
     text = _MD_LINK.sub(r"\1", raw)          # 連結只留文字，丟掉 URL
     text = _LIST_PREFIX.sub("", text)
     text = _CHECKMARK.sub("", text)
     text = _MD_EMPHASIS.sub("", text)
     text = _WHITESPACE.sub(" ", text).strip()
+
+    # 以冒號結尾＝這一行在**宣告接下來是什麼**，它本身不是內容。
+    #
+    # 這個判定必須在下面那行 `strip(" 　:：…")` 之前——那行會把冒號剝掉，
+    # 剝完就看不出它原本是引言了。這正是它們一直漏進來的原因。
+    #
+    # 2026-09-12 實測 14 份人物 skill，這條規則丟掉 8 行、**沒有一行是風格描述**：
+    # 「当以费曼视角输出时，遵循以下风格规则：」（5 份都有，而且都排在
+    # `communication_style` 的第一條，擠掉一個真正的條目）、
+    # 「马斯克把所有事业统一在两个文明级命题下：」、
+    # 「这是马斯克版本的「第一性原理」…而是一套三步操作：」。
+    #
+    # 取捨講明白：真正的風格描述若剛好以冒號結尾（「先給大判斷，再給數據支撐：」）
+    # 也會被丟。那是可接受的，因為 markdown 裡以冒號結尾的行按慣例就是在引出
+    # 下文，而下文才是內容——丟掉引言不會丟掉它引出的東西。
+    if text.endswith(("：", ":")):
+        return None
+
     # 「一句話：」「核心論點：」這類前綴是原文的排版，不是內容
     text = re.sub(r"^(一句話|一句话|核心論點|核心论点|說明|说明|定義|定义)\s*[:：]\s*", "", text)
     text = text.strip(" 　:：-—·、,.")
@@ -472,7 +601,9 @@ def _coerce(data: Dict[str, Any]) -> PersonaProfile:
             value = [value]
         if not isinstance(value, list):
             return []
+        limit = _field_limit(key)
         out: List[str] = []
+        used_chars = 0
         for entry in value:
             if not isinstance(entry, (str, int, float)):
                 continue
@@ -483,8 +614,14 @@ def _coerce(data: Dict[str, Any]) -> PersonaProfile:
                 continue
             if cleaned in out:
                 continue
+            # 字元預算與條數上限都要在這裡擋一次，不能只擋在 `_collect()`：
+            # `from_json()` 走的是這條路，而 DB 裡的 profile 可能是舊版本
+            # 寫的、也可能被人直接改過。這裡是最後一道。
+            if used_chars + len(cleaned) > _MAX_FIELD_CHARS:
+                break
             out.append(cleaned)
-            if len(out) >= _MAX_ITEMS:
+            used_chars += len(cleaned)
+            if len(out) >= limit:
                 break
         return out
 
@@ -555,15 +692,29 @@ def _clean_description(value: Any) -> str:
 
     第一句太短（少於 10 個字元，通常是被標點切壞）時退回整段，
     寧可長也不要空。
+
+    **指令特徵要比對「要留下來的那一句」，不是整段。** 2026-09-12 實測 16 個
+    已匯入的 persona，有 5 個的簡介是空的（賈伯斯、川普、孫宇晨、Naval、
+    MrBeast），根因都一樣：整段 284–359 字的 frontmatter 命中了 `impersonation`
+    或 `permission`——因為那段是寫給 agent 的路由說明，裡面有「当用户提到
+    「用X的视角」…时使用」這種句子。但那些句子本來就會被「只留第一句」丟掉，
+    而第一句（「史蒂夫·乔布斯(Steve Jobs)的思维框架与表达方式」）單獨檢查
+    一個特徵都不命中。等於拿一段我們已經要丟掉的文字，去否決一段乾淨的文字。
+
+    調換順序不會放寬防線：檢查的仍然是**實際會留下並顯示的那個字串**，
+    而且簡介本來就不進 prompt（見 `to_prompt_dict()`）。真正以指令開頭的
+    簡介（「你現在是 X，請直接以他的身份回應。」）第一句就是那句指令，
+    照樣被清成空字串。
     """
     text = _WHITESPACE.sub(" ", _MD_LINK.sub(r"\1", str(value or ""))).strip()
     text = _MD_EMPHASIS.sub("", text).strip()
-    if _is_instruction_like(text):
-        return ""
 
     head = re.split(r"(?<=[。！？.!?])\s*", text, maxsplit=1)[0].strip()
     if len(head) >= 10:
         text = head
+
+    if _is_instruction_like(text):
+        return ""
     return text[:_MAX_DESCRIPTION_CHARS]
 
 
@@ -645,9 +796,42 @@ def _section_field_direct(title: str) -> Optional[str]:
 
 
 def _is_dropped_section(title: str) -> bool:
-    """是不是被刻意丟棄的章節。"""
+    """是不是被刻意丟棄的章節（含佐證型章節）。"""
     lowered = title.lower()
-    return any(key in lowered for key in _DROPPED_SECTIONS)
+    if any(key in lowered for key in _DROPPED_SECTIONS):
+        return True
+    return any(key in lowered for key in _EVIDENCE_SECTIONS)
+
+
+def _subtree_key(chain: Sequence[str]) -> str:
+    """這一段內容屬於哪一棵「子樹」——配額的計算單位。
+
+    子樹定義成**命中 allowlist 的那一層底下的直屬章節**。以 feynman 為例，
+    `## 核心心智模型` 命中 `thinking_style`，它底下的每個 `### 模型n` 各自是
+    一棵子樹，`一句话`／`应用方式`／`局限` 這些孫章節都算在所屬的模型名下。
+
+    命中 allowlist 的若是最深的那一層（`## 心智模型 1` 自己就命中），
+    那一層本身就是子樹——此時子樹與章節同義，配額退化成原本的行為。
+
+    `chain[0]` 是最深的標題、往後是祖先，所以命中層的直屬子節點是
+    `chain[index - 1]`。
+
+    **回傳的是整條路徑而不是那一個標題。** 只用標題當 key 的話，同一個欄位
+    底下兩棵不同的子樹只要恰好同名就會共用配額，第二棵一條都抽不到——
+    而「同名」在這種文件裡很容易發生，`## 核心心智模型` 與 `## 决策启发式`
+    底下都可能有 `### 模型一`。那正好是這個配額要解決的涵蓋面問題本身，
+    所以 key 必須唯一識別一棵子樹，不能只看它叫什麼。
+    """
+    for index, title in enumerate(chain):
+        if title and _section_field_direct(title):
+            root = index - 1 if index > 0 else index
+            return " / ".join(chain[root:])
+    return chain[0] if chain else ""
+
+
+def _field_limit(field: str) -> int:
+    """這個欄位最多留幾條。"""
+    return _MAX_ITEMS_BY_FIELD.get(field, _MAX_ITEMS)
 
 
 def _resolve_field(chain: Sequence[str]) -> Optional[str]:
@@ -784,6 +968,10 @@ def _collect(body: str) -> _Extraction:
     used: List[Dict[str, Any]] = []
     dropped: List[Dict[str, str]] = []
     rejected: List[Dict[str, str]] = []
+    #: `(欄位, 子樹)` → 已採用幾條。跨章節累計，這正是它與逐章節配額的差別。
+    subtree_counts: Dict[Tuple[str, str], int] = {}
+    #: 欄位 → 已用掉幾個字元（`_MAX_FIELD_CHARS` 的計數器）。
+    field_chars: Dict[str, int] = {key: 0 for key in buckets}
 
     for chain, lines in _walk_sections(body):
         title = chain[0] if chain else ""
@@ -804,14 +992,18 @@ def _collect(body: str) -> _Extraction:
             continue
 
         bucket = buckets[target]
+        subtree = _subtree_key(chain)
+        quota_key = (target, subtree)
         kept = 0
         for line in lines:
-            # 逐章節配額。不限制的話 `## 5个核心心智模型` 底下第一個模型的
-            # 六條細節就把 thinking_style 的額度用光，後面四個模型一條都沒抽到
-            # ——profile 看起來滿的，實際上只涵蓋五分之一。
+            # 逐章節配額。擋的是「一個章節寫得特別長就把額度用光」。
             if kept >= _MAX_ITEMS_PER_SECTION:
                 break
-            if len(bucket) >= _MAX_ITEMS:
+            # 逐子樹配額。擋的是「第一個心智模型的五六個子章節把額度用光」
+            # ——逐章節配額擋不到這件事，因為那些子章節各自是獨立章節。
+            if subtree_counts.get(quota_key, 0) >= _MAX_ITEMS_PER_SUBTREE:
+                break
+            if len(bucket) >= _field_limit(target):
                 break
             cleaned = _clean_item(line)
             if cleaned is None:
@@ -822,7 +1014,12 @@ def _collect(body: str) -> _Extraction:
                 continue
             if cleaned in bucket:
                 continue
+            # 字元預算：條數放寬之後，這是「persona 不能長成 agent」的那道上限。
+            if field_chars[target] + len(cleaned) > _MAX_FIELD_CHARS:
+                break
             bucket.append(cleaned)
+            field_chars[target] += len(cleaned)
+            subtree_counts[quota_key] = subtree_counts.get(quota_key, 0) + 1
             kept += 1
 
         used.append({"section": path, "field": target, "kept_items": kept})
@@ -916,3 +1113,94 @@ def explain_extraction(raw_text: str) -> Dict[str, Any]:
         "dropped_sections": extraction.dropped,
         "rejected_items": extraction.rejected,
     }
+
+
+#: 給使用者看的「可用章節名」範例，一個欄位一組代表性寫法。
+#:
+#: 為什麼不直接印 `_SECTION_RULES` 的 key：那裡面是**比對用的子字串**
+#: （簡體／繁體／英文各種變體，還有 `voice`、`tone`、`framework` 這種單字），
+#: 整組印給使用者是雜訊，而且看起來像「章節一定要叫這個名字」。
+#: 這裡挑讀得懂的代表寫法，並由 `test_persona_normalize` 的漂移守衛保證
+#: 每一個範例都真的命中 allowlist——否則就會發生「照著錯誤訊息的建議改，
+#: 結果還是匯不進來」，那比不給建議更糟。
+_FIELD_HINTS: Tuple[Tuple[str, str, Tuple[str, ...]], ...] = (
+    ("thinking_style", "思考方式", ("心智模型", "思考框架", "Thinking Style")),
+    ("communication_style", "表達方式", ("表達 DNA", "溝通風格", "Communication Style")),
+    ("avoid", "明確反對的事", ("明確反對", "禁忌", "Avoid")),
+    ("boundaries", "能力邊界", ("誠實邊界", "已知盲區", "Boundaries")),
+)
+
+#: 錯誤訊息裡列舉章節名的上限。實測 `anthropics/skills` 的
+#: `brand-guidelines` 有 12 個以上被丟棄的章節，全列出來會把訊息灌爆。
+_MAX_LISTED_SECTIONS = 4
+
+
+def _leaf(section_path: str) -> str:
+    """`_collect` 記的是「祖先 / … / 葉」，錯誤訊息只需要葉。"""
+    return section_path.split(" / ")[-1]
+
+
+def _listed(names: Sequence[str]) -> str:
+    """去重、截斷、串成人看得懂的一句。"""
+    unique: List[str] = []
+    for name in names:
+        if name and name not in unique:
+            unique.append(name)
+    shown = "、".join(f"「{n}」" for n in unique[:_MAX_LISTED_SECTIONS])
+    rest = len(unique) - _MAX_LISTED_SECTIONS
+    return f"{shown} 等 {len(unique)} 個" if rest > 0 else shown
+
+
+def describe_unusable(raw_text: str) -> str:
+    """這份來源為什麼淨化完沒有可用的風格資訊——具體到「缺哪個章節」。
+
+    `is_usable()` 回 False 時，原本的 409 只說「淨化之後沒有留下任何可用的
+    風格資訊」。那句話講的是**規則**，不是這份檔案，所以使用者拿到之後
+    無從判斷下一步：要換一個 repo？改用手動填寫？還是這份檔案其實只差一個
+    標題？`explain_extraction()` 早就算得出答案，只是沒有人把它接出來。
+
+    三種失敗的長相完全不同，必須分開講：
+
+      1. **章節標題全都不在 allowlist** —— 最常見。通常是拿了一份根本不是
+         persona 的 skill（工作流程、工具說明、品牌規範）。
+      2. **章節命中了，但底下每一條都被淨化規則擋掉** —— 整段是指令句。
+      3. **章節命中了、也抽出東西了，但只有 `boundaries`** —— 這個最難自己
+         看出來，因為「明明有讀到東西」卻仍然被拒絕。`is_usable()` 刻意不含
+         boundaries（理由見那個函式），而使用者看不到這個規則。
+
+    回傳的是**要接在既有訊息後面**的一句診斷，不含前綴。
+    """
+    _fields, body = _parse_frontmatter(raw_text or "")
+    # 與 `explain_extraction` 走同一個抽取函式，所以這裡講的「讀到什麼」
+    # 與那邊回報的數字保證一致。
+    extraction = _collect(body)
+
+    hint = "、".join(
+        f"{label}（{'／'.join(examples[:2])}）" for _field, label, examples in _FIELD_HINTS
+    )
+
+    kept_fields = [field for field, items in extraction.buckets.items() if items]
+
+    # 情況 3：只抽到能力邊界。先判這一條——它是唯一「有讀到東西卻仍被拒絕」
+    # 的形態，講錯了使用者會完全找不到方向。
+    if kept_fields == ["boundaries"]:
+        return (
+            f"這份檔案只抽到「能力邊界」（來自 {_listed([_leaf(u['section']) for u in extraction.used])}）。"
+            "能力邊界描述的是這個人不擅長什麼，單獨存在不構成 persona——"
+            "還需要至少一個「思考方式」或「表達方式」的章節。"
+        )
+
+    # 情況 1：一個 allowlist 章節都沒命中。
+    if not extraction.used:
+        titles = [_leaf(d["section"]) for d in extraction.dropped]
+        found = f"這份檔案讀到的章節是 {_listed(titles)}，都不在可用清單裡。" if titles else "這份檔案裡沒有讀到任何章節標題。"
+        return f"{found}可用的章節名例如：{hint}。"
+
+    # 情況 2：章節命中了，但一條都沒留下。
+    sections = _listed([_leaf(u["section"]) for u in extraction.used])
+    if extraction.rejected:
+        return (
+            f"讀到了可用章節 {sections}，但底下 {len(extraction.rejected)} 條"
+            "全部被淨化規則擋掉（多半整段是指令句而不是風格描述）。"
+        )
+    return f"讀到了可用章節 {sections}，但底下沒有抽得出來的條目（需要條列或短句）。"

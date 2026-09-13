@@ -1,0 +1,1198 @@
+<!DOCTYPE html>
+<!--
+  ChatPulse 後台介面改版 mockup — v1「克制」(restrained)
+  ------------------------------------------------------------------
+  三個差異參數的取值：
+   1. 主導覽：icon rail 56px，純圖示 + 圖示下方 10px 兩字中文標籤（不靠 tooltip）。
+      當前項用左側 3px 實心條（--signal）標示，並加 aria-current="page"。
+      「即將推出」的兩項另外收進虛線群組框，框頂有 9px 橫排群標「即將推出」，
+      標籤下再加點線（點線＝缺值，與摘要章節同一套線型語意）。三重提示全部寫在畫面上。
+   2. 卡片強度：輕。--surface 與 --background 的 ΔL = 0.010（明暗兩主題皆同），
+      卡片主要靠 1px --line 邊框界定，不靠填色差，不使用 box-shadow。
+   3. accent 色相：銅 h50 —— 亮色 oklch(0.520 0.125 50)／暗色 oklch(0.740 0.115 50)。
+      與 --caution h75、--destructive h24 分別拉開 25/26 度，並另以彩度與線型做冗餘區分。
+  ------------------------------------------------------------------
+  全檔沒有任何 hex 色碼，也沒有 sRGB 或 HSL 的函式寫法；所有顏色皆為 oklch() 寫成的 CSS 自訂屬性
+  （含陰影——本版根本不用陰影）。
+  零外部資源，可離線雙擊開啟。為 1440×900 設計，不做響應式。
+  對比驗算表在檔案最底部的 <details> 摺疊區。
+-->
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>ChatPulse 摘要工作台（v1 克制）</title>
+<style>
+/* ============================================================
+   1. 色彩 token —— 四個表面 + 三層前景 + 三種規線 + 三個語意色
+   ============================================================ */
+:root {
+  color-scheme: light;
+
+  /* 四個表面（由低到高）。v1：surface 與 background 的 ΔL 只有 0.010 */
+  --background: oklch(0.972 0.004 75);
+  --surface:    oklch(0.982 0.004 75);
+  --raised:     oklch(0.995 0.003 75);
+  --muted:      oklch(0.948 0.006 75);
+
+  /* 前景三層 */
+  --foreground: oklch(0.220 0.012 60);
+  --fg-dim:     oklch(0.420 0.012 60);
+  --fg-subtle:  oklch(0.520 0.010 60);
+  --fg-disabled:oklch(0.660 0.008 60);
+
+  /* 規線 */
+  --line:          oklch(0.900 0.006 70);
+  --line-strong:   oklch(0.830 0.008 70);
+  --line-evidence: oklch(0.600 0.012 70);
+
+  /* 語意色（只有三個） */
+  --signal:       oklch(0.520 0.125 50);   /* 銅 h50，只用於可互動與當前選取 */
+  --signal-ink:   oklch(0.995 0.008 75);   /* 實心 signal 上的文字 */
+  --signal-quiet: oklch(0.945 0.026 50);   /* signal 的極淡底，只用於選取列 */
+  --caution:      oklch(0.550 0.115 75);
+  --destructive:  oklch(0.520 0.185 24);
+
+  --font-sans: 'PingFang TC', 'Hiragino Sans CNS', 'Noto Sans TC', system-ui, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+html.dark {
+  color-scheme: dark;
+
+  --background: oklch(0.175 0.005 75);
+  --surface:    oklch(0.185 0.005 75);
+  --raised:     oklch(0.212 0.006 75);
+  --muted:      oklch(0.152 0.005 75);
+
+  --foreground: oklch(0.950 0.005 80);
+  --fg-dim:     oklch(0.750 0.008 80);
+  --fg-subtle:  oklch(0.650 0.008 80);
+  --fg-disabled:oklch(0.480 0.008 80);
+
+  --line:          oklch(0.300 0.008 70);
+  --line-strong:   oklch(0.395 0.010 70);
+  --line-evidence: oklch(0.620 0.012 70);
+
+  --signal:       oklch(0.740 0.115 50);
+  --signal-ink:   oklch(0.175 0.020 60);
+  --signal-quiet: oklch(0.262 0.032 50);
+  --caution:      oklch(0.800 0.100 75);
+  --destructive:  oklch(0.700 0.160 24);
+}
+
+/* ============================================================
+   2. 基礎
+   ============================================================ */
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--foreground);
+  background: var(--background);
+  -webkit-font-smoothing: antialiased;
+}
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; background: none; border: none; padding: 0; }
+a { color: inherit; text-decoration: none; }
+ul, ol { margin: 0; padding: 0; list-style: none; }
+table { border-collapse: collapse; width: 100%; }
+.mono { font-family: var(--font-mono); font-size: 11.5px; letter-spacing: -0.01em; }
+:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; border-radius: 3px; }
+svg { display: block; flex: none; }
+
+/* ============================================================
+   3. 版面骨架：56 / 288 / flex-1 / 320，總高 900
+   ============================================================ */
+.app {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  height: 900px;
+  overflow: hidden;
+  border-bottom: 1px solid var(--line);
+}
+.col-right { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.panes { flex: 1; min-height: 0; display: flex; }
+
+/* ============================================================
+   4. 主導覽 icon rail 56px
+   ============================================================ */
+.rail {
+  width: 56px;
+  flex: none;
+  background: var(--background);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding-bottom: 8px;
+}
+.rail-mark {
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-bottom: 1px solid var(--line);
+  color: var(--signal);
+}
+.rail-nav { padding-top: 10px; display: flex; flex-direction: column; }
+
+.rail-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 8px 0 7px;
+  color: var(--fg-dim);
+}
+.rail-item .rail-label {
+  font-size: 10px;
+  line-height: 1.1;
+  letter-spacing: 0.02em;
+}
+.rail-item:hover { color: var(--foreground); background: var(--muted); }
+.rail-item[aria-current="page"] {
+  color: var(--signal);
+  background: var(--signal-quiet);
+}
+/* 當前項：左側 3px 實心條 */
+.rail-item[aria-current="page"]::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: var(--signal);
+}
+.rail-item[aria-current="page"] .rail-label { font-weight: 600; }
+
+/* Mention 待處理數字：不靠顏色，字符本身就是資訊 */
+.rail-badge {
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  margin-left: 5px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border-radius: 8px;
+  background: var(--signal);
+  color: var(--signal-ink);
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 15px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 即將推出群組：虛線框 + 群組頂部的橫排群標。資訊寫在畫面上，不靠 tooltip */
+.rail-soon {
+  margin: 9px 5px 0;
+  padding-bottom: 3px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 4px;
+}
+.rail-soon-head {
+  display: block;
+  text-align: center;
+  padding: 3px 0;
+  border-bottom: 1px dashed var(--line-strong);
+  font-size: 9px;
+  line-height: 1.3;
+  color: var(--fg-subtle);
+}
+.rail-soon .rail-item { color: var(--fg-disabled); cursor: default; padding: 6px 0 4px; }
+.rail-soon .rail-item:hover { background: none; color: var(--fg-disabled); }
+/* 點線＝缺值：標籤下的點線與摘要章節的點線是同一套語意 */
+.rail-soon .rail-label { border-bottom: 1px dotted var(--fg-disabled); padding-bottom: 1px; }
+
+.rail-foot { margin-top: auto; display: flex; flex-direction: column; align-items: center; gap: 8px; padding-top: 10px; }
+.rail-avatar {
+  width: 26px; height: 26px; border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  background: var(--muted);
+  color: var(--fg-dim);
+  font-size: 11px; font-weight: 600;
+  display: flex; align-items: center; justify-content: center;
+}
+.rail-foot .rail-item { padding: 6px 0 5px; }
+
+/* ============================================================
+   5. TopBar 48px
+   ============================================================ */
+.topbar {
+  height: 48px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px 0 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--background);
+}
+.crumb { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--fg-subtle); }
+.crumb-sep { color: var(--fg-subtle); }
+.crumb-here { color: var(--foreground); font-weight: 600; }
+.topbar-spacer { flex: 1; }
+.topbar-btn {
+  display: flex; align-items: center; gap: 6px;
+  height: 28px; padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--raised);
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+.topbar-btn:hover { border-color: var(--line-strong); color: var(--foreground); }
+.topbar-btn .kbd {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-subtle);
+  border-left: 1px solid var(--line);
+  padding-left: 6px;
+  margin-left: 1px;
+}
+.topbar-user {
+  display: flex; align-items: center; gap: 7px;
+  padding-left: 12px; margin-left: 2px;
+  border-left: 1px solid var(--line);
+  font-size: 12.5px; color: var(--fg-dim);
+}
+.topbar-user b { font-weight: 600; color: var(--foreground); }
+
+/* ============================================================
+   6. 上下文欄 288px
+   ============================================================ */
+.context {
+  width: 288px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--background);
+  border-right: 1px solid var(--line);
+}
+.ctx-search { padding: 10px 12px 9px; border-bottom: 1px solid var(--line); }
+.field-search {
+  display: flex; align-items: center; gap: 7px;
+  height: 30px; padding: 0 9px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--fg-subtle);
+}
+.field-search input {
+  flex: 1; min-width: 0;
+  border: none; background: none; outline: none;
+  font-size: 12.5px; color: var(--foreground);
+}
+.field-search input::placeholder { color: var(--fg-subtle); }
+
+.space-list { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 0; }
+.space-row {
+  position: relative;
+  display: flex; align-items: flex-start; gap: 9px;
+  padding: 7px 12px 7px 13px;
+  border-left: 3px solid transparent;
+}
+.space-row:hover { background: var(--muted); }
+.space-row[aria-selected="true"] {
+  background: var(--raised);
+  border-left-color: var(--signal);
+}
+.space-icon { color: var(--fg-subtle); margin-top: 2px; }
+.space-row[aria-selected="true"] .space-icon { color: var(--signal); }
+.space-body { min-width: 0; flex: 1; }
+.space-name {
+  font-size: 12.5px; line-height: 1.35; color: var(--foreground);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.space-row[aria-selected="true"] .space-name { font-weight: 600; }
+.space-sub {
+  display: flex; align-items: center; gap: 7px;
+  margin-top: 1px;
+  font-size: 11px; line-height: 1.4; color: var(--fg-subtle);
+}
+/* 1px 豎線分隔，取代中點 */
+.vrule {
+  display: inline-block;
+  width: 1px; height: 9px;
+  background: var(--line-strong);
+}
+.ctx-foot {
+  flex: none;
+  display: flex; align-items: center; gap: 9px;
+  height: 30px; padding: 0 12px;
+  border-top: 1px solid var(--line);
+  background: var(--muted);
+  font-size: 11px; color: var(--fg-subtle);
+}
+.ctx-foot .live { display: flex; align-items: center; gap: 5px; color: var(--fg-dim); }
+.dot-live { width: 5px; height: 5px; border-radius: 50%; background: var(--signal); }
+
+/* ============================================================
+   7. 主內容區
+   ============================================================ */
+.content {
+  flex: 1; min-width: 0; min-height: 0;
+  overflow-y: auto;
+  background: var(--background);
+  padding: 13px 20px 10px;
+}
+.page-head { display: flex; align-items: flex-start; gap: 14px; }
+.page-title { font-size: 16px; font-weight: 600; line-height: 1.4; margin: 0; }
+.page-id { margin-top: 2px; color: var(--fg-subtle); }
+.page-head-actions { margin-left: auto; display: flex; gap: 8px; padding-top: 2px; }
+
+.btn {
+  height: 30px; padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background: var(--raised);
+  color: var(--foreground);
+  font-size: 12.5px;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.btn:hover { border-color: var(--fg-subtle); }
+.btn-primary {
+  background: var(--signal);
+  border-color: var(--signal);
+  color: var(--signal-ink);
+  font-weight: 600;
+}
+.btn-primary:hover { border-color: var(--signal); }
+.btn-quiet {
+  height: 26px; padding: 0 9px;
+  border: 1px solid var(--line);
+  background: none;
+  color: var(--fg-dim);
+  font-size: 11.5px;
+}
+.btn-quiet:hover { color: var(--foreground); border-color: var(--line-strong); }
+
+/* 工具列：--raised，三欄 + 兩顆鈕 */
+.toolbar {
+  margin-top: 10px;
+  display: flex; align-items: flex-end; gap: 12px;
+  padding: 9px 12px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.field-label { font-size: 11px; color: var(--fg-subtle); }
+.control {
+  height: 30px; padding: 0 9px;
+  display: flex; align-items: center; gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+.control .caret { color: var(--fg-subtle); margin-left: auto; }
+.field-style { width: 148px; }
+.field-vendor { flex: 1; min-width: 0; }
+.field-vendor .control > span:first-child { overflow: hidden; text-overflow: ellipsis; }
+.field-count { width: 118px; }
+.toolbar-actions { margin-left: auto; display: flex; gap: 8px; }
+
+/* 最近訊息摺疊區 */
+.recent {
+  margin-top: 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+}
+.recent > summary {
+  list-style: none;
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 12.5px;
+}
+.recent > summary::-webkit-details-marker { display: none; }
+.recent .chev { color: var(--fg-subtle); transition: transform .15s; }
+.recent[open] .chev { transform: rotate(90deg); }
+.seg { display: inline-flex; border: 1px solid var(--line-strong); border-radius: 5px; overflow: hidden; }
+.seg button {
+  padding: 0 11px; height: 24px;
+  font-size: 12px;
+  background: var(--raised);
+  color: var(--fg-dim);
+  border-right: 1px solid var(--line-strong);
+  font-variant-numeric: tabular-nums;
+}
+.seg button:last-child { border-right: none; }
+.seg button[aria-pressed="true"] {
+  background: var(--signal);
+  color: var(--signal-ink);
+  font-weight: 600;
+}
+.recent-body {
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--line);
+  color: var(--fg-subtle);
+  font-size: 12px;
+}
+
+/* meta 列 */
+.meta {
+  margin-top: 9px;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 9px;
+  padding: 7px 12px;
+  background: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 11.5px;
+  color: var(--fg-dim);
+}
+.meta .mono { color: var(--fg-dim); }
+.meta-key { color: var(--foreground); font-weight: 600; }
+.aux-actions { margin-top: 9px; display: flex; gap: 8px; }
+
+/* 摘要卡片 —— 輕：只有 1px 邊框 + ΔL 0.010 的填色 */
+.card {
+  margin-top: 9px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.card-head {
+  display: flex; align-items: center; gap: 12px;
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.card-title { font-size: 13px; font-weight: 600; }
+.card-head .right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+.count-note { font-size: 11.5px; color: var(--fg-subtle); font-variant-numeric: tabular-nums; }
+
+/* 線型圖例：寫在畫面上，不靠 tooltip */
+.legend { display: flex; align-items: center; gap: 12px; font-size: 11px; color: var(--fg-subtle); }
+.legend i { display: inline-flex; align-items: center; gap: 5px; font-style: normal; }
+.legend .sw { width: 16px; height: 0; border-top-width: 2px; border-top-color: var(--line-evidence); }
+.legend .sw.solid  { border-top-style: solid; }
+.legend .sw.dashed { border-top-style: dashed; }
+.legend .sw.dotted { border-top-style: dotted; }
+
+/* 摘要章節：左側規線的線型承載語意 */
+.sections { padding: 2px 14px 8px; }
+.sec {
+  padding: 6px 0 6px 13px;
+  border-left-width: 2px;
+  border-left-color: var(--line-evidence);
+  border-bottom: 1px solid var(--line);
+}
+.sec:last-child { border-bottom: none; }
+.sec.full    { border-left-style: solid; }
+.sec.degrade { border-left-style: dashed; }
+.sec.empty   { border-left-style: dotted; }
+.sec-head { display: flex; align-items: baseline; gap: 8px; }
+.sec-glyph {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-dim);
+  width: 12px;
+}
+.sec-title { font-size: 13px; font-weight: 600; }
+.sec-state {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--fg-subtle);
+}
+/* 顏色只是冗餘：第一區分是左側線型（實／虛／點）與字符（● ◐ ○） */
+.sec.degrade .sec-state, .sec.degrade .sec-glyph { color: var(--caution); }
+.rail-foot .rail-item:hover { color: var(--destructive); background: var(--muted); }
+.sec-body { margin: 4px 0 0; font-size: 12.5px; line-height: 1.7; color: var(--foreground); }
+.sec.empty .sec-body { color: var(--fg-dim); }
+.sec-sub { margin: 6px 0 0; padding-left: 2px; }
+.sec-sub li {
+  position: relative;
+  padding-left: 14px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--foreground);
+}
+.sec-sub li::before {
+  content: "•";
+  position: absolute; left: 2px;
+  color: var(--fg-subtle);
+}
+.sec-item { font-size: 12.5px; line-height: 1.8; }
+
+.chip {
+  display: inline-block;
+  padding: 0 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--muted);
+  font-size: 11.5px;
+  line-height: 18px;
+  vertical-align: 1px;
+}
+
+/* Action Items */
+.ai-row {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.ai-row:last-child { border-bottom: none; }
+.ai-box {
+  width: 15px; height: 15px; flex: none;
+  margin-top: 3px;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  background: var(--raised);
+}
+.ai-text { font-size: 12.5px; line-height: 1.7; }
+
+/* ============================================================
+   8. 證據欄 320px
+   ============================================================ */
+.evidence {
+  width: 320px;
+  flex: none;
+  display: flex; flex-direction: column;
+  min-height: 0;
+  background: var(--background);
+  border-left: 1px solid var(--line);
+}
+.ev-head {
+  flex: none;
+  display: flex; align-items: center;
+  height: 36px; padding: 0 14px;
+  border-bottom: 1px solid var(--line);
+}
+.ev-title { font-size: 12.5px; font-weight: 600; }
+.ev-head .right { margin-left: auto; font-size: 11.5px; color: var(--fg-subtle); font-variant-numeric: tabular-nums; }
+.ev-list { flex: 1; min-height: 0; overflow-y: auto; }
+.ev-item {
+  padding: 8px 14px 8px 13px;
+  border-bottom: 1px solid var(--line);
+  border-left: 2px solid transparent;
+}
+.ev-item:hover { background: var(--muted); }
+.ev-item.current { border-left-color: var(--signal); background: var(--raised); }
+.ev-name { font-size: 12.5px; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ev-meta { display: flex; align-items: center; gap: 7px; margin-top: 2px; font-size: 11px; color: var(--fg-subtle); }
+
+.token {
+  flex: none;
+  border-top: 1px solid var(--line-strong);
+  background: var(--surface);
+}
+.token-head { display: flex; align-items: flex-end; padding: 10px 14px 8px; }
+.token-label { font-size: 12px; color: var(--fg-dim); }
+.token-value {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 22px;         /* 全站最大字級，只給這個計量值 */
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.token table { font-size: 11.5px; }
+.token th {
+  text-align: right;
+  font-weight: 500;
+  color: var(--fg-subtle);
+  padding: 5px 14px 5px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.token th:first-child { text-align: left; padding-left: 14px; }
+.token td {
+  text-align: right;
+  padding: 5px 14px 5px 0;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-dim);
+}
+.token td:first-child { text-align: left; padding-left: 14px; color: var(--foreground); }
+.token tbody tr:nth-child(even) { background: var(--muted); }
+
+/* ============================================================
+   9. 底部對比驗算摺疊區
+   ============================================================ */
+.audit {
+  width: 100%;
+  padding: 18px 24px 40px;
+  background: var(--background);
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+.audit > summary { cursor: pointer; color: var(--foreground); font-weight: 600; font-size: 13px; }
+.audit h3 { font-size: 12.5px; margin: 18px 0 6px; color: var(--foreground); }
+.audit p { margin: 6px 0; max-width: 980px; line-height: 1.75; }
+.audit table { max-width: 980px; margin-top: 6px; font-size: 11.5px; }
+.audit th, .audit td {
+  text-align: left;
+  padding: 4px 10px 4px 0;
+  border-bottom: 1px solid var(--line);
+  font-weight: 400;
+}
+.audit thead th { color: var(--fg-subtle); border-bottom: 1px solid var(--line-strong); }
+.audit td.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; padding-right: 18px; }
+.audit code { font-family: var(--font-mono); font-size: 11px; }
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <!-- ========== 主導覽 icon rail 56px ========== -->
+  <nav class="rail" aria-label="主導覽">
+    <div class="rail-mark" aria-hidden="true">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h3l2.5-7 4 14 2.5-7H21"/></svg>
+    </div>
+
+    <div class="rail-nav">
+      <a class="rail-item" href="#" aria-current="page">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6"/><path d="M9 17h4"/></svg>
+        <span class="rail-label">摘要</span>
+      </a>
+
+      <a class="rail-item" href="#">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"/></svg>
+        <span class="rail-label">收件</span>
+        <span class="rail-badge">6</span>
+      </a>
+
+      <div class="rail-soon">
+        <span class="rail-soon-head">即將推出</span>
+        <span class="rail-item" aria-disabled="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M3 20h18"/></svg>
+          <span class="rail-label">統計</span>
+        </span>
+        <span class="rail-item" aria-disabled="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18"/><path d="M8 3v4"/><path d="M16 3v4"/><path d="M7 14h4"/><path d="M7 17h7"/></svg>
+          <span class="rail-label">週報</span>
+        </span>
+      </div>
+
+      <a class="rail-item" href="#" style="margin-top:10px">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 8.9 19a1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 5 8.9a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9.5a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+        <span class="rail-label">設定</span>
+      </a>
+    </div>
+
+    <div class="rail-foot">
+      <div class="rail-avatar" aria-hidden="true">鄭</div>
+      <a class="rail-item" href="#">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>
+        <span class="rail-label">登出</span>
+      </a>
+    </div>
+  </nav>
+
+  <!-- ========== 右側：TopBar + 三欄 ========== -->
+  <div class="col-right">
+
+    <header class="topbar">
+      <div class="crumb">
+        <span>摘要工作台</span>
+        <span class="crumb-sep" aria-hidden="true">›</span>
+        <span class="crumb-here">李姿誼Sica Lee</span>
+      </div>
+      <div class="topbar-spacer"></div>
+
+      <button class="topbar-btn" type="button">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        命令面板
+        <span class="kbd">⌘K</span>
+      </button>
+
+      <button class="topbar-btn" type="button">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>
+        證據欄
+      </button>
+
+      <button class="topbar-btn" type="button" id="theme-toggle" aria-pressed="false">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" id="theme-icon"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.9 4.9 1.4 1.4"/><path d="m17.7 17.7 1.4 1.4"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m4.9 19.1 1.4-1.4"/><path d="m17.7 6.3 1.4-1.4"/></svg>
+        <span id="theme-text">亮色</span>
+      </button>
+
+      <span class="topbar-user"><b>鄭浩宇</b></span>
+    </header>
+
+    <div class="panes">
+
+      <!-- ---------- 上下文欄 288px ---------- -->
+      <aside class="context" aria-label="Space 清單">
+        <div class="ctx-search">
+          <label class="field-search">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+            <input type="text" placeholder="搜尋 436 個 Space 名稱…">
+          </label>
+        </div>
+
+        <ul class="space-list" role="listbox" aria-label="Space">
+
+          <li class="space-row" role="option" aria-selected="false">
+            <span class="space-icon" aria-hidden="true"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 9h16"/><path d="M4 15h16"/><path d="M10 3 8 21"/><path d="M16 3l-2 18"/></svg></span>
+            <span class="space-body">
+              <span class="space-name">1.BU2-PG</span>
+              <span class="space-sub">群組<span class="vrule" aria-hidden="true"></span>最後活動 27 分鐘前</span>
+            </span>
+          </li>
+
+          <li class="space-row" role="option" aria-selected="false">
+            <span class="space-icon" aria-hidden="true"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M16 20v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="3.2"/><path d="M22 20v-2a4 4 0 0 0-3-3.8"/><path d="M16 4.2a4 4 0 0 1 0 7.6"/></svg></span>
+            <span class="space-body">
+              <span class="space-name">ILOOP2601 - 勞動部勞動及職業安全…</span>
+              <span class="space-sub">多人對話<span class="vrule" aria-hidden="true"></span>最後活動 10 小時前</span>
+            </span>
+          </li>
+
+          <li class="space-row" role="option" aria-selected="true">
+            <span class="space-icon" aria-hidden="true"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a5 5 0 0 0-5-5H9a5 5 0 0 0-5 5v2"/><circle cx="12" cy="7" r="4"/></svg></span>
+            <span class="space-body">
+              <span class="space-name">李姿誼Sica Lee</span>
+              <span class="space-sub">私訊<span class="vrule" aria-hidden="true"></span>最後活動 13 小時前</span>
+            </span>
+          </li>
+
+          <li class="space-row" role="option" aria-selected="false">
+            <span class="space-icon" aria-hidden="true"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a5 5 0 0 0-5-5H9a5 5 0 0 0-5 5v2"/><circle cx="12" cy="7" r="4"/></svg></span>
+            <span class="space-body">
+              <span class="space-name">（私訊）</span>
+              <span class="space-sub">私訊<span class="vrule" aria-hidden="true"></span>最後活動 13 小時前</span>
+            </span>
+          </li>
+
+          <li class="space-row" role="option" aria-selected="false">
+            <span class="space-icon" aria-hidden="true"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a5 5 0 0 0-5-5H9a5 5 0 0 0-5 5v2"/><circle cx="12" cy="7" r="4"/></svg></span>
+            <span class="space-body">
+              <span class="space-name">張曼媜</span>
+              <span class="space-sub">私訊<span class="vrule" aria-hidden="true"></span>最後活動 13 小時前</span>
+            </span>
+          </li>
+
+          <li class="space-row" role="option" aria-selected="false">
+            <span class="space-icon" aria-hidden="true"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M16 20v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="3.2"/><path d="M22 20v-2a4 4 0 0 0-3-3.8"/><path d="M16 4.2a4 4 0 0 1 0 7.6"/></svg></span>
+            <span class="space-body">
+              <span class="space-name">WCS內部小群組</span>
+              <span class="space-sub">多人對話<span class="vrule" aria-hidden="true"></span>最後活動 17 小時前</span>
+            </span>
+          </li>
+
+          <li class="space-row" role="option" aria-selected="false">
+            <span class="space-icon" aria-hidden="true"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M16 20v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="3.2"/><path d="M22 20v-2a4 4 0 0 0-3-3.8"/><path d="M16 4.2a4 4 0 0 1 0 7.6"/></svg></span>
+            <span class="space-body">
+              <span class="space-name">（未命名空間）</span>
+              <span class="space-sub">多人對話<span class="vrule" aria-hidden="true"></span>最後活動 1 天前</span>
+            </span>
+          </li>
+
+          <li class="space-row" role="option" aria-selected="false">
+            <span class="space-icon" aria-hidden="true"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 9h16"/><path d="M4 15h16"/><path d="M10 3 8 21"/><path d="M16 3l-2 18"/></svg></span>
+            <span class="space-body">
+              <span class="space-name">彰銀Line BC預留 - 9月3日</span>
+              <span class="space-sub">群組<span class="vrule" aria-hidden="true"></span>最後活動 1 天前</span>
+            </span>
+          </li>
+
+          <li class="space-row" role="option" aria-selected="false">
+            <span class="space-icon" aria-hidden="true"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 9h16"/><path d="M4 15h16"/><path d="M10 3 8 21"/><path d="M16 3l-2 18"/></svg></span>
+            <span class="space-body">
+              <span class="space-name">碩網團隊ALL</span>
+              <span class="space-sub">群組<span class="vrule" aria-hidden="true"></span>最後活動 1 天前</span>
+            </span>
+          </li>
+
+          <li class="space-row" role="option" aria-selected="false">
+            <span class="space-icon" aria-hidden="true"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 9h16"/><path d="M4 15h16"/><path d="M10 3 8 21"/><path d="M16 3l-2 18"/></svg></span>
+            <span class="space-body">
+              <span class="space-name">P.S.公部門夥伴</span>
+              <span class="space-sub">群組<span class="vrule" aria-hidden="true"></span>最後活動 2 天前</span>
+            </span>
+          </li>
+
+          <li class="space-row" role="option" aria-selected="false">
+            <span class="space-icon" aria-hidden="true"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 9h16"/><path d="M4 15h16"/><path d="M10 3 8 21"/><path d="M16 3l-2 18"/></svg></span>
+            <span class="space-body">
+              <span class="space-name">TPE01P2601 北市府新案</span>
+              <span class="space-sub">群組<span class="vrule" aria-hidden="true"></span>最後活動 2 天前</span>
+            </span>
+          </li>
+
+          <li class="space-row" role="option" aria-selected="false">
+            <span class="space-icon" aria-hidden="true"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 9h16"/><path d="M4 15h16"/><path d="M10 3 8 21"/><path d="M16 3l-2 18"/></svg></span>
+            <span class="space-body">
+              <span class="space-name">工作紀錄簿</span>
+              <span class="space-sub">群組<span class="vrule" aria-hidden="true"></span>最後活動 4 天前</span>
+            </span>
+          </li>
+
+          <li class="space-row" role="option" aria-selected="false">
+            <span class="space-icon" aria-hidden="true"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 9h16"/><path d="M4 15h16"/><path d="M10 3 8 21"/><path d="M16 3l-2 18"/></svg></span>
+            <span class="space-body">
+              <span class="space-name">北富銀-內部討論</span>
+              <span class="space-sub">群組<span class="vrule" aria-hidden="true"></span>最後活動 4 天前</span>
+            </span>
+          </li>
+
+          <li class="space-row" role="option" aria-selected="false">
+            <span class="space-icon" aria-hidden="true"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 9h16"/><path d="M4 15h16"/><path d="M10 3 8 21"/><path d="M16 3l-2 18"/></svg></span>
+            <span class="space-body">
+              <span class="space-name">達駿</span>
+              <span class="space-sub">群組<span class="vrule" aria-hidden="true"></span>最後活動 4 天前</span>
+            </span>
+          </li>
+
+        </ul>
+
+        <div class="ctx-foot">
+          <span>顯示 436 / 436</span>
+          <span class="vrule" aria-hidden="true"></span>
+          <span class="live"><span class="dot-live" aria-hidden="true"></span>即時資料</span>
+        </div>
+      </aside>
+
+      <!-- ---------- 主內容區 ---------- -->
+      <main class="content">
+
+        <div class="page-head">
+          <div>
+            <h1 class="page-title">李姿誼Sica Lee</h1>
+            <div class="page-id mono">spaces/5hp2VyAAAAE</div>
+          </div>
+          <div class="page-head-actions">
+            <button class="btn" type="button">產生回覆草稿</button>
+            <button class="btn btn-primary" type="button">重新摘要</button>
+          </div>
+        </div>
+
+        <!-- 工具列：--raised -->
+        <div class="toolbar">
+          <label class="field field-style">
+            <span class="field-label">摘要風格</span>
+            <span class="control">技術細節<svg class="caret" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span>
+          </label>
+
+          <label class="field field-vendor">
+            <span class="field-label">AI 供應商</span>
+            <span class="control"><span>自動（伺服器預設：claude）</span><svg class="caret" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span>
+          </label>
+
+          <label class="field field-count">
+            <span class="field-label">抓取則數（1~1000）</span>
+            <span class="control mono" style="font-size:12.5px">3</span>
+          </label>
+        </div>
+
+        <!-- 最近訊息摺疊區 -->
+        <details class="recent">
+          <summary>
+            <svg class="chev" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg>
+            <span style="font-weight:600">最近訊息</span>
+            <span class="seg" role="group" aria-label="讀取則數">
+              <button type="button" aria-pressed="false">10</button>
+              <button type="button" aria-pressed="true">20</button>
+              <button type="button" aria-pressed="false">30</button>
+            </span>
+            <span style="color:var(--fg-subtle)">則</span>
+            <span style="margin-left:auto"><span class="btn-quiet" style="display:inline-flex;align-items:center">重新讀取</span></span>
+          </summary>
+          <div class="recent-body">展開後顯示所選則數的原始訊息。</div>
+        </details>
+
+        <!-- meta 列：以 1px 豎線分隔，不用中點 -->
+        <div class="meta">
+          <span class="meta-key">技術細節</span>
+          <span class="vrule" aria-hidden="true"></span>
+          <span>李姿誼Sica Lee</span>
+          <span class="vrule" aria-hidden="true"></span>
+          <span>讀取 3 則</span>
+          <span class="vrule" aria-hidden="true"></span>
+          <span>圖片 0 張</span>
+          <span class="vrule" aria-hidden="true"></span>
+          <span>Claude Code（本機 CLI，用你現有的訂閱）</span>
+          <span class="vrule" aria-hidden="true"></span>
+          <span class="mono">claude-cli:opus</span>
+        </div>
+
+        <div class="aux-actions">
+          <button class="btn-quiet" type="button">複製 Markdown</button>
+          <button class="btn-quiet" type="button">推播回 Google Chat</button>
+        </div>
+
+        <!-- 摘要卡片 -->
+        <section class="card">
+          <div class="card-head">
+            <span class="card-title">摘要</span>
+            <span class="right">
+              <span class="legend" aria-label="規線線型的意義">
+                <i><span class="sw solid" aria-hidden="true"></span>完整</i>
+                <i><span class="sw dashed" aria-hidden="true"></span>降級</i>
+                <i><span class="sw dotted" aria-hidden="true"></span>缺值</i>
+              </span>
+            </span>
+          </div>
+
+          <div class="sections">
+
+            <div class="sec empty">
+              <div class="sec-head">
+                <span class="sec-glyph" aria-hidden="true">○</span>
+                <span class="sec-title">🔧 技術問題與症狀</span>
+                <span class="sec-state">缺值</span>
+              </div>
+              <p class="sec-body">本次對話中未出現（僅提及需處理「北市府」相關工作，未描述任何錯誤訊息、發生條件或影響範圍）。</p>
+            </div>
+
+            <div class="sec empty">
+              <div class="sec-head">
+                <span class="sec-glyph" aria-hidden="true">○</span>
+                <span class="sec-title">🧪 已排除的假設與排查過程</span>
+                <span class="sec-state">缺值</span>
+              </div>
+              <p class="sec-body">本次對話中未出現。</p>
+            </div>
+
+            <div class="sec empty">
+              <div class="sec-head">
+                <span class="sec-glyph" aria-hidden="true">○</span>
+                <span class="sec-title">🛠 技術方案與取捨</span>
+                <span class="sec-state">缺值</span>
+              </div>
+              <p class="sec-body">本次對話中未出現。</p>
+            </div>
+
+            <div class="sec degrade">
+              <div class="sec-head">
+                <span class="sec-glyph" aria-hidden="true">◐</span>
+                <span class="sec-title">⚠️ 未解的技術問題</span>
+                <span class="sec-state">降級</span>
+              </div>
+              <p class="sec-body">本次對話中未出現技術細節。接手者若要判斷狀況，仍缺少以下資訊：</p>
+              <ul class="sec-sub">
+                <li>「北市府」所指的專案／系統與具體處理項目</li>
+                <li>是否有對應的錯誤訊息、環境（正式／測試）與影響範圍</li>
+                <li>李姿誼所「記錄」的內容為何（來源不在本段對話中）</li>
+              </ul>
+            </div>
+
+            <div class="sec full">
+              <div class="sec-head">
+                <span class="sec-glyph" aria-hidden="true">●</span>
+                <span class="sec-title">🎯 待辦事項與追蹤 (Action Items)</span>
+                <span class="sec-state">完整</span>
+              </div>
+              <p class="sec-body sec-item">[鄭浩宇] 於 2026-09-09 加班處理北市府相關工作（對話中未說明具體項目）</p>
+              <p class="sec-body sec-item">[李姿誼Sica Lee] 記錄前述事項（記錄標的內容未在本段對話中出現）</p>
+            </div>
+
+          </div>
+        </section>
+
+        <!-- Action Items -->
+        <section class="card">
+          <div class="card-head">
+            <span class="card-title">Action Items</span>
+            <span class="right">
+              <span class="count-note">（0/2 已勾選）</span>
+              <button class="btn-quiet" type="button">複製為 Markdown</button>
+            </span>
+          </div>
+
+          <div class="ai-row">
+            <span class="ai-box" role="checkbox" aria-checked="false" tabindex="0"></span>
+            <span class="ai-text"><span class="chip">鄭浩宇</span> 於 2026-09-09 加班處理北市府相關工作（對話中未說明具體項目）</span>
+          </div>
+          <div class="ai-row">
+            <span class="ai-box" role="checkbox" aria-checked="false" tabindex="0"></span>
+            <span class="ai-text"><span class="chip">李姿誼Sica Lee</span> 記錄前述事項（記錄標的內容未在本段對話中出現）</span>
+          </div>
+        </section>
+
+      </main>
+
+      <!-- ---------- 證據欄 320px ---------- -->
+      <aside class="evidence" aria-label="證據">
+
+        <div class="ev-head">
+          <span class="ev-title">歷史 Summary</span>
+          <span class="right">28 份</span>
+        </div>
+
+        <ul class="ev-list">
+          <li class="ev-item current">
+            <div class="ev-name">李姿誼Sica Lee</div>
+            <div class="ev-meta"><span class="mono">2026-09-10 08:38</span><span class="vrule" aria-hidden="true"></span><span>技術細節</span><span class="vrule" aria-hidden="true"></span><span>3 則</span></div>
+          </li>
+          <li class="ev-item">
+            <div class="ev-name">李姿誼</div>
+            <div class="ev-meta"><span class="mono">2026-09-06 22:24</span><span class="vrule" aria-hidden="true"></span><span>技術細節</span><span class="vrule" aria-hidden="true"></span><span>3 則</span></div>
+          </li>
+          <li class="ev-item">
+            <div class="ev-name">（私訊／未命名空間）</div>
+            <div class="ev-meta"><span class="mono">2026-09-06 19:56</span><span class="vrule" aria-hidden="true"></span><span>通用</span><span class="vrule" aria-hidden="true"></span><span>10 則</span></div>
+          </li>
+          <li class="ev-item">
+            <div class="ev-name">（私訊／未命名空間）</div>
+            <div class="ev-meta"><span class="mono">2026-09-06 19:55</span><span class="vrule" aria-hidden="true"></span><span>通用</span><span class="vrule" aria-hidden="true"></span><span>3 則</span></div>
+          </li>
+          <li class="ev-item">
+            <div class="ev-name">（私訊／未命名空間）</div>
+            <div class="ev-meta"><span class="mono">2026-09-06 19:55</span><span class="vrule" aria-hidden="true"></span><span>技術細節</span><span class="vrule" aria-hidden="true"></span><span>3 則</span></div>
+          </li>
+          <li class="ev-item">
+            <div class="ev-name">0.暫存</div>
+            <div class="ev-meta"><span class="mono">2026-09-06 00:47</span><span class="vrule" aria-hidden="true"></span><span>只要待辦</span><span class="vrule" aria-hidden="true"></span><span>10 則</span></div>
+          </li>
+          <li class="ev-item">
+            <div class="ev-name">0.暫存</div>
+            <div class="ev-meta"><span class="mono">2026-09-06 00:30</span><span class="vrule" aria-hidden="true"></span><span>只要待辦</span><span class="vrule" aria-hidden="true"></span><span>10 則</span></div>
+          </li>
+          <li class="ev-item">
+            <div class="ev-name">0.暫存</div>
+            <div class="ev-meta"><span class="mono">2026-09-05 12:10</span><span class="vrule" aria-hidden="true"></span><span>只要待辦</span><span class="vrule" aria-hidden="true"></span><span>10 則</span></div>
+          </li>
+        </ul>
+
+        <div class="token">
+          <div class="token-head">
+            <span class="token-label">Token 用量（近 14 天）</span>
+            <span class="token-value">240,275</span>
+          </div>
+          <table>
+            <thead>
+              <tr><th scope="col">日期</th><th scope="col">輸入</th><th scope="col">輸出</th><th scope="col">次數</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>2026-09-07</td><td>15,695</td><td>10,966</td><td>3</td></tr>
+              <tr><td>2026-09-06</td><td>40,811</td><td>26,799</td><td>13</td></tr>
+              <tr><td>2026-09-05</td><td>56,650</td><td>10,919</td><td>26</td></tr>
+              <tr><td>2026-09-04</td><td>40,256</td><td>6,907</td><td>15</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+      </aside>
+
+    </div>
+  </div>
+</div>
+
+<details class="audit">
+  <summary>對比驗算表（前景 × 四個表面 × 明暗兩主題）</summary>
+
+  <h3>算法</h3>
+  <p>
+    每個 token 的 <code>oklch(L C H)</code> 值，依 Björn Ottosson 的 OKLab 反轉係數轉成 LMS′
+    （<code>l′ = L + 0.3963377774×a + 0.2158037573×b</code> 等三式，<code>a = C×cos H</code>、<code>b = C×sin H</code>），
+    三次方得到 LMS，再乘 LMS→linear-sRGB 矩陣得到線性 RGB（超出 0~1 者截斷，本檔所有 token 皆在色域內）。
+    線性 RGB 直接套 WCAG 2.x 相對亮度 <code>Y = 0.2126R + 0.7152G + 0.0722B</code>
+    （已是線性值，不需再做 sRGB 反 gamma），對比度 <code>(Y亮 + 0.05) / (Y暗 + 0.05)</code>。
+    計算用 Python 實跑，非手估；數值四捨五入到小數二位。
+  </p>
+  <p>
+    門檻依 spec 第 5 節：決策性文字 ≥ 7:1、次級文字與標籤 ≥ 4.6:1、承載語意的規線／focus 環／字符 ≥ 3:1、disabled 文字 ≥ 2:1、純裝飾分隔線無要求。
+  </p>
+
+  <h3>亮色主題</h3>
+  <table>
+    <thead><tr><th>前景 token</th><th>門檻</th><th class="num">background</th><th class="num">surface</th><th class="num">raised</th><th class="num">muted</th><th>結果</th></tr></thead>
+    <tbody>
+      <tr><td>--foreground</td><td>≥ 7</td><td class="num">15.99</td><td class="num">16.46</td><td class="num">17.09</td><td class="num">14.89</td><td>通過</td></tr>
+      <tr><td>--fg-dim</td><td>≥ 4.6</td><td class="num">7.82</td><td class="num">8.06</td><td class="num">8.36</td><td class="num">7.29</td><td>通過（同時過 7:1）</td></tr>
+      <tr><td>--fg-subtle</td><td>≥ 4.6</td><td class="num">5.09</td><td class="num">5.24</td><td class="num">5.44</td><td class="num">4.74</td><td>通過</td></tr>
+      <tr><td>--fg-disabled</td><td>≥ 2</td><td class="num">2.87</td><td class="num">2.96</td><td class="num">3.07</td><td class="num">2.68</td><td>通過</td></tr>
+      <tr><td>--line-evidence</td><td>≥ 3</td><td class="num">3.65</td><td class="num">3.75</td><td class="num">3.90</td><td class="num">3.40</td><td>通過</td></tr>
+      <tr><td>--signal（文字／邊框／focus 環）</td><td>≥ 4.6</td><td class="num">5.33</td><td class="num">5.48</td><td class="num">5.69</td><td class="num">4.96</td><td>通過</td></tr>
+      <tr><td>--caution</td><td>≥ 4.6</td><td class="num">4.57</td><td class="num">4.70</td><td class="num">4.88</td><td class="num">4.25</td><td>本頁只用在 surface 上（4.70）＝通過；若日後放到 background／muted 需再調</td></tr>
+      <tr><td>--destructive</td><td>≥ 4.6</td><td class="num">5.59</td><td class="num">5.76</td><td class="num">5.98</td><td class="num">5.21</td><td>通過</td></tr>
+    </tbody>
+  </table>
+
+  <h3>暗色主題</h3>
+  <table>
+    <thead><tr><th>前景 token</th><th>門檻</th><th class="num">background</th><th class="num">surface</th><th class="num">raised</th><th class="num">muted</th><th>結果</th></tr></thead>
+    <tbody>
+      <tr><td>--foreground</td><td>≥ 7</td><td class="num">16.39</td><td class="num">16.11</td><td class="num">15.25</td><td class="num">16.96</td><td>通過</td></tr>
+      <tr><td>--fg-dim</td><td>≥ 4.6</td><td class="num">8.52</td><td class="num">8.38</td><td class="num">7.93</td><td class="num">8.82</td><td>通過（同時過 7:1）</td></tr>
+      <tr><td>--fg-subtle</td><td>≥ 4.6</td><td class="num">5.86</td><td class="num">5.76</td><td class="num">5.45</td><td class="num">6.07</td><td>通過</td></tr>
+      <tr><td>--fg-disabled</td><td>≥ 2</td><td class="num">2.90</td><td class="num">2.85</td><td class="num">2.70</td><td class="num">3.00</td><td>通過</td></tr>
+      <tr><td>--line-evidence</td><td>≥ 3</td><td class="num">5.20</td><td class="num">5.11</td><td class="num">4.84</td><td class="num">5.38</td><td>通過</td></tr>
+      <tr><td>--signal</td><td>≥ 4.6</td><td class="num">7.94</td><td class="num">7.81</td><td class="num">7.39</td><td class="num">8.22</td><td>通過</td></tr>
+      <tr><td>--caution</td><td>≥ 4.6</td><td class="num">10.04</td><td class="num">9.86</td><td class="num">9.34</td><td class="num">10.38</td><td>通過</td></tr>
+      <tr><td>--destructive</td><td>≥ 4.6</td><td class="num">6.61</td><td class="num">6.50</td><td class="num">6.15</td><td class="num">6.84</td><td>通過</td></tr>
+    </tbody>
+  </table>
+
+  <h3>實心 signal 按鈕上的文字（--signal-ink on --signal）</h3>
+  <table>
+    <thead><tr><th>主題</th><th>門檻</th><th class="num">對比</th><th>結果</th></tr></thead>
+    <tbody>
+      <tr><td>亮色</td><td>≥ 4.6</td><td class="num">5.67</td><td>通過</td></tr>
+      <tr><td>暗色</td><td>≥ 4.6</td><td class="num">7.96</td><td>通過</td></tr>
+    </tbody>
+  </table>
+
+  <h3>四個表面彼此的分離度（v1 = 輕）</h3>
+  <p>
+    這一版刻意把 surface 與 background 的 ΔL 壓到 0.010，卡片靠 1px <code>--line</code> 邊框界定而非填色差。
+    表面之間沒有對比門檻（沒有文字疊在另一個表面上），此處只記錄實測值供橫向比較：
+  </p>
+  <table>
+    <thead><tr><th>主題</th><th>token</th><th class="num">L</th><th class="num">ΔL 對 background</th><th class="num">對 background 對比</th></tr></thead>
+    <tbody>
+      <tr><td>亮色</td><td>--background</td><td class="num">0.972</td><td class="num">0</td><td class="num">1.000</td></tr>
+      <tr><td>亮色</td><td>--surface</td><td class="num">0.982</td><td class="num">+0.010</td><td class="num">1.030</td></tr>
+      <tr><td>亮色</td><td>--raised</td><td class="num">0.995</td><td class="num">+0.023</td><td class="num">1.069</td></tr>
+      <tr><td>亮色</td><td>--muted</td><td class="num">0.948</td><td class="num">−0.024</td><td class="num">1.074</td></tr>
+      <tr><td>暗色</td><td>--background</td><td class="num">0.175</td><td class="num">0</td><td class="num">1.000</td></tr>
+      <tr><td>暗色</td><td>--surface</td><td class="num">0.185</td><td class="num">+0.010</td><td class="num">1.018</td></tr>
+      <tr><td>暗色</td><td>--raised</td><td class="num">0.212</td><td class="num">+0.037</td><td class="num">1.075</td></tr>
+      <tr><td>暗色</td><td>--muted</td><td class="num">0.152</td><td class="num">−0.023</td><td class="num">1.034</td></tr>
+    </tbody>
+  </table>
+
+  <h3>純裝飾分隔線（spec 明列無門檻，僅記錄）</h3>
+  <table>
+    <thead><tr><th>主題</th><th>token</th><th class="num">對 background 對比</th></tr></thead>
+    <tbody>
+      <tr><td>亮色</td><td>--line</td><td class="num">1.24</td></tr>
+      <tr><td>亮色</td><td>--line-strong</td><td class="num">1.56</td></tr>
+      <tr><td>暗色</td><td>--line</td><td class="num">1.39</td></tr>
+      <tr><td>暗色</td><td>--line-strong</td><td class="num">2.01</td></tr>
+    </tbody>
+  </table>
+
+  <h3>未驗算／已知限制（不編數字）</h3>
+  <p>
+    1. <code>--signal-quiet</code>（當前導覽項與選取列的極淡底）只當背景用，其上文字一律是 <code>--signal</code> 或
+    <code>--foreground</code>；<b>這一組合未驗算</b>，因為它不在 spec 要求的「前景 × 四個表面」矩陣內。
+    實作成 React 時應補算 <code>--foreground</code> 與 <code>--signal</code> 對 <code>--signal-quiet</code> 的對比。<br>
+    2. 三個語意色的色相距離：signal h50、caution h75、destructive h24，兩兩相差 25 與 26 度。
+    <b>色相距離本身未做色盲模擬驗證</b>。因此本版所有狀態的第一區分都不是顏色：摘要章節用左側線型（實線／虛線／點線）
+    加字符（● ◐ ○）並在卡片標頭放出線型圖例；導覽的「即將推出」用虛線群組框加直排文字群標加標籤下方點線；
+    顏色一律只作冗餘。<br>
+    3. hover 狀態的對比未逐一列算（hover 只換表面，前景 token 不變，落在上表同一列的範圍內）。
+  </p>
+</details>
+
+<script>
+(function () {
+  var root = document.documentElement;
+  var btn = document.getElementById('theme-toggle');
+  var txt = document.getElementById('theme-text');
+  var icon = document.getElementById('theme-icon');
+  var SUN = '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.9 4.9 1.4 1.4"/><path d="m17.7 17.7 1.4 1.4"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m4.9 19.1 1.4-1.4"/><path d="m17.7 6.3 1.4-1.4"/>';
+  var MOON = '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>';
+  btn.addEventListener('click', function () {
+    var dark = root.classList.toggle('dark');
+    btn.setAttribute('aria-pressed', dark ? 'true' : 'false');
+    txt.textContent = dark ? '暗色' : '亮色';
+    icon.innerHTML = dark ? MOON : SUN;
+  });
+})();
+</script>
+
+</body>
+</html>

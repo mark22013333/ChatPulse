@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { LayersIcon, Loader2Icon, RefreshCwIcon, SearchIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -14,7 +14,9 @@ import {
 import { SpaceList } from '@/components/SpaceList'
 import { relativeTime } from '@/lib/format'
 import { onEnter } from '@/lib/keyboard'
-import { filterSpaces, useSpacesStore } from '@/store/spaces'
+import { hashForSummary } from '@/lib/route'
+import { useRouter } from '@/router/useRouter'
+import { filterSpaces, sortByPinned, useSpacesStore } from '@/store/spaces'
 import type { Space } from '@/lib/types'
 
 /** 左側 Space 導覽（搜尋 + 強制刷新 + 虛擬滾動清單）。 */
@@ -29,19 +31,22 @@ export function SpacesRail() {
   const search = useSpacesStore((state) => state.search)
   const selectedId = useSpacesStore((state) => state.selectedId)
   const setSearch = useSpacesStore((state) => state.setSearch)
-  const select = useSpacesStore((state) => state.select)
   const load = useSpacesStore((state) => state.load)
   const rename = useSpacesStore((state) => state.rename)
+
+  // 點清單走 navigate 而不是直接 select：這樣「點擊」與「貼網址」走同一條
+  // 路徑，只有一種行為要維護（設計規格 §6.6）
+  const { navigate } = useRouter()
 
   // 正在改名的空間；null＝對話框關著
   const [renaming, setRenaming] = useState<Space | null>(null)
   const [aliasDraft, setAliasDraft] = useState('')
 
-  useEffect(() => {
-    if (items.length === 0) void load()
-  }, [items.length, load])
+  // 首次載入搬到 AppShell 的 bootstrap（設計規格 §7.4）：釘選、命令面板、
+  // Reference Space 三處都要 spaces，不該由「哪個畫面剛好先掛載」決定何時載入。
 
-  const visible = useMemo(() => filterSpaces(items, search), [items, search])
+  // 釘選的排前面。過濾與排序刻意分開（filterSpaces 有 14 項既有測試打在上面）
+  const visible = useMemo(() => sortByPinned(filterSpaces(items, search)), [items, search])
 
   const openRename = (space: Space) => {
     // 自動猜的名字不預填——那是猜的，讓使用者從空白開始比較清楚；
@@ -68,7 +73,6 @@ export function SpacesRail() {
             className="ml-auto"
             onClick={() => void load({ refresh: true })}
             disabled={refreshing || loading}
-            title="跳過 5 分鐘快取，向 Google 重新取回"
           >
             {refreshing ? <Loader2Icon className="animate-spin" /> : <RefreshCwIcon />}
             強制刷新
@@ -87,7 +91,7 @@ export function SpacesRail() {
       </div>
 
       {error ? (
-        <p className="shrink-0 border-b border-destructive/30 bg-destructive/10 px-3 py-2 text-[11px] text-destructive">
+        <p className="shrink-0 border-b border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
           {error}
         </p>
       ) : null}
@@ -95,8 +99,9 @@ export function SpacesRail() {
       <SpaceList
         spaces={visible}
         loading={loading && items.length === 0}
+        label="要做摘要的 Space"
         selectedId={selectedId}
-        onSelect={(space) => select(space.id)}
+        onSelect={(space) => navigate(hashForSummary(space.id))}
         onRename={openRename}
       />
 
@@ -123,7 +128,7 @@ export function SpacesRail() {
               // 是「選這個字」，不是「儲存」。見 lib/keyboard.ts
               onKeyDown={onEnter(() => void submitRename())}
             />
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               清空後儲存＝取消自訂，回到自動辨識的結果。這個名字只有你看得到，
               不會改動 Google Chat。
             </p>
@@ -138,11 +143,17 @@ export function SpacesRail() {
         </DialogContent>
       </Dialog>
 
-      <div className="flex shrink-0 items-center justify-between border-t border-border px-3 py-1.5 text-[10px] text-muted-foreground">
-        <span>
-          顯示 {visible.length} / {total || items.length}
-        </span>
-        <span>{cached ? `快取於 ${relativeTime(cachedAt)}` : '即時資料'}</span>
+      <div className="shrink-0 border-t border-border px-3 py-1.5 text-2xs text-muted-foreground">
+        <div className="flex items-center justify-between gap-2">
+          <span>
+            顯示 {visible.length} / {total || items.length}
+          </span>
+          <span>{cached ? `快取於 ${relativeTime(cachedAt)}` : '即時資料'}</span>
+        </div>
+        {/* 「強制刷新」做什麼，原本只活在那顆按鈕的 tooltip 裡（規格 §10.3）。
+            放在這裡是因為它就是在解釋上面那個「快取於」。**自己一行**：
+            併進上面那個 justify-between 的兩欄會在 280px 的側欄撐爆。 */}
+        {cached ? <p className="pt-0.5">強制刷新會跳過快取，向 Google 重新取回</p> : null}
       </div>
     </div>
   )

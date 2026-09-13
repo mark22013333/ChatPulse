@@ -16,8 +16,16 @@ import type { KeyboardEvent } from 'react'
  * - `keyCode === 229` 是 IME 的通用鍵碼，補上舊瀏覽器與 Safari 某些版本
  *   不設 isComposing 的情況
  */
-export function isComposing(event: KeyboardEvent): boolean {
-  return event.nativeEvent.isComposing || event.keyCode === 229
+export function isComposing(event: KeyboardEvent | globalThis.KeyboardEvent): boolean {
+  // 全域監聽（window.addEventListener）拿到的是**原生**事件，沒有 nativeEvent；
+  // React 的 handler 拿到的是合成事件。兩種都要吃得下，否則命令面板的
+  // 快捷鍵會在注音選字時被觸發。
+  //
+  // `isComposing` 只在原生事件上（合成事件把它轉發到 nativeEvent），
+  // 而 `keyCode` 兩邊都有——所以兩個來源都要看，不能只看其中一個。
+  const native = 'nativeEvent' in event ? event.nativeEvent : event
+  const keyCode = ('keyCode' in event ? event.keyCode : undefined) ?? native.keyCode
+  return native.isComposing || keyCode === 229
 }
 
 /**

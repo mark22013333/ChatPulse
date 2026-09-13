@@ -106,7 +106,7 @@ function installFakeStream() {
     if (await importBtn.isVisible().catch(() => false)) {
       await importBtn.click()
     }
-    await page.locator('nav button', { hasText: '摘要工作台' }).waitFor({ timeout: 20000 })
+    await page.locator('nav[aria-label="主導覽"] a[href^="#/summary"]').waitFor({ timeout: 20000 })
     console.log('\n【1】登入並進入儀表板')
     check('儀表板載入', true)
 
@@ -151,16 +151,21 @@ function installFakeStream() {
 
     // ── 切到另一個頁籤 ───────────────────────────────────
     console.log('\n【3】切換到 Mention 收件匣（bug 就發生在這裡）')
-    await page.locator('nav button', { hasText: 'Mention 收件匣' }).click()
+    await page.locator('nav[aria-label="主導覽"] a[href^="#/mentions"]').click()
     await page.waitForTimeout(600)
 
     const abortedAfterSwitch = await page.evaluate(() => window.__sse.aborted)
     check('切走後串流「沒有」被中止', abortedAfterSwitch === false,
       abortedAfterSwitch ? '串流被 abort()，生成中斷、額度白燒' : 'AbortSignal 未觸發')
 
-    // 頁籤上的生成中指示
-    const busyDot = page.locator('nav button', { hasText: '摘要工作台' }).locator('span.rounded-full')
-    check('摘要頁籤顯示「生成中」指示', (await busyDot.count()) > 0)
+    // 導覽項上的生成中指示。
+    //
+    // **原本寫的是 `span.rounded-full`，那驗不到東西**：生成中指示的 class 是
+    // `.live-dot`（index.css:386 自訂），而 `rounded-full` 只出現在未處理數字的
+    // badge 上——摘要那一項根本沒有 badge。所以這條 check 以前恆為 false，
+    // 只是沒人注意到。2026-09-12 改版時一併修正。
+    const busyDot = page.locator('nav[aria-label="主導覽"] a[href^="#/summary"] span.live-dot')
+    check('摘要導覽項顯示「生成中」指示', (await busyDot.count()) > 0)
 
     // ── 切走期間繼續送內容 ───────────────────────────────
     console.log('\n【4】切走期間串流繼續（驗證後端仍在寫入前端 store）')
@@ -171,7 +176,7 @@ function installFakeStream() {
 
     // ── 切回來 ───────────────────────────────────────────
     console.log('\n【5】切回摘要工作台')
-    await page.locator('nav button', { hasText: '摘要工作台' }).click()
+    await page.locator('nav[aria-label="主導覽"] a[href^="#/summary"]').click()
     await page.waitForTimeout(700)
 
     const afterText = await page.locator('main').innerText()

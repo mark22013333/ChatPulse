@@ -49,10 +49,12 @@ export function ActionItems({ markdown }: ActionItemsProps) {
   }
 
   return (
-    <section className="rounded-xl border border-border bg-card/60 p-4">
-      <div className="mb-3 flex items-center justify-between gap-2">
+    // 與摘要卡片同一套語法：標頭帶（同色 ＋ 一條細線）＋ 內容區。
+    // 兩張卡片長得一樣，是為了讓「這一頁有幾個區塊」用掃的就數得出來。
+    <section className="overflow-hidden rounded-xl border border-border bg-surface">
+      <div className="flex items-center justify-between gap-2 border-b border-line px-4 py-2">
         <h3 className="flex items-center gap-2 text-sm font-semibold">
-          <ListChecksIcon className="size-4 text-emerald-500" />
+          <ListChecksIcon className="size-4 text-verified" />
           Action Items
           <span className="text-xs font-normal text-muted-foreground">
             （{checked.size}/{items.length} 已勾選）
@@ -64,6 +66,7 @@ export function ActionItems({ markdown }: ActionItemsProps) {
         </Button>
       </div>
 
+      <div className="p-4">
       {items.length === 0 ? (
         <p className="text-xs text-muted-foreground">
           這份摘要沒有偵測到指派格式的待辦（`• [負責人] 任務`）。
@@ -72,7 +75,12 @@ export function ActionItems({ markdown }: ActionItemsProps) {
         <ul className="space-y-1.5">
           {items.map((item) => (
             <li key={item.key}>
-              <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-border/60 bg-background/60 p-2 transition-colors hover:border-border">
+              {/*
+                項目底用 bg-background 而不是 bg-muted：muted 在淺色比 surface 暗、
+                在深色比 surface 亮，拿它當「凹進去的欄位」兩個主題的方向會相反。
+                background 在兩個主題都比 surface 暗一階，凹陷方向才一致。
+              */}
+              <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-line bg-background p-2 transition-colors hover:border-line-strong">
                 <Checkbox
                   checked={checked.has(item.key)}
                   onCheckedChange={() => toggle(item.key)}
@@ -80,7 +88,7 @@ export function ActionItems({ markdown }: ActionItemsProps) {
                 />
                 <span className="min-w-0 text-xs leading-relaxed">
                   {item.owner ? (
-                    <span className="mr-1.5 rounded bg-emerald-500/10 px-1.5 py-0.5 font-medium text-emerald-500">
+                    <span className="mr-1.5 rounded bg-signal-wash px-1.5 py-0.5 font-medium text-verified">
                       {item.owner}
                     </span>
                   ) : null}
@@ -93,6 +101,7 @@ export function ActionItems({ markdown }: ActionItemsProps) {
           ))}
         </ul>
       )}
+      </div>
     </section>
   )
 }

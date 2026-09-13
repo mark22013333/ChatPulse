@@ -54,7 +54,9 @@ interface ReplySettingsState {
     url?: string
     ref?: string
     name?: string
-  }) => Promise<Persona | null>
+    /** 回傳整個結果而不只是 persona，因為 `notice`（例如「這是從 repo
+     *  根目錄匯入的」）與 persona 同等重要——它是要**看一眼**的提醒。 */
+  }) => Promise<{ persona: Persona; notice?: string | null } | null>
   createPersona: (body: {
     name: string
     description?: string
@@ -277,7 +279,7 @@ export const useReplySettingsStore = create<ReplySettingsState>((set, get) => ({
     try {
       const result = await api.importPersona(body)
       await get().loadPersonas()
-      return result.persona
+      return { persona: result.persona, notice: result.notice ?? null }
     } catch (err) {
       set({ error: errorMessage(err) })
       return null

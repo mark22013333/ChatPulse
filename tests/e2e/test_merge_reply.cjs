@@ -77,7 +77,9 @@ const check = (label, ok, detail = '') => {
   }
 
   console.log('\n【1】切到 Mention 收件匣')
-  await page.getByRole('button', { name: /Mention 收件匣/ }).first().click()
+  // 2026-09-12 改版：工作台切換搬到左側主導覽，而且照規格 §10.2 是 <a> 不是
+  // <button>。用 href 而不是文字比對——導覽收合時顯示的是兩字短標籤「收件」。
+  await page.locator('nav[aria-label="主導覽"] a[href^="#/mentions"]').click()
   const boxes = page.locator('[role="checkbox"]')
   // **不可以用固定 waitForTimeout 之後直接數**：收件匣是非同步載入的，
   // 慢一點就數到 0，而後面的 click 有自動等待所以會恢復——表現成

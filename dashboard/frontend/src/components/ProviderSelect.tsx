@@ -68,7 +68,7 @@ export function ProviderSelect({ id, disabled, triggerClassName, className }: Pr
   return (
     <div className={cn('flex flex-col gap-1', className)}>
       <div className="flex items-center gap-1">
-        <Label htmlFor={id} className="text-[11px] text-muted-foreground">
+        <Label htmlFor={id} className="text-xs text-muted-foreground">
           AI 供應商
         </Label>
         {canSaveDefault ? (
@@ -76,10 +76,9 @@ export function ProviderSelect({ id, disabled, triggerClassName, className }: Pr
             type="button"
             size="xs"
             variant="ghost"
-            className="h-4 px-1 text-[10px] text-muted-foreground"
+            className="h-4 px-1 text-2xs text-muted-foreground"
             disabled={saving}
             onClick={() => void handleSave()}
-            title="把目前選擇存成個人預設（PATCH /preferences）"
           >
             {saving ? (
               <Loader2Icon className="size-3 animate-spin" />
@@ -99,7 +98,7 @@ export function ProviderSelect({ id, disabled, triggerClassName, className }: Pr
           <SelectItem value={AUTO_PROVIDER}>
             <span className="flex w-full flex-col gap-0.5 whitespace-normal">
               <span className="font-medium">{autoLabel}</span>
-              <span className="text-[10px] leading-snug text-muted-foreground">
+              <span className="text-2xs leading-snug text-muted-foreground">
                 不指定供應商，由伺服器依你的偏好或自身預設決定。
               </span>
             </span>
@@ -110,23 +109,24 @@ export function ProviderSelect({ id, disabled, triggerClassName, className }: Pr
               key={item.name}
               value={item.name}
               disabled={!item.available}
-              title={item.reason}
+              // reason 在下面已經是可見文字（不可用時還是 caution 色），
+              // 放進 tooltip 是真重複——而且 disabled 的項目摸不到 tooltip
             >
               <span className="flex w-full flex-col gap-0.5 whitespace-normal">
                 <span className="flex flex-wrap items-center gap-1.5">
                   <span className="font-medium">{item.label}</span>
                   {item.available ? null : (
-                    <span className="rounded border border-amber-500/40 bg-amber-500/10 px-1 py-px text-[10px] text-amber-600 dark:text-amber-500">
+                    <span className="rounded border border-caution-line bg-caution/10 px-1 py-px text-2xs text-caution">
                       無法使用
                     </span>
                   )}
                 </span>
-                <span className="font-mono text-[10px] text-muted-foreground">{item.model}</span>
+                <span className="metric text-2xs text-muted-foreground">{item.model}</span>
                 {item.reason ? (
                   <span
                     className={cn(
-                      'text-[10px] leading-snug',
-                      item.available ? 'text-muted-foreground' : 'text-amber-600 dark:text-amber-500',
+                      'text-2xs leading-snug',
+                      item.available ? 'text-muted-foreground' : 'text-caution',
                     )}
                   >
                     {item.reason}
