@@ -456,6 +456,70 @@ export interface CodeProject {
 }
 
 /**
+ * 「我的工作 repo」的驗證結果（ADR-0008、api-contract「Draft Worklog」節）。
+ *
+ * **形狀刻意與 `CodeProjectVerification` 不同**：那邊要驗「每個環境釘死的分支
+ * 還在不在」，這邊沒有釘死的分支可以驗，硬套同一個形狀只會多出一個永遠空著
+ * 的 `branches` 欄位。
+ */
+export interface WorkRepoVerification {
+  ok: boolean
+  /** `ok: false` 時是可以直接顯示的繁中句子，同一份字串也會寫進 `last_verify_error`。 */
+  error?: string | null
+  /** 剛 `git init`、還沒有任何 commit 的 repo 是 `null`。那**不是**錯誤，`ok` 仍然是 `true`。 */
+  head_sha?: string | null
+  /**
+   * 最近 200 筆 commit 的作者信箱，去重後最近用過的排前面。
+   *
+   * **它是給人看的參考，後端不會自動寫進 `author_emails`**——裡面本來就會混進
+   * 同事的信箱。要由人挑，系統不自動發現。
+   */
+  detected_emails?: string[]
+}
+
+/**
+ * 「我的工作 repo」：工時草稿要從哪些本機 git repo 撈 commit 當證據。
+ *
+ * **與 `CodeProject`（參考專案）是兩份不同的登錄，不要共用。** 那邊是為了
+ * 「查程式碼回答問題」而登的，必須釘死是哪個環境的哪一版；這邊是為了
+ * 「回想這天做了什麼」。兩者的分支語意正好相反，見 `branch_filter`。
+ */
+export interface WorkRepo {
+  id: number
+  name: string
+  /** 絕對路徑。相對路徑會相對於伺服器的工作目錄去解，那跟使用者心裡想的不是同一個地方。 */
+  repo_path: string
+  /**
+   * 要撈誰的 commit。**陣列不是單值**：同一個人在不同 repo 常常設不同的
+   * `user.email`，只填一個會讓另一個信箱的 commit 靜默漏掉。
+   *
+   * ⚠️ **空陣列＝不限作者**，會撈到這個 repo 裡所有人的 commit。後端不擋。
+   */
+  author_emails: string[]
+  /**
+   * 分支白名單。⚠️ **空陣列＝掃全部分支（`--all`）**，不是「不掃」。
+   *
+   * 這與 `CodeProject.branches`「環境 → 釘死一個分支」**相反**，不是疏忽：
+   * 那邊拿錯環境等於給出錯的答案，這邊漏掉一個還沒合併的 feature 分支
+   * 就等於漏掉那天的工作。
+   */
+  branch_filter: string[]
+  /**
+   * ⚠️ **只用來把該專案的 issue 排進候選清單並標示來源，絕不自動填工時**
+   * （ADR-0008 的唯一硬規則：專案歸屬一律由 Viewer 在確認畫面選）。
+   */
+  default_zplanner_project_id?: number | null
+  default_zplanner_project_key?: string | null
+  enabled: boolean
+  last_verified_at?: string | null
+  last_verify_error?: string | null
+  created_at?: string
+  updated_at?: string
+  /** POST／PATCH／verify 會回帶；GET 清單不會。 */
+  verification?: WorkRepoVerification
+}
+
+/**
  * `meta` 事件裡的檢索結果：模型開口**之前**就送到前端。
  * 讓 Viewer 一眼判斷依據對不對（搜錯環境、搜錯關鍵字），
  * 不必先讀完一整段生成文字。

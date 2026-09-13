@@ -28,6 +28,7 @@ export const SETTINGS_TABS = [
   'personas',
   'prompts',
   'code-projects',
+  'work-repos',
   'spaces',
   'data',
   'diagnostics',
