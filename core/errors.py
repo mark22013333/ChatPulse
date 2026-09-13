@@ -216,6 +216,85 @@ class SepiaUnavailable(ChatPulseError):
     default_message = "Sepia 潤稿目前無法使用"
 
 
+class ZPlannerAuthError(ChatPulseError):
+    """ZPlanner 回 code 401：token 無效、過期或根本沒帶。
+
+    **刻意與 NOT_AUTHENTICATED 分開，雖然兩者都是 401 語意。** 那個是
+    「Viewer 的 ChatPulse session 過期了」，前端該做的是把人導去重新登入
+    Google；這個是「伺服器手上那把 ZPlanner token 不能用了」，Viewer 再怎麼
+    重新登入都沒用，得由管理者去 ZPlanner 的 /api/tokens/ 重產一把、更新
+    ZPLANNER_APIKEY 再重啟。合成同一個錯誤碼會讓前端把人導進一個
+    「登入了還是壞的」的迴圈。
+
+    http_status 因此是 500 而不是 401——問題出在伺服器的設定，不是呼叫端。
+    """
+
+    code = "ZPLANNER_AUTH_ERROR"
+    http_status = 500
+    default_message = "ZPlanner token 無效或已過期"
+
+
+class ZPlannerForbidden(ChatPulseError):
+    """ZPlanner 回 code 403：這個帳號在該專案沒有這項權限。
+
+    這是**正常的可預期結果**，不是設定錯誤：ZPlanner 的權限是每個專案各自
+    一張角色矩陣、由該專案 PM 設定，同一把 token 在 A 專案能填工時、在 B
+    專案不能。所以前端要能照實說「你在這個專案沒有填工時的權限」，而不是
+    報一句「系統設定有問題」讓人去找管理者——找了也沒用，要找的是該專案 PM。
+    """
+
+    code = "ZPLANNER_FORBIDDEN"
+    http_status = 403
+    default_message = "你在該 ZPlanner 專案沒有這項權限"
+
+
+class ZPlannerNotFound(ChatPulseError):
+    code = "ZPLANNER_NOT_FOUND"
+    http_status = 404
+    default_message = "找不到指定的 ZPlanner 資源"
+
+
+class ZPlannerInvalidParameter(ChatPulseError):
+    """ZPlanner 回 code 400：hours／date／start_time 之類的格式不合。
+
+    刻意與 INVALID_PARAMETER 分開：那個是 ChatPulse 自己的 API 契約被違反
+    （呼叫端的錯），這個是 ZPlanner 那側的欄位規則被違反。兩者要修的地方
+    不同——後者要去對照 ZPlanner 的欄位格式（例如 hours 是**字串**且最多
+    兩位小數），而不是去翻 ChatPulse 的 api-contract。
+    """
+
+    code = "ZPLANNER_INVALID_PARAMETER"
+    http_status = 400
+    default_message = "ZPlanner 欄位格式錯誤"
+
+
+class ZPlannerUnavailable(ChatPulseError):
+    """連不上 ZPlanner，或連上了但逾時——**請求沒有到達應用層**。
+
+    與 ZPLANNER_API_ERROR 分開的理由和 PERSONA_SOURCE_ERROR 與
+    PERSONA_INVALID 同族：這個是「東西拿不到」（稍後再試、確認 VPN／內網
+    通不通），那個是「拿到了但讀不出東西」（ZPlanner 改了回應格式，要改程式）。
+    對寫入操作來說這個差別更關鍵：逾時**不保證沒寫進去**，重試前要先查。
+    """
+
+    code = "ZPLANNER_UNAVAILABLE"
+    http_status = 502
+    default_message = "無法連線到 ZPlanner"
+
+
+class ZPlannerApiError(ChatPulseError):
+    """連上了，但回應不是預期的形狀（非 JSON、缺 code 欄位、未知的 code）。
+
+    這一類一律往上拋而不是猜——見 `core/zplanner_client` 的模組 docstring：
+    這支 API 成敗只看 body 的 code，所以「讀不出 code」等於「不知道成功了
+    沒有」，靜默當成成功是這個整合最貴的失敗模式。
+    """
+
+    code = "ZPLANNER_API_ERROR"
+    http_status = 502
+    default_message = "ZPlanner 回應非預期內容"
+
+
 def classify_google_api_error(status_code: int, body: str) -> ChatPulseError:
     """把 Google Chat 的 HTTP 錯誤轉成對應的 ChatPulseError。
 
@@ -241,3 +320,31 @@ def classify_gemini_error(status_code: int, body: str) -> ChatPulseError:
     if status_code in (401, 403):
         return ConfigurationError("Gemini API key 無效或權限不足", detail=snippet)
     return GeminiApiError(detail=snippet)
+
+
+def classify_zplanner_error(code: int, message: str = "") -> ChatPulseError:
+    """把 ZPlanner **回應主體裡的** code 轉成對應的 ChatPulseError。
+
+    ⚠️ **簽章刻意與上面兩個 classify_* 不同：第一個參數不是 HTTP 狀態碼。**
+    ZPlanner 的 HTTP 狀態碼恆為 200（連 401／403 都是），拿它分流等於把每一種
+    失敗都當成功。呼叫端必須傳 body 的 `code` 欄位進來，不是 `resp.status_code`。
+    完整說明見 `core/zplanner_client` 的模組 docstring。
+
+    ZPlanner 自己的 message（「權限不足」「請先登入」）放進 detail 保留原文，
+    對外訊息用我們的 default_message——後者帶得動「該找誰、下一步做什麼」，
+    前者只說了發生什麼事。這與 classify_google_api_error 的處理一致。
+    """
+    snippet = (message or "").strip()[:400]
+    if code == 400:
+        return ZPlannerInvalidParameter(detail=snippet)
+    if code == 401:
+        return ZPlannerAuthError(detail=snippet)
+    if code == 403:
+        return ZPlannerForbidden(detail=snippet)
+    if code == 404:
+        return ZPlannerNotFound(detail=snippet)
+    # 未知 code 一律往上拋。**不要**在這裡 fallback 成「當作成功」——
+    # 這支 API 沒有其他管道可以判斷成敗，猜錯的代價是靜默寫入或靜默漏資料。
+    return ZPlannerApiError(
+        f"ZPlanner 回傳未預期的 code {code}", detail=snippet
+    )
