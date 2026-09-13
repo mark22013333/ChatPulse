@@ -146,6 +146,28 @@ class WorkRepoUnavailable(ChatPulseError):
     default_message = "工作 repo 的路徑不存在或不是 git repo"
 
 
+class WorklogAllocationError(ChatPulseError):
+    """這組數字算不出一份工時分配（`core/worklog_allocation.py`）。
+
+    刻意與 INVALID_PARAMETER 分開，雖然兩者都是 400：那個是「HTTP 請求沒照
+    api-contract 帶參數」——呼叫端的程式錯了，訊息要給前端工程師看；這個是
+    「參數形狀都對，但這組輸入分不出時數」：總時數湊不到半小時、這天一筆
+    證據都沒有、或權重是負數。
+
+    分開的理由是**下一步不同**。前者要改程式；後者多半要 Viewer 自己改輸入
+    的總時數（前端該把游標送回那個欄位），只有「權重是負數／NaN」那一種
+    是上游證據蒐集的 bug——而那一種借用 INVALID_PARAMETER 的話會混進一堆
+    前端傳錯參數的紀錄裡，是查工時算錯時最不想遇到的事。
+
+    ⚠️ 它永遠不是「分配失敗所以填 0」的降級訊號。工時算錯會進月結，月結後
+    要走 correction-request 才改得動，所以這裡寧可整份草稿失敗。
+    """
+
+    code = "WORKLOG_ALLOCATION_ERROR"
+    http_status = 400
+    default_message = "這組數字無法分配成工時"
+
+
 class RouteNotFound(ChatPulseError):
     """API 路徑不存在。
 
