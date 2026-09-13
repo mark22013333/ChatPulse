@@ -220,7 +220,9 @@ export function AppShell() {
             />
           </Pane>
           <Pane active={view === 'worklog'}>
-            <WorklogWeekRail />
+            {/* 傳 active：Pane 不卸載子元件，沒有這道閘的話光是打開 app
+                就會對 ZPlanner 發一次請求 */}
+            <WorklogWeekRail active={view === 'worklog'} />
           </Pane>
         </aside>
 

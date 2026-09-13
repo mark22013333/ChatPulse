@@ -27,6 +27,7 @@ import type {
   HealthResponse,
   UsageResponse,
   WorkRepo,
+  WorklogWeekResponse,
 } from './types'
 
 export const API_BASE = '/api/v1'
@@ -356,6 +357,20 @@ export const api = {
     request<{ deleted: boolean }>(`/work-repos/${id}`, { method: 'DELETE' }),
   /** 重新確認路徑還是可讀的 git repo，順便回報偵測到的作者信箱。 */
   verifyWorkRepo: (id: number) => post<WorkRepo>(`/work-repos/${id}/verify`),
+
+  // ── 工時草稿：週檢視（Draft Worklog，ADR-0008）─────────────
+  /**
+   * 一週的工時概況：本地草稿狀態 ＋ ZPlanner 既有工時。
+   *
+   * `weekStart` 是 `YYYY-MM-DD`，**不強制是星期一**（週的起點是前端的顯示
+   * 決定）。但**顯示「這是哪一週」一律讀回應裡的 `week_start`／`week_end`**，
+   * 不要拿這個參數當答案。
+   *
+   * **ZPlanner 不可用不會讓這支失敗**：`zplanner` 變成
+   * `{available: false, reason}`、`days[].zplanner` 全是 `null`，本地草稿照常回。
+   */
+  worklogWeek: (weekStart: string) =>
+    request<WorklogWeekResponse>(`/worklogs/week${query({ week_start: weekStart })}`),
 
   // ── 維運 ────────────────────────────────────────────────
   usage: (days = 14) => request<UsageResponse>(`/usage${query({ days })}`),
