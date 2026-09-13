@@ -70,6 +70,7 @@ const ALL_ACTIONS = [
   'sequence',
   'go-summary',
   'go-mentions',
+  'go-worklog',
   'go-settings',
   'go-diagnostics',
   'generate',

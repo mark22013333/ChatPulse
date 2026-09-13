@@ -2,6 +2,7 @@ import { PanelRightIcon, SearchIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useEvidenceBundle } from '@/components/evidence/EvidenceColumn'
 import { useBreakpoint } from '@/hooks/useBreakpoint'
+import { evidenceOriginOf } from '@/lib/evidence'
 import { labelOf } from '@/lib/modules'
 import { useRouter } from '@/router/useRouter'
 import { useAuthStore } from '@/store/auth'
@@ -38,7 +39,7 @@ export function TopBar() {
   const toggleDrawer = useUiStore((s) => s.toggleDrawer)
 
   // 抽屜關著時，證據鈕要讓人知道「值得打開看一眼」
-  const { bundle } = useEvidenceBundle(route.section === 'mentions' ? 'draft' : 'summary')
+  const { bundle } = useEvidenceBundle(evidenceOriginOf(route.section))
   const attentionCount = bundle.attentionCount
 
   return (

@@ -1,12 +1,35 @@
 import { useMemo } from 'react'
 import { EvidenceList } from '@/components/evidence/EvidenceList'
-import { toEvidence } from '@/lib/evidence'
+import { toEvidence, type EvidenceOrigin } from '@/lib/evidence'
+import type { DraftPolishMeta, SseMeta } from '@/lib/types'
 import { useDraftStore } from '@/store/draft'
 import { providerLabel, useProviderStore } from '@/store/providers'
 import { useSummaryStore } from '@/store/summary'
 
 interface EvidenceColumnProps {
-  origin: 'summary' | 'draft'
+  origin: EvidenceOrigin
+}
+
+/** 一個來源要餵給 `toEvidence` 的全部東西。 */
+interface EvidenceSource {
+  meta: SseMeta | null
+  polish: DraftPolishMeta | null
+  streaming: boolean
+  restored: boolean
+}
+
+/**
+ * 還沒有證據時那句話。
+ *
+ * 三個來源各自說清楚「產生什麼之後這裡會長出東西」——寫成共用的一句
+ * 「尚無資料」等於沒說，使用者不會知道要先做什麼才會有。
+ */
+const EMPTY_HINT: Record<EvidenceOrigin, string> = {
+  summary: '產生 Summary 之後，這裡會列出它讀了哪些訊息、用了哪個模型。',
+  draft:
+    '產生 Draft Reply 之後，這裡會列出它建立在什麼之上——脈絡取了幾則、圖片讀進去幾張、程式碼命中哪些檔案、潤稿有沒有採用。',
+  worklog:
+    '產生工時草稿之後，這裡會列出它建立在什麼之上——掃了哪些 repo、抓到幾個 commit、Chat 上有幾則發言、ZPlanner 查到哪些可以填工時的 issue。',
 }
 
 /**
@@ -15,7 +38,7 @@ interface EvidenceColumnProps {
  * 抽成 hook 是因為頂列的證據鈕也要 `attentionCount`（抽屜關著時得讓人知道
  * 值得打開），而重算一次 `toEvidence` 會讓兩邊有機會不一致。
  */
-export function useEvidenceBundle(origin: 'summary' | 'draft') {
+export function useEvidenceBundle(origin: EvidenceOrigin) {
   const providers = useProviderStore((state) => state.providers)
 
   const draftMeta = useDraftStore((state) => state.meta)
@@ -26,25 +49,58 @@ export function useEvidenceBundle(origin: 'summary' | 'draft') {
   const summaryMeta = useSummaryStore((state) => state.meta)
   const summaryStreaming = useSummaryStore((state) => state.streaming)
 
-  const isDraft = origin === 'draft'
-  const streaming = isDraft ? draftStreaming : summaryStreaming
+  return useMemo(() => {
+    /**
+     * 來源查表，不用 `isDraft` 這種二元旗標。
+     *
+     * 原本是 `const isDraft = origin === 'draft'` 再到處 `isDraft ? A : B`。
+     * 二元的時候沒問題，加第三個來源的那一刻它會**安靜地把 worklog 餵成
+     * summary 的資料**——證據欄照常渲染，只是內容是別的工作台的。
+     *
+     * `satisfies Record<EvidenceOrigin, …>` 讓「漏掉一個來源」變成編譯錯誤。
+     */
+    const sources = {
+      summary: {
+        meta: summaryMeta,
+        polish: null,
+        streaming: summaryStreaming,
+        restored: false,
+      },
+      draft: {
+        meta: draftMeta,
+        polish: draftPolish,
+        streaming: draftStreaming,
+        // 還原的草稿缺的那幾列要說對理由（「沒有保存」而不是「伺服器沒回報」）
+        restored: draftRestored,
+      },
+      // 階段 2a：工時草稿還沒有串流，證據欄一律是空的（會顯示 EMPTY_HINT）。
+      // 2b 接上 SSE 之後，這裡換成 useWorklogStore 的 meta 與 streaming。
+      worklog: { meta: null, polish: null, streaming: false, restored: false },
+    } satisfies Record<EvidenceOrigin, EvidenceSource>
 
-  return useMemo(
-    () => ({
+    const source = sources[origin]
+
+    return {
       bundle: toEvidence({
         origin,
-        meta: isDraft ? draftMeta : summaryMeta,
-        polish: isDraft ? draftPolish : null,
-        streaming,
+        meta: source.meta,
+        polish: source.polish,
+        streaming: source.streaming,
         providerLabel: (name: string) => providerLabel(providers, name),
-        // 還原的草稿缺的那幾列要說對理由（「沒有保存」而不是「伺服器沒回報」）
-        restored: isDraft && draftRestored,
+        restored: source.restored,
       }),
-      streaming,
-      isDraft,
-    }),
-    [origin, isDraft, draftMeta, summaryMeta, draftPolish, streaming, providers, draftRestored],
-  )
+      streaming: source.streaming,
+    }
+  }, [
+    origin,
+    draftMeta,
+    draftPolish,
+    draftStreaming,
+    draftRestored,
+    summaryMeta,
+    summaryStreaming,
+    providers,
+  ])
 }
 
 /**
@@ -61,7 +117,7 @@ export function useEvidenceBundle(origin: 'summary' | 'draft') {
  * 會淡入的數字是還不能相信的數字。
  */
 export function EvidenceColumn({ origin }: EvidenceColumnProps) {
-  const { bundle, streaming, isDraft } = useEvidenceBundle(origin)
+  const { bundle, streaming } = useEvidenceBundle(origin)
   const empty = bundle.items.length === 0
 
   return (
@@ -87,9 +143,7 @@ export function EvidenceColumn({ origin }: EvidenceColumnProps) {
       <div className="min-h-0 flex-1 overflow-y-auto" aria-busy={streaming}>
         {empty ? (
           <p className="text-fg-dim px-gutter-tight py-6 text-xs leading-relaxed">
-            {isDraft
-              ? '產生 Draft Reply 之後，這裡會列出它建立在什麼之上——脈絡取了幾則、圖片讀進去幾張、程式碼命中哪些檔案、潤稿有沒有採用。'
-              : '產生 Summary 之後，這裡會列出它讀了哪些訊息、用了哪個模型。'}
+            {EMPTY_HINT[origin]}
           </p>
         ) : (
           <EvidenceList items={bundle.items} />

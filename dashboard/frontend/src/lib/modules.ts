@@ -64,6 +64,15 @@ export const NAV_MODULES = [
     hotkey: 'm',
   },
   {
+    id: 'worklog',
+    label: '工時草稿',
+    shortLabel: '工時',
+    hash: '#/worklog',
+    status: 'ready',
+    group: '工作',
+    hotkey: 'w',
+  },
+  {
     id: 'stats',
     label: '統計',
     shortLabel: '統計',
@@ -79,7 +88,10 @@ export const NAV_MODULES = [
     hash: '',
     status: 'planned',
     group: '分析',
-    plannedNote: '即將推出',
+    // 刻意不寫「即將推出」：它與「工時草稿」都是以週為單位的日曆型模組，
+    // 相鄰擺在導航上很容易被當成同一件事。這句話的任務是講清楚差別——
+    // 週報是回顧與匯出，不會寫回任何外部系統。
+    plannedNote: '回顧與匯出，不寫回工時系統',
   },
   {
     id: 'settings',
@@ -112,4 +124,42 @@ export function moduleById(id: string): NavModule | undefined {
 /** 給麵包屑與命令面板用：這個 section 的全名。 */
 export function labelOf(section: Section): string {
   return moduleById(section)?.label ?? section
+}
+
+/**
+ * 工作台＝有三欄版面（清單／工作區／證據欄）的模組。
+ *
+ * 設定不算：它是覆蓋層，開著的時候底下那個工作台仍然掛著、串流不中斷。
+ *
+ * ### 為什麼要有這個函式而不是直接比對字串
+ *
+ * 在此之前 `AppShell` 寫的是 `route.section === 'mentions' ? 'mentions' : 'summary'`。
+ * 二元的時候它沒有問題，加第三個工作台的那一刻它就變成陷阱：**不會編譯失敗，
+ * 只會安靜地把新模組當成 summary**。而同型的判斷散在 `AppShell` 的 `view`、
+ * 清單的 `aria-label`、`detail` 的判準、證據抽屜的 `origin` 至少四處，
+ * 每一處都要靠人自己想起來。
+ *
+ * 換成 switch 之後，少寫任何一個 section 都會在 `never` 那一行編譯失敗。
+ */
+export type WorkbenchView = 'summary' | 'mentions' | 'worklog'
+
+export function toWorkbench(section: Section): WorkbenchView {
+  switch (section) {
+    case 'mentions':
+      return 'mentions'
+    case 'worklog':
+      return 'worklog'
+    case 'summary':
+      return 'summary'
+    // 設定是覆蓋層，底下維持既有的工作台。回 summary 是**既有行為**
+    // （改版前就是這樣），不在這次改動的範圍內。
+    case 'settings':
+      return 'summary'
+    default: {
+      // 編譯期窮盡檢查；執行期仍給一個不會白畫面的退路
+      const exhaustive: never = section
+      void exhaustive
+      return 'summary'
+    }
+  }
 }

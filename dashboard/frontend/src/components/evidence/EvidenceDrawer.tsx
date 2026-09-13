@@ -2,10 +2,11 @@ import { useEffect, useRef } from 'react'
 import { XIcon } from 'lucide-react'
 import { EvidenceColumn } from '@/components/evidence/EvidenceColumn'
 import { Button } from '@/components/ui/button'
+import type { EvidenceOrigin } from '@/lib/evidence'
 
 interface EvidenceDrawerProps {
   open: boolean
-  origin: 'summary' | 'draft'
+  origin: EvidenceOrigin
   onClose: () => void
 }
 

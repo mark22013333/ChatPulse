@@ -61,6 +61,13 @@ export const SHORTCUT_HELP: ShortcutHelpRow[] = [
     action: 'go-mentions',
   },
   {
+    keys: ['G', 'W'],
+    label: '前往工時草稿',
+    scope: 'global',
+    probe: { key: 'w', pending: SEQUENCE_PREFIX },
+    action: 'go-worklog',
+  },
+  {
     keys: ['G', ','],
     label: '前往設定',
     scope: 'global',

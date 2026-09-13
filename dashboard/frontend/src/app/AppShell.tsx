@@ -21,7 +21,11 @@ import { ShortcutHelp } from '@/components/ShortcutHelp'
 import { SpacesRail } from '@/components/SpacesRail'
 import { SummaryHistory } from '@/components/SummaryHistory'
 import { SummaryWorkspace } from '@/components/SummaryWorkspace'
-import { hashForMentions } from '@/lib/route'
+import { WorklogDayWorkspace } from '@/components/worklog/WorklogDayWorkspace'
+import { WorklogWeekRail } from '@/components/worklog/WorklogWeekRail'
+import { evidenceOriginOf } from '@/lib/evidence'
+import { toWorkbench, type WorkbenchView } from '@/lib/modules'
+import { hasDetail, hashForMentions } from '@/lib/route'
 import { cn } from '@/lib/utils'
 import { useBreakpoint } from '@/hooks/useBreakpoint'
 import { useGlobalHotkeys } from '@/hooks/useGlobalHotkeys'
@@ -32,14 +36,28 @@ import { findSpace, useSpacesStore } from '@/store/spaces'
 import { useUiStore } from '@/store/ui'
 import { useDraftStore } from '@/store/draft'
 
+/**
+ * 左欄清單的無障礙名稱——每個工作台的清單裝的是不同東西。
+ *
+ * 查表而不是三元式：漏掉一個工作台時，螢幕閱讀器會把「本週」念成
+ * 「Mention 收件匣」，而這種錯誤在視覺上完全看不出來。
+ */
+const RAIL_LABEL: Record<WorkbenchView, string> = {
+  summary: 'Space 清單',
+  mentions: 'Mention 收件匣',
+  worklog: '本週',
+}
+
 export function AppShell() {
   // 登入之後要把哪些資料準備好，全都在這裡（設計規格 §7.4）
   const { booting, authenticated } = useBootstrap()
 
   const { route, navigate } = useRouter()
-  // URL 是「在看哪一個 Space／哪一則 Mention」的唯一真相（設計規格 §6.6）
+  // URL 是「在看哪一個 Space／哪一則 Mention／哪一天」的唯一真相（設計規格 §6.6）
   useRouteSync()
-  const view = route.section === 'mentions' ? 'mentions' : 'summary'
+  // 三個工作台。**不要改回 `section === 'x' ? A : B`**——那種寫法在加第四個
+  // 工作台時不會編譯失敗，只會安靜地把它當成摘要（見 `toWorkbench` 的註解）
+  const view = toWorkbench(route.section)
 
   /**
    * 768–1024 的主從切換（設計規格 §12）：清單與工作區同時只顯示一個。
@@ -58,7 +76,7 @@ export function AppShell() {
    * 無障礙樹。這也是為什麼要用 `useBreakpoint()` 而不是純 CSS——`inert`
    * 是屬性不是樣式，non-active 的那一半必須在 JS 這一側知道。
    */
-  const detail = route.section === 'mentions' ? route.mentionId !== null : route.spaceId !== null
+  const detail = hasDetail(route)
 
   // 版面斷點：≥1280 證據欄常駐，以下改成抽屜（設計規格 §12）
   const breakpoint = useBreakpoint()
@@ -175,7 +193,7 @@ export function AppShell() {
         <aside
           id="rail"
           tabIndex={-1}
-          aria-label={view === 'summary' ? 'Space 清單' : 'Mention 收件匣'}
+          aria-label={RAIL_LABEL[view]}
           inert={listHidden}
           className={cn(
             // ≥1024 一律是固定寬度的左欄；以下走主從切換，所以寬度與右框線
@@ -200,6 +218,9 @@ export function AppShell() {
                 void useDraftStore.getState().generate(primaryId, mergeIds)
               }}
             />
+          </Pane>
+          <Pane active={view === 'worklog'}>
+            <WorklogWeekRail />
           </Pane>
         </aside>
 
@@ -230,6 +251,9 @@ export function AppShell() {
           <Pane active={view === 'mentions'}>
             <DraftReplyWorkspace mention={selectedMention} active={view === 'mentions'} />
           </Pane>
+          <Pane active={view === 'worklog'}>
+            <WorklogDayWorkspace date={route.worklogDate} />
+          </Pane>
         </main>
 
         {/*
@@ -256,6 +280,9 @@ export function AppShell() {
           <Pane active={view === 'mentions'}>
             <EvidenceColumn origin="draft" />
           </Pane>
+          <Pane active={view === 'worklog'}>
+            <EvidenceColumn origin="worklog" />
+          </Pane>
         </aside>
         </div>
       </div>
@@ -269,7 +296,7 @@ export function AppShell() {
 
       <EvidenceDrawer
         open={!evidenceInline && drawerOpen}
-        origin={view === 'mentions' ? 'draft' : 'summary'}
+        origin={evidenceOriginOf(route.section)}
         onClose={() => closeDrawer(breakpoint)}
       />
 
