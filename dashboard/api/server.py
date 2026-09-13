@@ -74,6 +74,7 @@ from core.errors import (
     ReplyPromptNotFound,
     RouteNotFound,
     SepiaUnavailable,
+    WorkRepoNotFound,
 )
 from core.mentions import CollectorRunner
 from core.polishers import sepia as sepia_polisher
@@ -777,21 +778,25 @@ def _validate_branches(branches: Dict[str, str]) -> Dict[str, str]:
     return out
 
 
-def _validate_repo_path(repo_path: Optional[str]) -> None:
+def _validate_repo_path(repo_path: Optional[str], *, label: str = "專案路徑") -> None:
     """路徑必須是絕對路徑，而且不含 NUL。
 
     相對路徑會相對於**伺服器的工作目錄**去解，那跟使用者心裡想的不是同一個地方；
     等到產草稿才發現「查不到這個 repo」就太晚了。
+
+    `label` 只影響錯誤訊息的主詞。參考專案與「我的工作 repo」是兩份不同的登錄、
+    兩個不同的設定頁，訊息講錯會把人送去錯的那一頁（規則本身只有這一份，
+    不要為了換個名詞複製一次）。
     """
     if repo_path is None:
         return
     rp = repo_path.strip()
     if not rp:
-        raise InvalidParameter("專案路徑不可空白")
+        raise InvalidParameter(f"{label}不可空白")
     if "\x00" in rp:
-        raise InvalidParameter("專案路徑含非法字元")
+        raise InvalidParameter(f"{label}含非法字元")
     if not os.path.isabs(rp):
-        raise InvalidParameter("專案路徑必須是絕對路徑")
+        raise InvalidParameter(f"{label}必須是絕對路徑")
 
 
 def _verify_and_record(viewer_id: int, project: Dict[str, Any]) -> Dict[str, Any]:
@@ -917,6 +922,292 @@ def reverify_code_project(project_id: int, viewer: Dict[str, Any] = ViewerDep):
 def remove_code_project(project_id: int, viewer: Dict[str, Any] = ViewerDep):
     if not repo.delete_code_project(viewer["id"], project_id):
         raise CodeProjectNotFound(f"找不到參考專案 {project_id}")
+    return {"deleted": True}
+
+
+# ==========================================================================
+# 我的工作 repo（Draft Worklog 的證據來源，ADR-0008）
+#
+# 與上面的參考專案是**兩份不同的登錄**，不共用資料表也不共用端點：那邊是
+# 「查程式碼回答問題」（要釘死環境與分支），這邊是「回想這天做了什麼」
+# （預設掃全部分支）。詳見 core/db.py 的 work_repos 註解。
+# ==========================================================================
+
+
+class WorkRepoRequest(BaseModel):
+    """登錄一個本機 git repo 當作工時草稿的證據來源。
+
+    `author_emails` 是**陣列**：同一個人在不同 repo 常常設不同的 `user.email`，
+    只填一個會讓另一個信箱的 commit 靜默漏掉。不確定自己在這個 repo 用哪個
+    信箱時，先建立、再按「重新檢查」，`detected_emails` 會列出來。
+
+    `branch_filter` **空陣列＝掃全部分支**（`--all`），不是「不掃」。
+    """
+
+    name: str = Field(min_length=1, max_length=80)
+    repo_path: str = Field(min_length=1)
+    author_emails: List[str] = Field(default_factory=list)
+    branch_filter: List[str] = Field(default_factory=list)
+    #: 只用來把該專案的 issue 排進候選清單並標示來源，**絕不自動填**（ADR-0008）
+    default_zplanner_project_id: Optional[int] = None
+    default_zplanner_project_key: Optional[str] = None
+
+
+class WorkRepoPatch(BaseModel):
+    """部分更新。
+
+    `default_zplanner_project_id` / `_key` 與偏好的那幾個欄位同一個慣例：
+    **送 `null` 代表「清除」，不是「不改」**——「這個 repo 沒有預設專案」
+    是使用者會主動選的狀態。handler 靠 `model_fields_set` 區分兩者。
+    其餘欄位是 NOT NULL，沒帶就是不改。
+    """
+
+    name: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    repo_path: Optional[str] = None
+    author_emails: Optional[List[str]] = None
+    branch_filter: Optional[List[str]] = None
+    default_zplanner_project_id: Optional[int] = None
+    default_zplanner_project_key: Optional[str] = None
+    enabled: Optional[bool] = None
+
+
+def _clean_str_list(values: Optional[List[str]], *, label: str) -> List[str]:
+    """整理使用者送來的字串陣列：去空白、丟掉空項、去重且保留順序。
+
+    去重保留順序而不是排序：使用者填的順序有意義（第一個通常是主要信箱），
+    重排會讓他下次打開設定頁看到一份自己沒填過的清單。
+
+    這些值會被當成 `--author=` 與 ref 名稱傳給 git（永遠是 argv list，
+    不組 shell 字串），但仍然擋掉換行與 NUL：那兩個字元進得去就代表
+    有人在某處用字串拼了指令，早點擋掉比事後追查便宜。
+    """
+    if values is None:
+        return []
+    out: List[str] = []
+    seen = set()
+    for raw in values:
+        item = (raw or "").strip()
+        if not item:
+            continue
+        if "\x00" in item or "\n" in item or "\r" in item:
+            raise InvalidParameter(f"{label}「{item[:40]}」含非法字元")
+        if item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+    return out
+
+
+#: `detected_emails` 掃幾筆 commit。夠多到能涵蓋一個人常用的幾個信箱，
+#: 又不至於讓設定頁的「重新檢查」在大 repo 上等太久。
+WORK_REPO_EMAIL_SCAN_COMMITS = 200
+
+
+def _verify_work_repo(repo_path: str) -> Dict[str, Any]:
+    """確認路徑還是一個可讀的 git repo，順便回報偵測到的作者信箱。
+
+    回傳 `{"ok", "error", "head_sha", "detected_emails"}`，**不拋錯**：
+    設定頁要能同時顯示「這筆登錄」與「它現在壞了」，拋錯會讓整份清單拿不到。
+    真正要擋住動作的地方（產草稿時）才拋 `WorkRepoUnavailable`。
+
+    git 的呼叫慣例直接沿用 `core.code_search._git`，不另外複製一份：那裡把
+    argv list（repo_path 是使用者輸入，不組 shell 字串）、`GIT_OPTIONAL_LOCKS=0`
+    （不去搶使用者的 index.lock）、`GIT_TERMINAL_PROMPT=0`（憑證提示會把請求
+    卡到逾時）、`cfg.CODE_GIT_TIMEOUT` 綁在一起，複製出去就是第二個會各自漂移
+    的地方。
+
+    **全程不碰工作區**（ADR-0006 鐵律）：`rev-parse` 與 `log` 只讀 refs 與
+    object database，不 checkout、不動 index。
+
+    `detected_emails` 的去重在 **Python** 做，不在 shell 裡接 `| sort -u`——
+    接管線就得組 shell 字串，而 repo_path 是使用者輸入。
+    """
+    result: Dict[str, Any] = {
+        "ok": False,
+        "error": None,
+        "head_sha": None,
+        "detected_emails": [],
+    }
+    if not repo_path or not os.path.isdir(repo_path):
+        result["error"] = "路徑不存在或不是資料夾"
+        return result
+    proc = code_search._git(repo_path, "rev-parse", "--git-dir")
+    if proc.returncode != 0:
+        result["error"] = "這個路徑不是 git repo"
+        return result
+    result["ok"] = True
+
+    head = code_search._git(repo_path, "rev-parse", "--short", "HEAD")
+    if head.returncode == 0 and head.stdout.strip():
+        result["head_sha"] = head.stdout.strip()
+    # 沒有 HEAD 不是錯誤：剛 git init、還沒有任何 commit 的 repo 也是 repo。
+    # 回 head_sha=None 讓設定頁自己決定要不要提醒，不要在這裡判死。
+
+    log_proc = code_search._git(
+        repo_path,
+        "log",
+        "--all",
+        f"-n{WORK_REPO_EMAIL_SCAN_COMMITS}",
+        "--format=%aE",
+    )
+    if log_proc.returncode == 0:
+        emails: List[str] = []
+        seen = set()
+        for line in log_proc.stdout.splitlines():
+            addr = line.strip()
+            # 保留原始大小寫但用小寫比對：git 的信箱實務上就是大小寫混寫，
+            # 兩份只差大小寫的清單對使用者沒有意義。
+            if not addr or addr.lower() in seen:
+                continue
+            seen.add(addr.lower())
+            emails.append(addr)
+        # `git log` 預設就是時間由新到舊，所以這份清單的順序是「最近用過的
+        # 信箱排前面」——那正是使用者要填進 author_emails 的第一個。
+        result["detected_emails"] = emails
+    return result
+
+
+def _verify_and_record_work_repo(
+    viewer_id: int, work_repo: Dict[str, Any]
+) -> Dict[str, Any]:
+    """驗證並把結果寫回，回傳帶 `verification` 的 dict。
+
+    形狀與用途比照 `_verify_and_record`（參考專案那一組），但驗的東西不同：
+    那邊還要逐一確認每個環境對應的分支存不存在，這邊沒有釘死的分支可以驗。
+    """
+    verification = _verify_work_repo(work_repo["repo_path"])
+    error: Optional[str] = verification.get("error")
+    try:
+        repo.record_work_repo_verification(viewer_id, work_repo["id"], error)
+    except Exception:
+        log.exception("寫入工作 repo 驗證結果失敗（不影響回應）")
+    out = dict(work_repo)
+    out["verification"] = verification
+    out["last_verify_error"] = error
+    return out
+
+
+def _require_work_repo(viewer_id: int, repo_id: int) -> Dict[str, Any]:
+    found = repo.get_work_repo(viewer_id, repo_id)
+    if found is None:
+        raise WorkRepoNotFound(f"找不到工作 repo {repo_id}")
+    return found
+
+
+def _assert_work_repo_unique(
+    viewer_id: int, *, name: Optional[str], repo_path: Optional[str], exclude_id: Optional[int]
+) -> None:
+    """先查一次同名／同路徑，才能回一句看得懂的 400。
+
+    `UNIQUE(viewer_id, name)` 與 `UNIQUE(viewer_id, repo_path)` 都會擋住重複，
+    但那會變成 sqlite3.IntegrityError（500）。做法同 reply-prompts 的同名檢查。
+    """
+    if name:
+        clash = repo.find_work_repo_by_name(viewer_id, name)
+        if clash is not None and clash["id"] != exclude_id:
+            raise InvalidParameter(f"已經有一個叫「{name}」的工作 repo")
+    if repo_path:
+        clash = repo.find_work_repo_by_path(viewer_id, repo_path)
+        if clash is not None and clash["id"] != exclude_id:
+            raise InvalidParameter(
+                f"這個路徑已經登錄成「{clash['name']}」了。"
+                "同一個 repo 登錄兩次會讓同一批 commit 被算兩遍，時數會分錯。"
+            )
+
+
+@app.get("/api/v1/work-repos")
+def get_work_repos(viewer: Dict[str, Any] = ViewerDep):
+    return {"repos": repo.list_work_repos(viewer["id"])}
+
+
+@app.post("/api/v1/work-repos")
+def post_work_repo(req: WorkRepoRequest, viewer: Dict[str, Any] = ViewerDep):
+    name = req.name.strip()
+    _validate_repo_path(req.repo_path, label="工作 repo 的路徑")
+    repo_path = req.repo_path.strip()
+    emails = _clean_str_list(req.author_emails, label="作者信箱")
+    branches = _clean_str_list(req.branch_filter, label="分支名稱")
+    _assert_work_repo_unique(
+        viewer["id"], name=name, repo_path=repo_path, exclude_id=None
+    )
+    repo_id = repo.create_work_repo(
+        viewer["id"],
+        name=name,
+        repo_path=repo_path,
+        author_emails=emails,
+        branch_filter=branches,
+        default_zplanner_project_id=req.default_zplanner_project_id,
+        default_zplanner_project_key=(req.default_zplanner_project_key or "").strip()
+        or None,
+    )
+    created = repo.get_work_repo(viewer["id"], repo_id)
+    assert created is not None
+    # 路徑當下不可讀仍然建立成功（外接磁碟可能還沒掛上、專案可能待會才 clone），
+    # 但把錯誤記下來讓設定頁標警告。理由同參考專案的「分支不存在仍然建立成功」。
+    return _verify_and_record_work_repo(viewer["id"], created)
+
+
+@app.patch("/api/v1/work-repos/{repo_id}")
+def patch_work_repo(
+    repo_id: int, req: WorkRepoPatch, viewer: Dict[str, Any] = ViewerDep
+):
+    _require_work_repo(viewer["id"], repo_id)
+    name = req.name.strip() if req.name else None
+    _validate_repo_path(req.repo_path, label="工作 repo 的路徑")
+    repo_path = req.repo_path.strip() if req.repo_path else None
+    _assert_work_repo_unique(
+        viewer["id"], name=name, repo_path=repo_path, exclude_id=repo_id
+    )
+
+    # 這兩個欄位要區分「沒帶」與「帶了 null」：後者是使用者主動選「這個 repo
+    # 沒有預設的 ZPlanner 專案」，必須存得下去。做法同 PATCH /preferences。
+    sent = req.model_fields_set
+    project_id: Any = repo.UNSET
+    if "default_zplanner_project_id" in sent:
+        project_id = req.default_zplanner_project_id or None
+    project_key: Any = repo.UNSET
+    if "default_zplanner_project_key" in sent:
+        project_key = (req.default_zplanner_project_key or "").strip() or None
+
+    repo.update_work_repo(
+        viewer["id"],
+        repo_id,
+        name=name,
+        repo_path=repo_path,
+        author_emails=(
+            _clean_str_list(req.author_emails, label="作者信箱")
+            if req.author_emails is not None
+            else None
+        ),
+        branch_filter=(
+            _clean_str_list(req.branch_filter, label="分支名稱")
+            if req.branch_filter is not None
+            else None
+        ),
+        enabled=req.enabled,
+        default_zplanner_project_id=project_id,
+        default_zplanner_project_key=project_key,
+    )
+    updated = repo.get_work_repo(viewer["id"], repo_id)
+    assert updated is not None
+    return _verify_and_record_work_repo(viewer["id"], updated)
+
+
+@app.post("/api/v1/work-repos/{repo_id}/verify")
+def reverify_work_repo(repo_id: int, viewer: Dict[str, Any] = ViewerDep):
+    """重新確認路徑還是可讀的 git repo，並回報偵測到的作者信箱。
+
+    設定頁的「重新檢查」按鈕用這個。`detected_emails` 是給使用者**參考**的，
+    不會自動寫進 `author_emails`——同一條哲學：由人指定，系統不自動發現。
+    """
+    found = _require_work_repo(viewer["id"], repo_id)
+    return _verify_and_record_work_repo(viewer["id"], found)
+
+
+@app.delete("/api/v1/work-repos/{repo_id}")
+def remove_work_repo(repo_id: int, viewer: Dict[str, Any] = ViewerDep):
+    if not repo.delete_work_repo(viewer["id"], repo_id):
+        raise WorkRepoNotFound(f"找不到工作 repo {repo_id}")
     return {"deleted": True}
 
 

@@ -113,6 +113,39 @@ class CodeBranchNotFound(ChatPulseError):
     default_message = "環境對應的分支不存在"
 
 
+class WorkRepoNotFound(ChatPulseError):
+    """找不到這個「我的工作 repo」登錄（ADR-0008）。
+
+    刻意與 CODE_PROJECT_NOT_FOUND 分開，雖然兩者都是「找不到你登錄的
+    git repo」：那是**參考專案**（查程式碼用，ADR-0006），這是**我的工作
+    repo**（產工時草稿用）。兩份登錄各有自己的表、各有自己的 id 序號、
+    各有自己的設定頁，合成同一個錯誤碼會讓訊息把人送去錯的那一頁，
+    而他在那裡會看到一份「東西明明還在」的清單。
+    """
+
+    code = "WORK_REPO_NOT_FOUND"
+    http_status = 404
+    default_message = "找不到指定的工作 repo"
+
+
+class WorkRepoUnavailable(ChatPulseError):
+    """登錄還在，但本機路徑已經不是一個可讀的 git repo。
+
+    與 WORK_REPO_NOT_FOUND 分開的判準和 CODE_PROJECT_UNAVAILABLE 一樣：
+    下一步動作不同。那個是「這筆登錄不存在」（要重新登錄，或根本是打錯 id）；
+    這個是「登錄好好的，是磁碟沒掛上／專案被搬走／資料夾被砍了」，
+    要去改路徑，不必重新登錄。合成同一個碼會讓前端只能說一句「設定有問題」。
+
+    與 CODE_PROJECT_UNAVAILABLE 也分開：兩者指向不同的設定頁，而且後果不同
+    ——那邊是查到錯環境的程式碼（答案是錯的），這邊是**靜默漏掉**那天某個
+    repo 的 commit（草稿看起來正常，只是少了幾筆工時）。
+    """
+
+    code = "WORK_REPO_UNAVAILABLE"
+    http_status = 409
+    default_message = "工作 repo 的路徑不存在或不是 git repo"
+
+
 class RouteNotFound(ChatPulseError):
     """API 路徑不存在。
 

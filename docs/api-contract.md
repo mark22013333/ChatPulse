@@ -30,6 +30,8 @@
 | 404 | `SPACE_NOT_FOUND` / `MENTION_NOT_FOUND` / `ROUTE_NOT_FOUND` | 目標不存在；`ROUTE_NOT_FOUND` 專指 API 路徑打錯（刻意與 SPACE_NOT_FOUND 分開，否則前端會把「端點打錯」顯示成「聊天室不見了」） |
 | 404 | `PERSONA_NOT_FOUND` | 找不到指定的 Persona（**只在「這一次明確指定」時拋**；偏好裡的 id 失效是降級成不使用，不是錯誤） |
 | 404 | `REPLY_PROMPT_NOT_FOUND` | 找不到指定的 Reply Prompt Preset。同上，偏好失效不拋 |
+| 404 | `WORK_REPO_NOT_FOUND` | 找不到指定的「我的工作 repo」登錄（ADR-0008）。**刻意與 `CODE_PROJECT_NOT_FOUND` 分開**：那是參考專案（查程式碼用），這是工作 repo（產工時草稿用），兩份登錄各有自己的表、id 序號與設定頁，合碼會把人送去錯的那一頁 |
+| 409 | `WORK_REPO_UNAVAILABLE` | 登錄還在，但本機路徑已經不是可讀的 git repo（磁碟沒掛上／專案被搬走）。與 `WORK_REPO_NOT_FOUND` 分開的判準是下一步不同：這個要去改路徑，不必重新登錄。與 `CODE_PROJECT_UNAVAILABLE` 同族但不同碼——後果不同，那邊是查到錯環境的程式碼，這邊是靜默漏掉那天某個 repo 的 commit |
 | 409 | `PERSONA_INVALID` | 這份 Persona 淨化後沒有可用的風格資訊，或已被停用。**東西存在但不能用**，與 `CODE_PROJECT_UNAVAILABLE` 同族。淨化後為空是**可預期的正常結果**，不是 bug |
 | 409 | `SEPIA_UNAVAILABLE` | 要求潤稿但 vendored 規則檔不可用。**在 SSE 開始之前就回**。這與「潤稿跑了但完整性檢查沒過」不同——後者退回未潤稿版本並在 `polish.fallback_reason` 說明，不拋錯 |
 | 429 | `CHAT_RATE_LIMITED` / `GEMINI_QUOTA_EXCEEDED` / `CLAUDE_QUOTA_EXCEEDED` | 上游限流，帶 `Retry-After`。兩個 AI 的配額分開列，前端可據此建議「換一個供應商試試」 |
@@ -658,6 +660,95 @@ GitHub 未認證每小時只有 60 次呼叫，前端不要拿它做輸入即時
 
 ---
 
+## Draft Worklog（工時草稿，ADR-0008）
+
+從 Viewer 的 git commit 與 Chat 發言產生每日工時草稿。目前**只完成「我的工作 repo」
+這一組登錄端點**，草稿本體（`/worklogs/*`）與 ZPlanner 搜尋／權限預檢尚未實作。
+
+### 我的工作 repo
+
+全部需登入，且一律限於自己的登錄（`viewer_id` 是 repository 層的必填查詢條件，
+沒有「查全部」的入口；別人的登錄連 id 猜對了也讀不到，回 404 不是 403）。
+
+> **與「參考專案」是兩份不同的登錄，不要共用。** 那邊（`/code-projects`，ADR-0006）
+> 是為了**查程式碼回答問題**而登的，必須釘死是哪個環境的哪一版；這邊是為了
+> **回想這天做了什麼**。兩者的分支語意正好相反，見下方 `branch_filter`。
+
+| 端點 | 說明 |
+| :--- | :--- |
+| `GET /api/v1/work-repos` | 列出，回 `{"repos":[...]}` |
+| `POST /api/v1/work-repos` | 登錄，同步驗證路徑 |
+| `PATCH /api/v1/work-repos/{id}` | 部分更新，同步驗證路徑 |
+| `DELETE /api/v1/work-repos/{id}` | 刪除，回 `{"deleted": true}` |
+| `POST /api/v1/work-repos/{id}/verify` | 重新確認路徑還是可讀的 git repo |
+
+登錄 body：
+```json
+{ "name": "智慧客服後端", "repo_path": "/Users/me/repos/cs-backend",
+  "author_emails": ["me@corp.com", "me@personal.dev"],
+  "branch_filter": [],
+  "default_zplanner_project_id": 42, "default_zplanner_project_key": "PEI" }
+```
+
+- `repo_path` 必須是**絕對路徑**（相對路徑會相對於伺服器的工作目錄去解，
+  那跟使用者心裡想的不是同一個地方）。
+- `author_emails` 是**陣列，不是單值**：同一個人在不同 repo 常常設不同的
+  `user.email`（公司信箱、個人信箱、GitHub 的 noreply）。只填一個會讓另一個
+  信箱的 commit **靜默漏掉**——草稿照樣產得出來，只是少了那幾筆工時。
+  不確定自己在這個 repo 用哪個信箱時，先建立、再按「重新檢查」，
+  `verification.detected_emails` 會列出來。
+- `branch_filter` **空陣列＝掃 `--all`（全部分支）**，不是「不掃」。有值才當白名單。
+  ⚠️ 這與 `/code-projects` 的「環境→釘死一個分支」**相反**，不是疏忽：那邊拿錯
+  環境等於給出錯的答案，這邊漏掉一個還沒合併的 feature 分支就等於漏掉那天的工作。
+- `default_zplanner_project_id` / `_key` **只用來把該專案的 issue 排進候選清單並
+  標示來源，絕不自動填**（ADR-0008 的唯一硬規則：專案歸屬一律由 Viewer 在確認
+  畫面選）。猜錯的那次長得跟猜對的一模一樣，而 ZPlanner 的工時會進月結，
+  月結後不能直接改、要走 correction-request。
+
+**兩條唯一性限制**，違反時回 `400 INVALID_PARAMETER`（先查一次才回得出看得懂的
+訊息，否則會是 `UNIQUE` 撞出來的 500）：
+- `(viewer_id, name)` — 同名只是難看。
+- `(viewer_id, repo_path)` — **同一個 repo 登錄兩次會讓同一批 commit 被算兩遍，
+  時數會分錯。** 這條是為了算對工時，不是為了美觀。
+
+`PATCH` 的語意：
+- `author_emails`／`branch_filter` 是**整組取代**，不是逐項合併（比照 code-projects
+  的 `branches`）——否則「把某個舊信箱拿掉」這個動作沒有辦法表達。
+- `default_zplanner_project_id`／`_key` 送 **`null` 代表「清除」**，欄位**沒出現**
+  才是「不改」（比照 `PATCH /preferences` 的回覆設定欄位）。「這個 repo 沒有預設
+  專案」是使用者會主動選的狀態，必須存得下去。
+- 其餘欄位沒帶就是不改。
+
+POST／PATCH／verify 都回帶 `verification` 的單筆：
+```json
+{ "id": 3, "name": "智慧客服後端", "repo_path": "/Users/me/repos/cs-backend",
+  "author_emails": ["me@corp.com"], "branch_filter": [],
+  "default_zplanner_project_id": 42, "default_zplanner_project_key": "PEI",
+  "enabled": true, "last_verified_at": "2026-09-13T03:12:07+00:00",
+  "last_verify_error": null, "created_at": "…", "updated_at": "…",
+  "verification": { "ok": true, "error": null, "head_sha": "a3f91c2",
+                    "detected_emails": ["me@corp.com", "someone-else@corp.com"] } }
+```
+
+- `ok: false` 時 `error` 是可直接顯示的繁中句子（`路徑不存在或不是資料夾`／
+  `這個路徑不是 git repo`），同一份字串也會寫進 `last_verify_error`。
+- **路徑當下不可讀仍然建立成功**（外接磁碟可能還沒掛上、專案可能待會才 clone），
+  但 `last_verify_error` 會被記下來讓設定頁標警告。理由同參考專案的
+  「分支不存在仍然建立成功」——登錄時大聲提醒，遠比產草稿時才發現便宜。
+- `head_sha` 在剛 `git init`、還沒有任何 commit 的 repo 是 `null`。那**不是**錯誤，
+  `ok` 仍然是 `true`。
+- `detected_emails` 掃最近 200 筆 commit 的作者信箱，去重後**最近用過的排前面**
+  （只差大小寫的視為同一個）。它是**給人看的參考**，後端不會自動寫進
+  `author_emails`——同一條哲學：由人指定，系統不自動發現。
+- 讀 git 一律**不碰工作區**（ADR-0006 鐵律）：只跑 `rev-parse` 與 `log`，
+  不 checkout、不動 index，使用者未提交的修改不受影響。
+
+`verification` 的形狀**刻意與 code-projects 的不同**（那邊是
+`{repo_ok, branches, working_tree_dirty, error}`）：這裡沒有釘死的分支可以驗，
+硬套同一個形狀只會多出永遠空著的 `branches` 欄位。
+
+---
+
 ## 維運
 
 ### `GET /api/v1/health`
@@ -686,7 +777,8 @@ GitHub 未認證每小時只有 60 次呼叫，前端不要拿它做輸入即時
 2. **任何送出動作都要二次確認對話框**（5.4、7.2 步驟 6）。
 3. **v1 的 ZPlanner 匯出按鈕已於 v2.0 移除**，不要在 Action Items 那裡保留任何
    剪貼簿 handler。（**Draft Worklog 是另一件事**，見 ADR-0008 與規格 5.3——它走真正的
-   API 串接、有自己的畫面，目前只完成 client 層，前端尚未實作。）
+   API 串接、有自己的畫面。後端目前只完成 ZPlanner client 層與「我的工作 repo」
+   登錄端點，草稿本體與前端都尚未實作。）
 4. Action Items 萃取：從摘要 Markdown 中抓 `• [負責人] 任務` 這種行，轉為可勾選項目，
    支援「複製為 Markdown」。
 5. 空間清單有 436 個，列表需要虛擬滾動或分頁，並提供名稱搜尋。

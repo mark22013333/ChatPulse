@@ -18,7 +18,7 @@ from . import config as cfg
 
 _local = threading.local()
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -247,6 +247,57 @@ CREATE TABLE IF NOT EXISTS reply_prompts (
     UNIQUE(viewer_id, name)
 );
 CREATE INDEX IF NOT EXISTS idx_reply_prompts_viewer ON reply_prompts(viewer_id);
+
+-- 我的工作 repo：Draft Worklog 的證據來源（ADR-0008）
+--
+-- 記的是「要從哪些本機 git repo、用哪些作者信箱去撈 commit」，用來回想
+-- 「這天我到底做了什麼」。與 code_projects、Reference Space、Persona 同一個
+-- 哲學：由人指定，系統不自動發現。
+--
+-- **刻意不沿用 code_projects**，雖然兩者都是「Viewer 登錄一個本機 git repo」。
+-- 那張表是為了「查程式碼回答問題」而登的（ADR-0006），要釘死是哪個環境的
+-- 哪一版；這張表是為了「回想那天做過什麼」。兩者的分支語意正好相反（見下方
+-- branch_filter），合成一張表會讓其中一邊的預設值永遠是錯的。
+CREATE TABLE IF NOT EXISTS work_repos (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    viewer_id         INTEGER NOT NULL REFERENCES viewers(id) ON DELETE CASCADE,
+    name              TEXT NOT NULL,
+    repo_path         TEXT NOT NULL,
+    -- JSON 陣列。**是陣列不是單值**：同一個人在不同 repo 常常設不同的
+    -- user.email（公司信箱、個人信箱、GitHub 的 noreply）。只存一個的話，
+    -- 另一個信箱的 commit 會被**靜默漏掉**——草稿照樣產得出來，只是少了
+    -- 那幾筆，而使用者沒有任何線索知道自己少填了工時。
+    author_emails     TEXT NOT NULL DEFAULT '[]',
+    -- JSON 陣列。**空陣列＝掃 `--all`**，有值才當白名單。
+    --
+    -- ⚠️ 分支語意與 code_projects **相反**，這不是疏忽。那邊是
+    -- 「環境→釘死一個分支」，因為查程式碼時拿錯環境等於給出錯的答案；
+    -- 這邊問的是「這天我在哪都做了什麼」，漏掉一個還沒合併的 feature 分支
+    -- 就等於漏掉那天的工作。所以這裡的預設是掃全部分支，白名單是例外。
+    branch_filter     TEXT NOT NULL DEFAULT '[]',
+    -- ⚠️ **只用來把該專案的 issue 排進候選清單並標示來源，絕不自動填**
+    -- （ADR-0008 的唯一硬規則：專案歸屬一律由 Viewer 在確認畫面選）。
+    -- 理由是猜錯的那次長得跟猜對的一模一樣，而 ZPlanner 的工時會進月結，
+    -- 月結後不能直接改、要走 correction-request——代價由一個月後發現的人付。
+    -- 存 key 而不只是 id，是為了候選清單能直接顯示「PEI-133」這種人看得懂的
+    -- 字串，不必為了顯示再打一次 ZPlanner。
+    default_zplanner_project_id  INTEGER,
+    default_zplanner_project_key TEXT,
+    enabled           INTEGER NOT NULL DEFAULT 1,
+    -- 與 code_projects 同樣的理由：登錄時就驗一次並把結果存下來，讓設定頁
+    -- 能顯示「這個路徑已經不見了」。等到產草稿時才發現，代價是那天的草稿
+    -- 少了一整個 repo 的證據。
+    last_verified_at  TEXT,
+    last_verify_error TEXT,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    UNIQUE(viewer_id, name),
+    -- code_projects 沒有這條，這裡刻意加上：同一個 repo 登錄兩次會讓同一批
+    -- commit 被算兩遍，直接汙染時數分配的權重。名稱重複只是難看，路徑重複
+    -- 會算錯工時。
+    UNIQUE(viewer_id, repo_path)
+);
+CREATE INDEX IF NOT EXISTS idx_work_repos_viewer ON work_repos(viewer_id, enabled);
 """
 
 
