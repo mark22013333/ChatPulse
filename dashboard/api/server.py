@@ -22,7 +22,7 @@ import sys
 import threading
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Generator, List, Optional, Tuple
 
 from fastapi import Depends, FastAPI, Query, Request, Response
@@ -53,6 +53,8 @@ from core import (
     prompts,
     providers,
     reply_profiles,
+    worklog_allocation,
+    worklog_clustering,
     worklog_evidence,
 )
 from core import repository as repo
@@ -60,6 +62,7 @@ from core.chat_client import (
     GoogleChatClient,
     attachment_note,
     format_conversation,
+    parse_rfc3339,
     validate_limit,
 )
 from core.errors import (
@@ -79,6 +82,7 @@ from core.errors import (
 )
 from core.mentions import CollectorRunner
 from core.polishers import sepia as sepia_polisher
+from core.zplanner_client import ZPlannerClient
 
 logging.basicConfig(
     level=os.environ.get("CHATPULSE_LOG_LEVEL", "INFO"),
@@ -3177,6 +3181,649 @@ def reply_to_mention(
         "mention": primary,
         "mentions": updated_rows,
     }
+
+
+# ==========================================================================
+# 工時草稿（Draft Worklog，ADR-0008）
+#
+# 這一段目前只做兩件事：把一天的證據變成草稿（SSE），以及把一週的草稿狀態
+# 與 ZPlanner 既有工時併起來（週檢視）。**送出不在這裡**（階段 2c）。
+#
+# 貫穿整段的一條規則：**ZPlanner 不可用時不准把整支端點弄掉**。沒設
+# ZPLANNER_BASE_URL／APIKEY 的人，仍然該看得到自己的草稿與證據——他只是
+# 暫時挑不了候選 issue。所以每一處 ZPlanner 呼叫都降級成一段帶 reason 的
+# `available: false`，而不是拋出去。
+# ==========================================================================
+
+
+#: 一群最多列幾個候選。計畫 §7 第 5 條：**最多顯示 3 筆＋常駐搜尋框**，
+#: 清單永不封閉。列太多會讓人從「讀理由」退化成「掃清單挑一個看起來像的」。
+WORKLOG_MAX_CANDIDATES = 3
+
+#: 權限預檢最多查幾個專案。每個專案是 **2 次** HTTP（role-permissions ＋
+#: members），而 SSE 的 meta 要盡快送出去——證據欄晚一秒出現，使用者就多
+#: 盯著一個空畫面一秒。超出的專案標 `permission_checked: false`，不猜。
+WORKLOG_MAX_PERMISSION_PROJECTS = 5
+
+#: 自動組出來的 note 上限。這一階段的 note 是 commit subject 接起來的，
+#: 不是 AI 寫的——長度只要夠讓人認出「這筆在講什麼」就好。
+WORKLOG_NOTE_MAX_CHARS = 120
+
+#: ZPlanner 週工時的 client 方法名。
+#:
+#: ⚠️ **`core/zplanner_client.py` 目前沒有這支。** 那一層只實作了六個唯讀
+#: 端點（issues／projects／role-permissions／members），不含
+#: `GET /api/worklogs/weekly/`。所以這裡用 duck-typing 探測而不是直接呼叫：
+#: 探不到就回 `available: false` 並說明原因，本地草稿照常回。
+#:
+#: 約定的簽章是 `list_weekly_worklogs(week_start)`（`YYYY-MM-DD`，回該週七天）。
+#: client 補上這支之後，這裡不需要改。
+ZPLANNER_WEEKLY_METHOD = "list_weekly_worklogs"
+
+
+def zplanner_client() -> ZPlannerClient:
+    """建一個 ZPlanner client。
+
+    獨立成函式**只為了讓測試整支換掉**——不然驗「ZPlanner 不可用時週檢視
+    仍然回得出本地草稿」就得依賴執行環境剛好沒設 token，那種測試在別人的
+    機器上會得到相反的結果。
+    """
+    return ZPlannerClient()
+
+
+def _zplanner_week_rows(
+    data: Any,
+) -> Tuple[Optional[Dict[str, Dict[str, Any]]], Optional[str]]:
+    """把 ZPlanner 的週工時正規化成 `{work_date: {hours, worklog_count}}`。
+
+    回 `(結果, 錯誤原因)`，兩者恰有一個是 None。**認不出來的形狀一律回錯誤
+    原因，不回空字典**：空字典與「那週真的沒填工時」長得一模一樣，而這兩件
+    事對使用者的意義正好相反（一個是「系統看不懂」，一個是「你還沒填」）。
+    同一條判準見 `zplanner_client._as_list` 的註解。
+    """
+    rows: Any = data
+    if isinstance(data, dict):
+        for key in ("items", "results", "days", "worklogs"):
+            if isinstance(data.get(key), list):
+                rows = data[key]
+                break
+        else:
+            return None, f"ZPlanner 週工時的回應形狀不認得（拿到 {sorted(data)[:10]}）"
+    if not isinstance(rows, list):
+        return None, f"ZPlanner 週工時的回應不是清單（拿到 {type(rows).__name__}）"
+
+    out: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            return None, "ZPlanner 週工時的項目不是物件"
+        date = str(row.get("date") or row.get("work_date") or "").strip()[:10]
+        if not date:
+            return None, "ZPlanner 週工時的項目沒有日期欄位"
+        bucket = out.setdefault(date, {"hours": 0.0, "worklog_count": 0})
+        try:
+            bucket["hours"] += float(row.get("hours") or 0)
+        except (TypeError, ValueError):
+            return None, f"ZPlanner 週工時的 hours 不是數字：{row.get('hours')!r}"
+        bucket["worklog_count"] += int(row.get("worklog_count") or 1)
+    return {d: {**v, "hours": f"{v['hours']:.2f}"} for d, v in out.items()}, None
+
+
+def _zplanner_week_section(week_start: str) -> Dict[str, Any]:
+    """週檢視裡 ZPlanner 那一段。**永遠不拋**，不可用就回 reason。"""
+    try:
+        client = zplanner_client()
+        ok, reason = client.available()
+    except Exception as exc:  # noqa: BLE001 - 設定壞掉不該讓週檢視整支失敗
+        log.exception("建立 ZPlanner client 失敗（週檢視降級）")
+        return {"available": False, "reason": f"ZPlanner client 無法建立：{exc}"}
+    if not ok:
+        return {"available": False, "reason": reason}
+
+    fetch = getattr(client, ZPLANNER_WEEKLY_METHOD, None)
+    if not callable(fetch):
+        return {
+            "available": False,
+            "reason": "這個版本的 ZPlanner client 還沒有週工時端點"
+            "（GET /api/worklogs/weekly/），本地草稿不受影響。",
+        }
+    try:
+        data = fetch(week_start)
+    except ChatPulseError as exc:
+        return {"available": False, "reason": exc.message}
+    except Exception as exc:  # noqa: BLE001
+        log.exception("查 ZPlanner 週工時失敗（週檢視降級）")
+        return {"available": False, "reason": f"查 ZPlanner 週工時失敗：{exc}"}
+
+    days, error = _zplanner_week_rows(data)
+    if days is None:
+        return {"available": False, "reason": error}
+    return {
+        "available": True,
+        "days": days,
+        "total_hours": f"{sum(float(v['hours']) for v in days.values()):.2f}",
+        "worklog_count": sum(int(v["worklog_count"]) for v in days.values()),
+    }
+
+
+@app.get("/api/v1/worklogs/week")
+def get_worklog_week(
+    week_start: str = Query(..., description="這一週的第一天（YYYY-MM-DD）"),
+    viewer: Dict[str, Any] = ViewerDep,
+):
+    """一週的工時概況：本地草稿狀態 ＋ ZPlanner 既有工時。
+
+    七天一律回滿（沒有草稿的那天 `draft` 是 `null`），前端不必自己補空格——
+    「這天還沒產草稿」與「這天不在回應裡」必須是同一件事，否則週欄會少一列。
+
+    `week_start` 照傳進來的那天往後算七天。**不強制是星期一**：週的起點是
+    前端的顯示決定，後端沒有立場否決；但回應一定同時帶 `week_start` 與
+    `week_end`，讓兩邊對得起來。
+    """
+    viewer_id = viewer["id"]
+    start = worklog_evidence.parse_work_date(week_start)  # 格式錯就是 400
+    dates = [(start + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
+
+    drafts = {
+        row["work_date"]: row
+        for row in repo.list_worklog_drafts_in_range(viewer_id, dates[0], dates[-1])
+    }
+    zplanner = _zplanner_week_section(dates[0])
+    zp_days = zplanner.get("days") or {}
+
+    days = []
+    for index, date in enumerate(dates):
+        days.append(
+            {
+                "work_date": date,
+                # 1＝星期一。前端要畫「週六/日 休」那兩列，而它不該自己
+                # 從字串反推星期幾（那會在跨時區時錯一天）。
+                "weekday": (start + timedelta(days=index)).isoweekday(),
+                "draft": drafts.get(date),
+                "zplanner": zp_days.get(date),
+            }
+        )
+
+    return {
+        "week_start": dates[0],
+        "week_end": dates[-1],
+        "days": days,
+        "totals": {
+            "draft_hours": f"{sum(float(d['hours']) for d in drafts.values()):.2f}",
+            "days_with_draft": len(drafts),
+            "days_submitted": sum(
+                1 for d in drafts.values() if d["status"] == "submitted"
+            ),
+            "entries_unassigned": sum(d["unassigned_count"] for d in drafts.values()),
+        },
+        # ZPlanner 的帳與本地草稿的帳**分開放**，不混成一個數字：一個是
+        # 「已經填進系統的」，一個是「我還沒送出的」，加起來沒有意義。
+        "zplanner": {k: v for k, v in zplanner.items() if k != "days"},
+    }
+
+
+class WorklogDraftRequest(BaseModel):
+    """產生某一天的工時草稿。
+
+    `total_hours` **省略時不分配**：使用者還沒決定總時數之前，不該看到憑空
+    冒出來的數字。這時候 `entries[].hours` 一律是 null，草稿仍然有證據、
+    有分群、有候選 issue——那才是這個功能真正在解決的事（回想那天做了什麼）。
+
+    `tz_offset` 必填，沒有預設值。「半夜一點的 commit 算哪一天」必須有一個
+    寫得出來的依據，而那個依據是 Viewer 的偏移，不是伺服器剛好設成什麼
+    （見 `core/worklog_evidence.py` 的第 3 條規則）。
+    """
+
+    tz_offset: str
+    #: 省略／空 ＝ 全部啟用中的工作 repo
+    repo_ids: Optional[List[int]] = None
+    #: 省略 ＝ 釘選的 Space ∪ 當天有 Mention 命中的 Space（絕不掃全部）
+    space_ids: Optional[List[str]] = None
+    total_hours: Optional[float] = None
+    provider: Optional[str] = None
+
+
+def _worklog_chat_space_ids(
+    viewer_id: int, requested: Optional[List[str]], *, work_date: str, tz_offset: str
+) -> List[str]:
+    """決定要掃哪些 Space。母體絕不是全部的四百多個（計畫 §8）。
+
+    指定了就用指定的（仍然套 `WORKLOG_MAX_SPACES` 上限）；沒指定就是
+    「釘選的 ∪ 當天有 Mention 命中的」。
+    """
+    if requested is not None:
+        for sid in requested:
+            if not str(sid).startswith("spaces/"):
+                raise InvalidParameter(f"space_ids 含非法值 {sid!r}")
+        return worklog_evidence.resolve_chat_space_ids(pinned_space_ids=requested)
+
+    pinned = repo.get_preferences(viewer_id)["pinned_space_ids"]
+    start, end = worklog_evidence.day_bounds(work_date, tz_offset)
+    mention_spaces: List[str] = []
+    for row in repo.list_mentions(viewer_id):
+        created = parse_rfc3339(row.get("create_time") or "")
+        if created is None or not (start <= created < end):
+            continue
+        if row["space_id"] not in mention_spaces:
+            mention_spaces.append(row["space_id"])
+    return worklog_evidence.resolve_chat_space_ids(
+        pinned_space_ids=pinned, mention_space_ids=mention_spaces
+    )
+
+
+def _worklog_note(cluster: Any, by_ref: Dict[str, Any]) -> str:
+    """這一群的 note。
+
+    ⚠️ **這一階段不接 AI。** note 是該群 commit subject 接起來的字串——
+    把管線打通優先，潤飾是後續的事。它會原封不動存進 `worklog_draft_entries.note`
+    並在確認畫面可編輯，所以寧可平鋪直敘也不要看起來像生成過的東西：
+    使用者若以為這句話是 AI 讀懂他的工作之後寫的，就不會去改它。
+    """
+    items = [by_ref[ref] for ref in cluster.evidence_refs if ref in by_ref]
+    titles = [e.title.strip() for e in items if e.kind == "commit" and e.title.strip()]
+    if not titles:  # 純 Chat 的群：退用發言節錄
+        titles = [e.title.strip() for e in items if e.title.strip()]
+    note = "；".join(titles[:2])
+    if len(note) > WORKLOG_NOTE_MAX_CHARS:
+        note = note[: WORKLOG_NOTE_MAX_CHARS - 1] + "…"
+    return note
+
+
+def _issue_field(raw: Dict[str, Any], *names: str) -> Any:
+    for name in names:
+        value = raw.get(name)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _candidate_shape(raw: Any) -> Optional[Dict[str, Any]]:
+    """把 ZPlanner 的一筆 issue 正規化成候選。認不出 id 就丟掉。
+
+    欄位名用多個別名去試，是因為 `worklogable` 與 `projects/{id}/issues`
+    兩支的欄位命名實測就不一致（見 `core/zplanner_client.py` 開頭那串）。
+    """
+    if not isinstance(raw, dict):
+        return None
+    issue_id = _issue_field(raw, "id", "issue_id", "pk")
+    if issue_id is None:
+        return None
+    return {
+        "issue_id": issue_id,
+        "issue_key": _issue_field(raw, "key", "issue_key", "code"),
+        "title": _issue_field(raw, "title", "subject", "summary", "name") or "",
+        "project_id": _issue_field(raw, "project_id", "project"),
+        "project_key": _issue_field(raw, "project_key", "project_code"),
+    }
+
+
+def _worklog_permissions(
+    client: Any, project_ids: List[Any], email: str
+) -> Dict[Any, Dict[str, Any]]:
+    """對每個專案查「我能不能填工時」。
+
+    ZPlanner 的權限是**每個專案各自一張角色矩陣、由該專案 PM 自訂**，同一把
+    token 在 A 專案能做的事在 B 專案不一定能做——所以沒有「查一次套用全部」
+    這種東西，只能逐一查（見 `list_project_role_permissions` 的 docstring）。
+
+    🔴 **查不到就標 `checked: false`，絕不假設有權限。** 猜「應該可以吧」的
+    代價是使用者選了一個填不進去的 issue，一路走到送出才被 403 擋掉——
+    而那時候整天的草稿都已經填完了。
+    """
+    out: Dict[Any, Dict[str, Any]] = {}
+    for project_id in project_ids[:WORKLOG_MAX_PERMISSION_PROJECTS]:
+        entry: Dict[str, Any] = {
+            "project_id": project_id,
+            "role": None,
+            "can_worklog": None,
+            "checked": False,
+            "reason": "",
+        }
+        out[project_id] = entry
+        try:
+            members = client.list_project_members(project_id)
+            permissions = client.list_project_role_permissions(project_id)
+        except ChatPulseError as exc:
+            entry["reason"] = exc.message
+            continue
+        except Exception as exc:  # noqa: BLE001
+            log.exception("查 ZPlanner 專案 %s 的權限失敗", project_id)
+            entry["reason"] = f"查權限失敗：{exc}"
+            continue
+
+        role = None
+        for member in members or ():
+            if not isinstance(member, dict) or member.get("left_at"):
+                continue
+            if str(member.get("user_email") or "").strip().lower() == email:
+                role = member.get("role")
+                break
+        if role is None:
+            # 比對不到本人。**這不是「沒有權限」**——`members[].user_email`
+            # 未必等於 Google 帳號 email（計畫 §7 的卡點），所以答案是
+            # 「不知道」，由 UI 去講清楚要找該專案 PM。
+            entry["reason"] = f"在這個專案的成員名單裡找不到 {email}"
+            continue
+
+        entry["role"] = role
+        for rule in permissions or ():
+            if isinstance(rule, dict) and rule.get("role") == role:
+                entry["can_worklog"] = bool(rule.get("can_worklog"))
+                entry["checked"] = True
+                break
+        if not entry["checked"]:
+            entry["reason"] = f"角色 {role} 不在這個專案的權限矩陣裡"
+    for project_id in project_ids[WORKLOG_MAX_PERMISSION_PROJECTS:]:
+        out[project_id] = {
+            "project_id": project_id,
+            "role": None,
+            "can_worklog": None,
+            "checked": False,
+            "reason": f"一次最多預檢 {WORKLOG_MAX_PERMISSION_PROJECTS} 個專案的權限",
+        }
+    return out
+
+
+def _worklog_candidates(
+    clusters: List[Any], *, default_project_ids: set, viewer_email: str
+) -> Tuple[Dict[str, List[Dict[str, Any]]], Dict[str, Any]]:
+    """對每一群撈候選 issue，並把 `can_worklog` 的預檢結果帶上。
+
+    回 `(每群的候選, meta 的 zplanner 段)`。**ZPlanner 不可用時回空候選而不是
+    拋錯**：沒設 ZPlanner 的人仍然該產得出草稿，他只是暫時挑不了 issue。
+
+    信心度分三級，而且**一律附一句可見的理由**（計畫 §7 第 3 條）：不做排名
+    徽章、不做百分比、不做進度條——要讓人讀理由而不是讀名次。
+    """
+    meta: Dict[str, Any] = {
+        "available": False,
+        "reason": "",
+        "queried_terms": [],
+        "worklogable_count": 0,
+        # 權限比對用的信箱是不是權威來源。計畫 §7 的卡點：
+        # `members[].user_email` 未必等於 Google 帳號 email，真正該用的是
+        # `preferences.zplanner_email`——**那個欄位還不存在**（這次不動
+        # core/db.py），所以現階段一律退用 viewer.email，這個旗標一律是 false。
+        "permission_checked": False,
+        "permission_email": viewer_email,
+        "permission_email_source": "viewer_email",
+        "permission_note": "",
+        "projects_checked": [],
+        "errors": [],
+    }
+    by_cluster: Dict[str, List[Dict[str, Any]]] = {c.key: [] for c in clusters}
+
+    try:
+        client = zplanner_client()
+        ok, reason = client.available()
+    except Exception as exc:  # noqa: BLE001
+        log.exception("建立 ZPlanner client 失敗（候選 issue 降級）")
+        meta["reason"] = f"ZPlanner client 無法建立：{exc}"
+        return by_cluster, meta
+    if not ok:
+        meta["reason"] = reason
+        return by_cluster, meta
+    meta["available"] = True
+
+    seen_issue_ids = set()
+    for cluster in clusters:
+        term = cluster.query_term
+        meta["queried_terms"].append(term)
+        try:
+            # `q` 必填。空字串回 0 筆而不是全部，所以 `query_term` 保證有值。
+            issues = client.list_worklogable_issues(term)
+        except ChatPulseError as exc:
+            meta["errors"].append({"cluster": cluster.key, "term": term, "reason": exc.message})
+            continue
+        except Exception as exc:  # noqa: BLE001
+            log.exception("查 ZPlanner 候選 issue 失敗（關鍵字 %s）", term)
+            meta["errors"].append(
+                {"cluster": cluster.key, "term": term, "reason": f"查詢失敗：{exc}"}
+            )
+            continue
+
+        ranked: List[Tuple[int, Dict[str, Any]]] = []
+        for raw in issues:
+            candidate = _candidate_shape(raw)
+            if candidate is None:
+                continue
+            seen_issue_ids.add(candidate["issue_id"])
+            if cluster.issue_key and candidate["issue_key"] == cluster.issue_key:
+                rank, source = 0, "issue_key"
+                why = f"你在 commit 訊息裡直接寫了 {cluster.issue_key}"
+                confidence = "strong"
+            elif candidate["project_id"] in default_project_ids:
+                rank, source = 1, "default_project"
+                why = "這是你替該 repo 設定的預設 ZPlanner 專案底下的 issue"
+                confidence = "medium"
+            else:
+                rank, source = 2, "search"
+                why = f"用關鍵字「{term}」在可填工時的 issue 裡搜到的"
+                confidence = "weak"
+            candidate.update(
+                {"source": source, "confidence": confidence, "reason": why}
+            )
+            ranked.append((rank, candidate))
+
+        ranked.sort(key=lambda pair: (pair[0], str(pair[1]["issue_key"] or "")))
+        by_cluster[cluster.key] = [c for _, c in ranked[:WORKLOG_MAX_CANDIDATES]]
+
+    meta["worklogable_count"] = len(seen_issue_ids)
+
+    # 權限預檢：只查真的出現在候選裡的專案
+    project_ids: List[Any] = []
+    for candidates in by_cluster.values():
+        for candidate in candidates:
+            pid = candidate["project_id"]
+            if pid is not None and pid not in project_ids:
+                project_ids.append(pid)
+    permissions = _worklog_permissions(client, project_ids, (viewer_email or "").lower())
+    meta["projects_checked"] = list(permissions.values())
+    meta["permission_note"] = (
+        f"用登入的 Google 信箱（{viewer_email or '未知'}）比對 ZPlanner 成員名單。"
+        "那不保證是同一個帳號，所以 permission_checked 一律是 false；"
+        "要確定得先有 preferences.zplanner_email。"
+    )
+    for candidates in by_cluster.values():
+        for candidate in candidates:
+            info = permissions.get(candidate["project_id"]) or {}
+            candidate["can_worklog"] = info.get("can_worklog")
+            candidate["permission_checked"] = bool(info.get("checked"))
+            candidate["permission_reason"] = info.get("reason") or ""
+    return by_cluster, meta
+
+
+@app.post("/api/v1/worklogs/{work_date}/draft/stream")
+def worklog_draft_stream(
+    work_date: str, req: WorklogDraftRequest, viewer: Dict[str, Any] = ViewerDep
+):
+    """產生某一天的工時草稿（**SSE**）。
+
+    事件序：`meta` → 每群一個 `chunk` → `done`；沒有任何 commit／發言則是
+    單一個 `error`（`NO_EVIDENCE`，SSE-only code，比照既有的 `NO_MESSAGES`）。
+    **事件型別不新增**——前端只要認得這四種。
+
+    `meta` 是證據欄的唯一來源：任何無法回溯到 meta 某個欄位的東西，都不准
+    進證據欄（設計紅線）。所以這裡漏掉什麼，前端就永遠顯示不出來。
+
+    ⚠️ `done` 的 `entries[]` 裡 **`issue_id`／`issue_key` 一律是 null**。
+    系統只給候選，選擇權在 Viewer——ADR-0008 的唯一硬規則。一份看起來合理的
+    自動歸屬，代價由一個月後發現填錯的人支付（月結後要走 correction-request）。
+    """
+    viewer_id = viewer["id"]
+    # 以下全部擋在 SSE 開始之前：串流一旦開始就是 HTTP 200，之後的錯誤只能
+    # 變成 error 事件，使用者比較難注意到（同 draft_stream 的處置）。
+    date = worklog_evidence.parse_work_date(work_date).strftime("%Y-%m-%d")
+    tz_offset = worklog_evidence.normalize_tz_offset(req.tz_offset)
+    resolved_provider = providers.resolve_name(req.provider) if req.provider else None
+    space_ids = _worklog_chat_space_ids(
+        viewer_id, req.space_ids, work_date=date, tz_offset=tz_offset
+    )
+
+    repos = repo.list_work_repos(viewer_id, enabled_only=True)
+    if req.repo_ids:
+        wanted = set(req.repo_ids)
+        repos = [r for r in repos if r["id"] in wanted]
+        missing = wanted - {r["id"] for r in repos}
+        if missing:
+            raise WorkRepoNotFound(
+                f"找不到（或已停用）工作 repo {', '.join(str(i) for i in sorted(missing))}"
+            )
+
+    existing = repo.get_worklog_draft(viewer_id, date)
+    if existing:
+        # 重產會整組取代 entries，連帶刪掉 `zplanner_worklog_id`——那是修改／
+        # 刪除遠端工時的唯一入口，刪掉之後只剩 correction-request 這條路。
+        sent = [e for e in existing["entries"] if e["zplanner_worklog_id"]]
+        if sent:
+            raise InvalidParameter(
+                f"{date} 已經有 {len(sent)} 筆工時送進 ZPlanner 了，不能重產草稿。"
+                "重產會弄丟那幾筆的 worklog id，之後只能走 correction-request。"
+            )
+
+    def generate() -> Generator[str, None, None]:
+        try:
+            evidence = worklog_evidence.collect_day_evidence(
+                work_date=date,
+                tz_offset=tz_offset,
+                work_repos=repos,
+                chat_client=get_client(viewer_id) if space_ids else None,
+                space_ids=space_ids,
+                google_user_id=viewer.get("google_user_id") or "",
+                space_names={sid: space_display_name(viewer_id, sid) for sid in space_ids},
+            )
+
+            if evidence.is_empty:
+                # 這不是錯誤狀態，是「那天沒有留下痕跡」。硬產一份空草稿會讓
+                # 使用者把時數分給不存在的證據，那比什麼都不給更糟。
+                yield sse(
+                    {
+                        "type": "error",
+                        "code": "NO_EVIDENCE",
+                        "message": f"{date} 沒有找到任何 commit 或發言。"
+                        "確認一下工作 repo 的作者信箱設定，或換一天試試。",
+                    }
+                )
+                return
+
+            clusters = worklog_clustering.build_clusters(evidence.evidence)
+            by_ref = {e.ref: e for e in evidence.evidence}
+            candidates, zplanner_meta = _worklog_candidates(
+                clusters,
+                default_project_ids={
+                    r["default_zplanner_project_id"]
+                    for r in repos
+                    if r["default_zplanner_project_id"] is not None
+                },
+                viewer_email=viewer.get("email") or "",
+            )
+
+            meta_event: Dict[str, Any] = {"type": "meta", **evidence.to_meta()}
+            meta_event["clusters"] = [
+                {**c.to_meta(), "candidates": candidates.get(c.key, [])}
+                for c in clusters
+            ]
+            meta_event["zplanner"] = zplanner_meta
+            # 這一階段不接 AI，但欄位保留：前端的證據欄有「生成」那一列，
+            # 而「沒有用模型」本身就是要顯示的事實，不是空著不講。
+            meta_event["provider"] = resolved_provider
+            meta_event["model"] = None
+            meta_event["note_source"] = "commit_subject"
+            yield sse(meta_event)
+
+            notes = {c.key: _worklog_note(c, by_ref) for c in clusters}
+            for index, cluster in enumerate(clusters):
+                yield sse(
+                    {
+                        "type": "chunk",
+                        "index": index,
+                        "cluster_key": cluster.key,
+                        "text": notes[cluster.key],
+                    }
+                )
+
+            allocation = None
+            if req.total_hours is not None:
+                # 省略 total_hours 就不分配：使用者還沒決定總時數之前，
+                # 不該看到憑空冒出來的數字。
+                allocation = worklog_allocation.allocate(
+                    req.total_hours, [c.to_allocation_item() for c in clusters]
+                )
+            allocated = {e.index: e for e in (allocation.entries if allocation else ())}
+
+            draft = repo.upsert_worklog_draft(
+                viewer_id,
+                date,
+                tz_offset=tz_offset,
+                status="draft",
+                total_hours=(
+                    None if req.total_hours is None else f"{float(req.total_hours):.2f}"
+                ),
+                generation_meta=meta_event,
+                generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            )
+            rows = []
+            for index, cluster in enumerate(clusters):
+                entry = allocated.get(index)
+                rows.append(
+                    {
+                        # 🔴 ADR-0008 的唯一硬規則：產生時歸屬一律留空。
+                        "issue_id": None,
+                        "issue_key": None,
+                        "project_id": None,
+                        "project_key": None,
+                        "hours": entry.allocated_hours if entry else None,
+                        "allocated_hours": entry.allocated_hours if entry else None,
+                        "note": notes[cluster.key],
+                        "weight": cluster.weight,
+                        "rounded_up": bool(entry.rounded_up) if entry else False,
+                        "evidence_refs": list(cluster.evidence_refs),
+                        "candidates": candidates.get(cluster.key, []),
+                        "state": "pending",
+                    }
+                )
+            saved = repo.replace_worklog_entries(viewer_id, draft["id"], rows)
+            assert saved is not None
+
+            yield sse(
+                {
+                    "type": "done",
+                    "draft_id": draft["id"],
+                    "entries": [
+                        {
+                            "id": row["id"],
+                            "seq": row["seq"],
+                            "cluster_key": clusters[i].key,
+                            "label": clusters[i].label,
+                            "reason": clusters[i].reason,
+                            "issue_id": row["issue_id"],
+                            "issue_key": row["issue_key"],
+                            "hours": row["hours"],
+                            "allocated_hours": row["allocated_hours"],
+                            "rounded_up": row["rounded_up"],
+                            "weight": row["weight"],
+                            "note": row["note"],
+                            "evidence_refs": row["evidence_refs"],
+                            "candidates": row["candidates"],
+                            "state": row["state"],
+                        }
+                        for i, row in enumerate(saved["entries"])
+                    ],
+                    "allocation": allocation.to_dict() if allocation else None,
+                }
+            )
+        except ChatPulseError as exc:
+            yield sse(exc.to_sse_event())
+        except Exception as exc:  # 串流已開始，只能用事件回報
+            log.exception("工時草稿串流失敗")
+            yield sse(
+                {
+                    "type": "error",
+                    "code": "INTERNAL_ERROR",
+                    "message": f"工時草稿產生失敗：{exc}",
+                }
+            )
+
+    return sse_response(generate())
 
 
 # ==========================================================================

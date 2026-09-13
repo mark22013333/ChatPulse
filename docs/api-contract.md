@@ -45,6 +45,7 @@
 | code | 情境 |
 | :--- | :--- |
 | `NO_MESSAGES` | 該聊天室在指定範圍內沒有可摘要的對話。串流已開始，只能以事件告知 |
+| `NO_EVIDENCE` | 那一天沒有任何 commit 或發言可以產工時草稿（ADR-0008）。比照 `NO_MESSAGES`：**這不是錯誤狀態，是「那天沒有留下痕跡」**，所以不落地任何草稿 |
 | `INTERNAL_ERROR` | 串流開始之後才發生的未預期錯誤 |
 
 ## SSE 事件格式（8.3）
@@ -662,8 +663,12 @@ GitHub 未認證每小時只有 60 次呼叫，前端不要拿它做輸入即時
 
 ## Draft Worklog（工時草稿，ADR-0008）
 
-從 Viewer 的 git commit 與 Chat 發言產生每日工時草稿。目前**只完成「我的工作 repo」
-這一組登錄端點**，草稿本體（`/worklogs/*`）與 ZPlanner 搜尋／權限預檢尚未實作。
+從 Viewer 的 git commit 與 Chat 發言產生每日工時草稿。
+
+目前完成：「我的工作 repo」登錄、**週檢視**（`GET /worklogs/week`）、**草稿產生**
+（`POST /worklogs/{date}/draft/stream`）。**尚未實作**：`GET`／`PUT /worklogs/{date}`、
+`POST /worklogs/{date}/submit`、`GET /zplanner/issues/search`、`GET /zplanner/permissions`
+（候選與權限目前只在草稿的 SSE `meta` 裡一次帶回，沒有獨立的搜尋端點）。
 
 ### 我的工作 repo
 
@@ -747,6 +752,168 @@ POST／PATCH／verify 都回帶 `verification` 的單筆：
 `{repo_ok, branches, working_tree_dirty, error}`）：這裡沒有釘死的分支可以驗，
 硬套同一個形狀只會多出永遠空著的 `branches` 欄位。
 
+### `GET /api/v1/worklogs/week`
+
+需登入。query：`week_start`（`YYYY-MM-DD`，必填）。合併**本地草稿狀態**與
+**ZPlanner 既有工時**，給週欄用。
+
+```json
+{ "week_start": "2026-09-07", "week_end": "2026-09-13",
+  "days": [
+    { "work_date": "2026-09-07", "weekday": 1,
+      "draft": { "id": 12, "work_date": "2026-09-07", "status": "draft",
+                 "total_hours": "8.00", "tz_offset": "+08:00",
+                 "generation_meta": { "...": "..." },
+                 "generated_at": "…", "created_at": "…", "updated_at": "…",
+                 "entry_count": 3, "hours": "8.00", "allocated_hours": "8.00",
+                 "submitted_count": 0, "failed_count": 0, "unknown_count": 0,
+                 "unassigned_count": 3 },
+      "zplanner": { "hours": "8.00", "worklog_count": 2 } },
+    { "work_date": "2026-09-08", "weekday": 2, "draft": null, "zplanner": null } ],
+  "totals": { "draft_hours": "8.00", "days_with_draft": 1, "days_submitted": 0,
+              "entries_unassigned": 3 },
+  "zplanner": { "available": true, "total_hours": "16.00", "worklog_count": 5 } }
+```
+
+- **七天一律回滿**，沒有草稿的那天 `draft` 是 `null`。前端不必自己補空格——
+  「這天還沒產草稿」與「這天不在回應裡」必須是同一件事，否則週欄會少一列。
+- `week_start` 照傳進來的那天往後算七天，**不強制是星期一**（週的起點是前端的
+  顯示決定）。回應一定同時帶 `week_start` 與 `week_end`，讓兩邊對得起來。
+  `weekday` 是 ISO 星期（1＝一），給「週六/日 休」那兩列用。
+- `draft.total_hours` 是 Viewer 輸入的總時數，`draft.hours` 是**各筆之和**——
+  兩者不保證相等（湊 0.5 倍數必然有餘數），真正會送出的是後者。
+- `unassigned_count` 是還沒選專案的筆數。**未選擋住送出**（ADR-0008），
+  週欄要看得出「這天還差幾筆沒決定」。
+- 🔴 **ZPlanner 不可用時不會讓這支端點失敗**：`zplanner` 變成
+  `{"available": false, "reason": "…"}`，`days[].zplanner` 全部是 `null`，
+  **本地草稿照常回**。沒設 ZPlanner 的人仍然看得到自己的草稿。
+  `reason` 是可直接顯示的繁中句子（未設定／連線逾時／回應形狀不認得）。
+  ⚠️ 現況：`core/zplanner_client.py` **還沒有**週工時端點（六個唯讀端點裡不含
+  `GET /api/worklogs/weekly/`），所以目前一律回 `available: false`，理由會這樣寫。
+
+### `POST /api/v1/worklogs/{date}/draft/stream`
+
+需登入。**SSE**。`{date}` 是 `YYYY-MM-DD`。body：
+```json
+{ "tz_offset": "+08:00", "repo_ids": [3], "space_ids": ["spaces/AAA"],
+  "total_hours": 8, "provider": null }
+```
+
+| 欄位 | 語意 |
+| :--- | :--- |
+| `tz_offset` | **必填**，`+08:00`／`+0800`／`Z`。日界由它決定——「半夜一點的 commit 算哪一天」必須有寫得出來的依據，不是伺服器剛好設成什麼。非法值 `400` |
+| `repo_ids` | 省略／空 ＝ 全部**啟用中**的工作 repo。指定了但那筆不存在或已停用 → `404 WORK_REPO_NOT_FOUND` |
+| `space_ids` | 省略 ＝ 釘選的 Space ∪ 當天有 Mention 命中的 Space。**絕不掃全部 436 個**；非 `spaces/` 開頭 → `400` |
+| `total_hours` | **省略就不分配**，`entries[].hours` 一律 `null` |
+| `provider` | 這一階段**不接 AI**，只回進 `meta.provider` 備查 |
+
+事件序：`meta` → 每群一個 `chunk` → `done`。**事件型別不新增**，仍只有
+`meta`／`chunk`／`done`／`error`。以上參數錯誤全部**在 SSE 開始之前**回 4xx。
+
+`meta` ＝ `DayEvidence.to_meta()`（`work_date`／`tz_offset`／`since`／`until`／
+`repos[]`／`repos_skipped[]`／`spaces[]`／`spaces_skipped[]`／`commits[]`／`chat[]`）
+再加上 `clusters[]`、`zplanner`、`provider`／`model`／`note_source`。
+
+```json
+{ "type": "meta", "work_date": "2026-09-13", "tz_offset": "+08:00",
+  "commits": [ { "ref": "commit:a3f…", "kind": "commit", "sha": "a3f…", "short_sha": "a3f91c2",
+                 "subject": "fix: PEI-133 匯出逾時", "authored_at": "2026-09-13T10:00:00+08:00",
+                 "author_email": "me@corp.com", "insertions": 42, "deletions": 3,
+                 "files_changed": 2, "branches": ["main"], "terms": ["PEI-133"],
+                 "weight_input": 3.8067, "source_label": "cs-backend" } ],
+  "chat": [ { "ref": "chat:spaces/AAA/messages/m1", "kind": "chat",
+              "message_name": "spaces/AAA/messages/m1", "space_id": "spaces/AAA",
+              "space_name": "客服專案群", "is_mention": false, "char_count": 24,
+              "occurred_at": "2026-09-13T11:00:00+08:00" } ],
+  "clusters": [ { "key": "issue:PEI-133", "kind": "issue", "label": "PEI-133",
+                  "reason": "2 個 commit 都提到 PEI-133（跨 cs-backend、cs-frontend）",
+                  "weight": 7.61, "evidence_refs": ["commit:a3f…", "commit:b7c…"],
+                  "terms": ["PEI-133", "export"], "occurred_at": "2026-09-13T10:00:00+08:00",
+                  "issue_key": "PEI-133", "commit_count": 2, "chat_count": 0,
+                  "source_labels": ["cs-backend", "cs-frontend"],
+                  "candidates": [ { "issue_id": 9, "issue_key": "PEI-133", "title": "訂單匯出效能",
+                                    "project_id": 42, "project_key": "PEI",
+                                    "source": "issue_key", "confidence": "strong",
+                                    "reason": "你在 commit 訊息裡直接寫了 PEI-133",
+                                    "can_worklog": true, "permission_checked": true,
+                                    "permission_reason": "" } ] } ],
+  "zplanner": { "available": true, "reason": "", "queried_terms": ["PEI-133"],
+                "worklogable_count": 4, "permission_checked": false,
+                "permission_email": "me@corp.com", "permission_email_source": "viewer_email",
+                "permission_note": "…", "projects_checked": [ { "project_id": 42,
+                "role": "developer", "can_worklog": true, "checked": true, "reason": "" } ],
+                "errors": [] },
+  "provider": null, "model": null, "note_source": "commit_subject" }
+```
+
+**證據欄只能顯示 `meta` 裡有的東西**（設計紅線：任何無法回溯到 `meta` 某個欄位的
+東西不准進證據欄），所以這裡漏掉什麼，前端就永遠顯示不出來。
+`clusters[].evidence_refs` 用字串指回 `commits[]`／`chat[]` 的 `ref`，
+**前端拿到指不到的 ref 直接丟棄**。
+
+分群規則（由強到弱，先命中先歸群，實作在 `core/worklog_clustering.py`）：
+
+| 序 | 規則 | `label` | `kind` |
+| :--- | :--- | :--- | :--- |
+| 1 | commit message／發言裡的 **issue key**（`PEI-133`） | 那個 key | `issue` |
+| 2 | 其餘 commit 按 **repo** | repo 名 | `repo` |
+| 3 | Chat 按 **Space** | Space 名 | `space` |
+
+規則 1 最強而且**會跨 repo**（同一張單在前後端各改一半是常態）。
+`ADR-0008`／`UTF-8`／`RFC-3339` 這類「長得像單號」的前綴**會被濾掉**，不自成一群。
+每群的 `weight` 是成員 `weight_input` 的總和，**每筆證據只進一群**（進兩群等於那天
+的時數憑空多出一塊）。`reason` 是**可直接顯示的中文句子**——分群是啟發式，猜錯時
+使用者唯一能察覺的方式就是讀那句話。
+
+`chunk` 每群一個，帶 `index`／`cluster_key`／`text`：
+```json
+{ "type": "chunk", "index": 0, "cluster_key": "issue:PEI-133", "text": "fix: PEI-133 匯出逾時；PEI-133 加上重試" }
+```
+⚠️ **這一階段的 `text` 不是 AI 寫的**，是該群前兩筆 commit subject 以「；」相接
+（超長截斷），`meta.note_source` 會標 `commit_subject`。AI 潤飾是後續的事。
+
+`done`：
+```json
+{ "type": "done", "draft_id": 12,
+  "entries": [ { "id": 31, "seq": 1, "cluster_key": "issue:PEI-133", "label": "PEI-133",
+                 "reason": "2 個 commit 都提到 PEI-133（跨 cs-backend、cs-frontend）",
+                 "issue_id": null, "issue_key": null,
+                 "hours": "3.50", "allocated_hours": "3.50", "rounded_up": true,
+                 "weight": 7.61, "note": "fix: PEI-133 匯出逾時；PEI-133 加上重試",
+                 "evidence_refs": ["commit:a3f…"], "candidates": [ "…同 meta" ],
+                 "state": "pending" } ],
+  "allocation": { "total_hours": "8.00", "entries": [ { "index": 0, "issue_key": "PEI-133",
+                  "allocated_hours": "3.50", "rounded_up": true, "merged_into": null } ],
+                  "adjustments": [] } }
+```
+
+- 🔴 **`entries[].issue_id`／`issue_key` 一律是 `null`**——系統只給候選，選擇權在
+  Viewer（ADR-0008 的唯一硬規則）。一份看起來合理的自動歸屬，代價由一個月後發現
+  填錯的人支付（月結後不能直接改，要走 correction-request）。落地的那一份也是空的。
+  （`allocation.entries[].issue_key` 是**分配演算法的 tie-break 依據**，不是歸屬，
+  前端不可拿它去預選。）
+- `total_hours` 省略時 `hours`／`allocated_hours`／`allocation` 全部是 `null`——
+  使用者還沒決定總時數之前，不該看到憑空冒出來的數字。
+- 草稿**一天一份**（`UNIQUE(viewer_id, work_date)`），同一天再產一次是覆蓋。
+  但該天若已有任何一筆送進 ZPlanner（`zplanner_worklog_id` 有值），重產會回
+  `400 INVALID_PARAMETER`：整組取代會弄丟那筆的 worklog id，之後只剩
+  correction-request 這條路。
+- 候選 issue 用 `list_worklogable_issues(q=群的關鍵字)` 撈，**`q` 必填**
+  （ZPlanner 對空字串回 0 筆而不是全部）。`confidence` 只有三級並**一律附一句可見
+  的理由**：不做排名徽章、不做百分比、不做進度條——要讓人讀理由而不是讀名次。
+- 權限預檢用 `list_project_role_permissions` ＋ `list_project_members`。
+  查不到就 `can_worklog: null` ＋ `permission_checked: false`，**不假裝有權限**。
+  ⚠️ `meta.zplanner.permission_checked` 現階段**一律是 `false`**：比對用的是登入的
+  Google 信箱，而 `members[].user_email` 未必是同一個帳號；要確定得先有
+  `preferences.zplanner_email`（該欄位尚未存在）。
+- 一次最多預檢 5 個專案、每群最多 3 個候選（清單永不封閉，其餘靠搜尋框）。
+- **ZPlanner 不可用時照樣產得出草稿**：`meta.zplanner.available` 為 `false`、
+  候選是空陣列，其餘一切照常。
+
+`error`：沒有任何 commit／發言時發 **`NO_EVIDENCE`**（SSE-only code，比照
+`NO_MESSAGES`），**且不落地任何草稿**——硬產一份空草稿會讓使用者把時數分給不存在
+的證據。其餘串流中的錯誤照 8.3 轉成 `error` 事件。
+
 ---
 
 ## 維運
@@ -778,8 +945,8 @@ POST／PATCH／verify 都回帶 `verification` 的單筆：
 3. **v1 的 ZPlanner 匯出按鈕已於 v2.0 移除**，不要在 Action Items 那裡保留任何
    剪貼簿 handler。（**Draft Worklog 是另一件事**，見 ADR-0008 與規格 5.3——它走真正的
    API 串接、有自己的畫面。目前完成到：ZPlanner client 層、「我的工作 repo」
-   登錄端點與設定頁、工時工作台的導航與路由骨架。草稿本體（`/worklogs/*`）
-   尚未實作。）
+   登錄端點與設定頁、工時工作台的導航與路由骨架、週檢視與草稿產生（SSE）。
+   單日的讀取／整組取代與送出（`GET`／`PUT`／`submit`）尚未實作。）
 4. Action Items 萃取：從摘要 Markdown 中抓 `• [負責人] 任務` 這種行，轉為可勾選項目，
    支援「複製為 Markdown」。
 5. 空間清單有 436 個，列表需要虛擬滾動或分頁，並提供名稱搜尋。

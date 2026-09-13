@@ -668,16 +668,78 @@ def delete_session(token: str) -> None:
 # --------------------------------------------------------------------------
 
 
+#: 工時草稿的保留策略（ADR-0008／計畫 §4）。三個數字刻意不同：
+#:
+#:   * 未送出的草稿 90 天就丟——它只是一份「還沒決定的東西」，與 summaries／
+#:     mentions 同一個級距。
+#:   * 已送出的留 365 天，但**不是為了證據**，是為了留住 `zplanner_worklog_id`：
+#:     少了它就沒有任何修改與刪除的入口（月結後還要走 correction-request）。
+#:   * 所以已送出的那些在 90 天後**就地清空** `evidence_json`／`candidates_json`——
+#:     ZPlanner 的 id 索引還在，證據不留那麼久。
+#:
+#: 放在本模組而不是 `core/config.py`：這三個值不是部署時該調的旋鈕，
+#: 改動它們等於改動保留承諾本身。（`SUMMARY_RETENTION_DAYS` 當初放 config
+#: 是歷史選擇，沒有跟著搬是為了不動既有行為。）
+WORKLOG_DRAFT_RETENTION_DAYS = 90
+WORKLOG_SUBMITTED_RETENTION_DAYS = 365
+WORKLOG_EVIDENCE_RETENTION_DAYS = 90
+
+
 def purge_expired() -> Dict[str, int]:
+    now = datetime.now(timezone.utc)
     cutoff_summary = (
-        datetime.now(timezone.utc) - timedelta(days=cfg.SUMMARY_RETENTION_DAYS)
+        now - timedelta(days=cfg.SUMMARY_RETENTION_DAYS)
     ).isoformat(timespec="seconds")
     cutoff_mention = (
-        datetime.now(timezone.utc) - timedelta(days=cfg.MENTION_RETENTION_DAYS)
+        now - timedelta(days=cfg.MENTION_RETENTION_DAYS)
     ).isoformat(timespec="seconds")
     s = db.execute("DELETE FROM summaries WHERE created_at < ?", (cutoff_summary,))
     m = db.execute("DELETE FROM mentions WHERE detected_at < ?", (cutoff_mention,))
-    return {"summaries_deleted": s.rowcount, "mentions_deleted": m.rowcount}
+
+    # --- 工時草稿（ADR-0008）---
+    #
+    # 三段都用 `updated_at` 當基準，不用 `work_date`：使用者上週才回頭補的
+    # 半年前那一天，是**還在動的東西**，不該因為那天很久以前就被清掉。
+    # entries 靠 `ON DELETE CASCADE` 跟著走（db.py 的外鍵，連線已開 foreign_keys）。
+    cutoff_draft = (
+        now - timedelta(days=WORKLOG_DRAFT_RETENTION_DAYS)
+    ).isoformat(timespec="seconds")
+    cutoff_submitted = (
+        now - timedelta(days=WORKLOG_SUBMITTED_RETENTION_DAYS)
+    ).isoformat(timespec="seconds")
+    cutoff_evidence = (
+        now - timedelta(days=WORKLOG_EVIDENCE_RETENTION_DAYS)
+    ).isoformat(timespec="seconds")
+
+    unsent = db.execute(
+        "DELETE FROM worklog_drafts WHERE status = 'draft' AND updated_at < ?",
+        (cutoff_draft,),
+    )
+    sent = db.execute(
+        "DELETE FROM worklog_drafts WHERE status <> 'draft' AND updated_at < ?",
+        (cutoff_submitted,),
+    )
+    # 就地清空證據。**不動 `worklog_drafts.updated_at`**：動了的話這些列會
+    # 永遠看起來很新，365 天那條線就永遠不會到。也只挑「還有東西可清」的列，
+    # 免得每天重跑一次把整批 entries 的 updated_at 洗掉。
+    scrubbed = db.execute(
+        """
+        UPDATE worklog_draft_entries
+           SET evidence_json = '[]', candidates_json = '[]', updated_at = ?
+         WHERE (evidence_json NOT IN ('[]', '') OR candidates_json NOT IN ('[]', ''))
+           AND draft_id IN (
+                 SELECT id FROM worklog_drafts
+                  WHERE status <> 'draft' AND updated_at < ?
+               )
+        """,
+        (_now(), cutoff_evidence),
+    )
+    return {
+        "summaries_deleted": s.rowcount,
+        "mentions_deleted": m.rowcount,
+        "worklog_drafts_deleted": unsent.rowcount + sent.rowcount,
+        "worklog_evidence_scrubbed": scrubbed.rowcount,
+    }
 
 
 # --------------------------------------------------------------------------
@@ -1374,3 +1436,346 @@ def record_work_repo_verification(
         """,
         (_now(), error, viewer_id, repo_id),
     )
+
+
+# --------------------------------------------------------------------------
+# 工時草稿（ADR-0008）
+#
+# 同一條紀律：`viewer_id` 必填且擺第一，沒有「查全部」的入口。
+# `worklog_draft_entries` 自己沒有 viewer 欄位（與 `draft_replies` 同型），
+# 所以每一個碰 entries 的函式都**透過 draft 反查 viewer**——少一次就等於
+# 讓任何人帶著猜到的 draft_id 改別人的工時。
+#
+# 兩個 JSON 欄位的慣例與 work_repos 的 `author_emails` 相同：DB 裡是 TEXT，
+# 在這一層解開成真的 list／dict，呼叫端不必知道它曾經是字串。
+# --------------------------------------------------------------------------
+
+
+def _json_list(raw: Optional[str]) -> List[Any]:
+    """把 JSON 欄位解成 list。**壞掉的內容不讓整份草稿讀不回來**。
+
+    這些欄位是證據與候選，它們壞掉時使用者該看到的是「證據少了」，
+    不是一個開不了的草稿——與 `get_stored_draft` 對 `generation_config_json`
+    的處置同一個判準。
+    """
+    if not raw:
+        return []
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    return list(value) if isinstance(value, list) else []
+
+
+def _json_obj(raw: Optional[str]) -> Dict[str, Any]:
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _hours_sum(values: Any) -> str:
+    """把一串時數字串加總成 `"8.00"`。
+
+    時數在 DB 裡是 TEXT（ZPlanner 要字串），加總在 Python 做而不是交給
+    SQL 的 `SUM()`：後者會對 TEXT 做隱式數值轉換，遇到 NULL 或空字串時
+    靜默當 0，而我們要的是「算不動的值要看得出來」——所以壞值一律跳過
+    但**不**讓整個加總失敗。
+    """
+    total = 0.0
+    for raw in values:
+        if raw is None or str(raw).strip() == "":
+            continue
+        try:
+            total += float(raw)
+        except (TypeError, ValueError):
+            continue
+    return f"{total:.2f}"
+
+
+def _worklog_entry_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": row["id"],
+        "draft_id": row["draft_id"],
+        "seq": row["seq"],
+        # 產生時一律是 None——系統只給候選，選擇權在 Viewer（ADR-0008 的
+        # 唯一硬規則）。有值代表人已經選過了。
+        "issue_id": row["issue_id"],
+        "issue_key": row["issue_key"],
+        "project_id": row["project_id"],
+        "project_key": row["project_key"],
+        "hours": row["hours"],
+        "note": row["note"],
+        "allocated_hours": row["allocated_hours"],
+        "weight": row["weight"],
+        "rounded_up": bool(row["rounded_up"]),
+        "evidence_refs": _json_list(row["evidence_json"]),
+        "candidates": _json_list(row["candidates_json"]),
+        "state": row["state"],
+        "zplanner_worklog_id": row["zplanner_worklog_id"],
+        "zplanner_issue_key": row["zplanner_issue_key"],
+        "is_locked": bool(row["is_locked"]),
+        "submitted_at": row["submitted_at"],
+        "last_error_code": row["last_error_code"],
+        "last_error_message": row["last_error_message"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def _worklog_draft_row(
+    row: Dict[str, Any], entries: Optional[List[Dict[str, Any]]] = None
+) -> Dict[str, Any]:
+    out = {
+        "id": row["id"],
+        "work_date": row["work_date"],
+        "status": row["status"],
+        # Viewer 輸入的總時數。**與各筆之和不保證相等**（湊 0.5 倍數必然有
+        # 餘數），兩個數字都要留著，確認畫面才講得出「你輸入 8.0，實際會
+        # 送出 7.5」。
+        "total_hours": row["total_hours"],
+        "tz_offset": row["tz_offset"],
+        "generation_meta": _json_obj(row["generation_meta_json"]),
+        "generated_at": row["generated_at"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+    if entries is not None:
+        out["entries"] = entries
+    return out
+
+
+def _entries_for(draft_ids: List[int]) -> Dict[int, List[Dict[str, Any]]]:
+    """一次撈完所有 entries，避免 N+1（做法同 `_branches_for`）。"""
+    if not draft_ids:
+        return {}
+    marks = ",".join("?" * len(draft_ids))
+    rows = db.query_all(
+        f"SELECT * FROM worklog_draft_entries WHERE draft_id IN ({marks}) "
+        f"ORDER BY draft_id, seq",
+        tuple(draft_ids),
+    )
+    out: Dict[int, List[Dict[str, Any]]] = {did: [] for did in draft_ids}
+    for row in rows:
+        out[row["draft_id"]].append(_worklog_entry_row(row))
+    return out
+
+
+def get_worklog_draft(
+    viewer_id: int, work_date: str, *, with_entries: bool = True
+) -> Optional[Dict[str, Any]]:
+    """取某一天的草稿。沒有就回 None——**那是正常狀態，不是錯誤**
+    （比照 `DRAFT_NOT_FOUND` 的判準，由呼叫端決定要不要報 404）。"""
+    row = db.query_one(
+        "SELECT * FROM worklog_drafts WHERE viewer_id = ? AND work_date = ?",
+        (viewer_id, (work_date or "").strip()),
+    )
+    if row is None:
+        return None
+    entries = _entries_for([row["id"]])[row["id"]] if with_entries else None
+    return _worklog_draft_row(row, entries)
+
+
+def get_worklog_draft_by_id(
+    viewer_id: int, draft_id: int, *, with_entries: bool = True
+) -> Optional[Dict[str, Any]]:
+    """用 id 取，但**仍然要帶 viewer_id**：id 是前端傳回來的。"""
+    row = db.query_one(
+        "SELECT * FROM worklog_drafts WHERE viewer_id = ? AND id = ?",
+        (viewer_id, draft_id),
+    )
+    if row is None:
+        return None
+    entries = _entries_for([row["id"]])[row["id"]] if with_entries else None
+    return _worklog_draft_row(row, entries)
+
+
+def upsert_worklog_draft(
+    viewer_id: int,
+    work_date: str,
+    *,
+    tz_offset: str,
+    # --- 沒傳 ＝ 不改（新建時用預設值），傳 `None` ＝ 清除（見 `_Unset`）---
+    status: Any = UNSET,
+    total_hours: Any = UNSET,
+    generation_meta: Any = UNSET,
+    generated_at: Any = UNSET,
+) -> Dict[str, Any]:
+    """建立或更新某一天的草稿，回傳完整的草稿（含 entries）。
+
+    **一天一份**（`UNIQUE(viewer_id, work_date)`）：同一天產第二次是覆蓋，
+    不是並存——兩份同時存在的話，「這天到底送了哪一份」就沒有答案了。
+
+    用 `INSERT … ON CONFLICT DO UPDATE` 而不是「先查再寫」：後者在同一位
+    Viewer 同時開兩個分頁按產生時會撞 `UNIQUE` 變成 500。要沿用的舊值在
+    進 SQL 之前就算好，所以 UPSERT 的 SET 子句可以一律用 `excluded.*`。
+
+    `total_hours` 的 `None` 有實際語意（**還沒決定總時數**，此時各筆的
+    `hours` 應該是 null），所以這裡用 UNSET 哨兵而不是「None ＝ 不改」。
+    """
+    date = (work_date or "").strip()
+    current = get_worklog_draft(viewer_id, date, with_entries=False)
+    now = _now()
+
+    new_status = _pick(status, current["status"] if current else "draft")
+    new_total = _pick(total_hours, current["total_hours"] if current else None)
+    new_meta = _pick(
+        generation_meta, current["generation_meta"] if current else {}
+    )
+    new_generated = _pick(generated_at, current["generated_at"] if current else None)
+
+    db.execute(
+        """
+        INSERT INTO worklog_drafts(viewer_id, work_date, status, total_hours, tz_offset,
+                                   generation_meta_json, generated_at, created_at, updated_at)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(viewer_id, work_date) DO UPDATE SET
+            status               = excluded.status,
+            total_hours          = excluded.total_hours,
+            tz_offset            = excluded.tz_offset,
+            generation_meta_json = excluded.generation_meta_json,
+            generated_at         = excluded.generated_at,
+            updated_at           = excluded.updated_at
+        """,
+        (
+            viewer_id,
+            date,
+            new_status,
+            None if new_total is None else str(new_total),
+            tz_offset,
+            json.dumps(new_meta or {}, ensure_ascii=False),
+            new_generated,
+            current["created_at"] if current else now,
+            now,
+        ),
+    )
+    result = get_worklog_draft(viewer_id, date)
+    assert result is not None
+    return result
+
+
+def replace_worklog_entries(
+    viewer_id: int, draft_id: int, entries: List[Dict[str, Any]]
+) -> Optional[Dict[str, Any]]:
+    """**整組取代**這份草稿的 entries，回傳更新後的草稿；不是這位 Viewer 的回 None。
+
+    整組取代而不是逐筆 merge，比照 `code_projects` 的 branches：部分更新會讓
+    「把某一筆刪掉」這個動作沒有辦法表達。`seq` 由這裡按清單順序重新編號，
+    呼叫端不必自己維護——它唯一的用途是「畫面上的第幾張卡」。
+
+    ⚠️ **呼叫端必須先確認沒有任何一筆已經送進 ZPlanner。** 這裡不擋（本模組
+    的函式一律不拋業務錯誤，見既有慣例），但整組取代會連帶刪掉那筆的
+    `zplanner_worklog_id`——而那是修改／刪除遠端工時的唯一入口，刪掉之後
+    只剩 correction-request 這條路。
+
+    刪除與新增在**同一個 transaction**，理由同 `create_code_project`：
+    中途失敗會留下一份沒有任何 entries 的草稿，而那看起來就像「這天沒事做」。
+    """
+    draft = get_worklog_draft_by_id(viewer_id, draft_id, with_entries=False)
+    if draft is None:
+        return None
+
+    now = _now()
+    conn = db.get_connection()
+    with conn:
+        conn.execute("DELETE FROM worklog_draft_entries WHERE draft_id = ?", (draft_id,))
+        for seq, entry in enumerate(entries or [], start=1):
+            conn.execute(
+                """
+                INSERT INTO worklog_draft_entries(
+                    draft_id, seq, issue_id, issue_key, project_id, project_key,
+                    hours, note, allocated_hours, weight, rounded_up,
+                    evidence_json, candidates_json, state,
+                    zplanner_worklog_id, zplanner_issue_key, is_locked,
+                    submitted_at, last_error_code, last_error_message,
+                    created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    draft_id,
+                    seq,
+                    entry.get("issue_id"),
+                    entry.get("issue_key"),
+                    entry.get("project_id"),
+                    entry.get("project_key"),
+                    None if entry.get("hours") is None else str(entry["hours"]),
+                    entry.get("note"),
+                    None
+                    if entry.get("allocated_hours") is None
+                    else str(entry["allocated_hours"]),
+                    entry.get("weight"),
+                    int(bool(entry.get("rounded_up"))),
+                    json.dumps(entry.get("evidence_refs") or [], ensure_ascii=False),
+                    json.dumps(entry.get("candidates") or [], ensure_ascii=False),
+                    entry.get("state") or "pending",
+                    entry.get("zplanner_worklog_id"),
+                    entry.get("zplanner_issue_key"),
+                    int(bool(entry.get("is_locked"))),
+                    entry.get("submitted_at"),
+                    entry.get("last_error_code"),
+                    entry.get("last_error_message"),
+                    now,
+                    now,
+                ),
+            )
+        conn.execute(
+            "UPDATE worklog_drafts SET updated_at = ? WHERE id = ? AND viewer_id = ?",
+            (now, draft_id, viewer_id),
+        )
+    return get_worklog_draft_by_id(viewer_id, draft_id)
+
+
+def list_worklog_drafts_in_range(
+    viewer_id: int, start_date: str, end_date: str
+) -> List[Dict[str, Any]]:
+    """週檢視用的摘要：這段日期內每一天的草稿狀態與時數合計。
+
+    **刻意不回 entries 本體。** 一週七天、每天可能好幾筆，每筆都帶著證據 ref
+    與候選清單——週檢視只要畫「有沒有草稿、幾小時、選完專案了沒」，整包帶
+    過去只是讓那個端點的回應大上一個量級。要細節就去打單日的端點。
+
+    日期是 `YYYY-MM-DD` 字串，字典序比較等同日期比較（固定寬度、零補齊），
+    所以這裡直接用 `BETWEEN` 而不先轉成 date 物件。
+    """
+    rows = db.query_all(
+        """
+        SELECT * FROM worklog_drafts
+         WHERE viewer_id = ? AND work_date >= ? AND work_date <= ?
+         ORDER BY work_date
+        """,
+        (viewer_id, (start_date or "").strip(), (end_date or "").strip()),
+    )
+    entries_by_draft = _entries_for([r["id"] for r in rows])
+
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        entries = entries_by_draft.get(row["id"], [])
+        summary = _worklog_draft_row(row)
+        summary.update(
+            {
+                "entry_count": len(entries),
+                # 真正會送出的是各筆之和，不是 total_hours（見欄位註解）
+                "hours": _hours_sum(e["hours"] for e in entries),
+                "allocated_hours": _hours_sum(e["allocated_hours"] for e in entries),
+                "submitted_count": sum(1 for e in entries if e["state"] == "submitted"),
+                "failed_count": sum(1 for e in entries if e["state"] == "failed"),
+                "unknown_count": sum(1 for e in entries if e["state"] == "unknown"),
+                # 還沒選專案的筆數。**未選擋住送出**（計畫 §7 第 1 條），
+                # 週檢視要看得出「這天還差幾筆沒決定」。
+                "unassigned_count": sum(1 for e in entries if not e["issue_id"]),
+            }
+        )
+        out.append(summary)
+    return out
+
+
+def delete_worklog_draft(viewer_id: int, work_date: str) -> bool:
+    """刪掉某一天的草稿（entries 靠外鍵 CASCADE 跟著走）。"""
+    cur = db.execute(
+        "DELETE FROM worklog_drafts WHERE viewer_id = ? AND work_date = ?",
+        (viewer_id, (work_date or "").strip()),
+    )
+    return cur.rowcount > 0

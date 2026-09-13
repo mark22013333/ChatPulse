@@ -204,6 +204,29 @@ _CJK_STOPWORDS = frozenset(
 _CJK_EDGE_PARTICLES = "的與和在是了把被對於就都也很更最個們之而且或把將從"
 
 
+def find_issue_keys(*texts: str) -> List[str]:
+    """從文字裡抽出 issue key（`PEI-133`、`FIA01P2403-391`），保留出現順序、去重。
+
+    存在的理由是**不讓 `_ISSUE_KEY_RE` 被複製第二份**：分群
+    （`core/worklog_clustering.py`）要用同一個判準，而「什麼形狀算 issue key」
+    一旦有兩份定義，兩邊漂移的當天不會有任何測試變紅——只會有一群工時
+    莫名其妙沒被合在一起。
+
+    大小寫**照原樣**回傳（正規表示式本來就只認大寫開頭），比對時才不會把
+    `PEI-133` 與 `pei-133` 當成兩張不同的單——後者根本不會被認出來。
+    """
+    out: List[str] = []
+    seen = set()
+    for text in texts:
+        for m in _ISSUE_KEY_RE.finditer(text or ""):
+            key = m.group(0)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(key)
+    return out
+
+
 def extract_terms(text: str, extra: str = "", *, max_terms: Optional[int] = None) -> List[str]:
     """從 commit subject 或發言抽出拿得去配 issue 的關鍵字。
 
