@@ -79,6 +79,7 @@ from core.errors import (
     RouteNotFound,
     SepiaUnavailable,
     WorkRepoNotFound,
+    WorklogAlreadySubmitted,
 )
 from core.mentions import CollectorRunner
 from core.polishers import sepia as sepia_polisher
@@ -466,7 +467,15 @@ async def chatpulse_error_handler(request: Request, exc: ChatPulseError):
         headers["Retry-After"] = str(exc.retry_after)
     if exc.detail:
         log.warning("%s %s -> %s: %s", request.method, request.url.path, exc.code, exc.detail)
-    return JSONResponse(exc.to_dict(), status_code=exc.http_status, headers=headers)
+    body = exc.to_dict()
+    # `detail` 是**字串**時維持原樣：那是給 log 看的內部訊息，不外洩。
+    # 是 **dict** 時代表拋的人刻意要給前端用的結構化補充（例：「重產會清掉
+    # 幾筆已選的專案」）。把那個數字只寫在 message 裡，前端就只能拿正則從
+    # 一句中文裡挖數字——句子改一個字就挖錯，而挖錯的後果是跟使用者說錯
+    # 「會弄丟幾筆」。
+    if isinstance(exc.detail, dict):
+        body["error"]["detail"] = exc.detail
+    return JSONResponse(body, status_code=exc.http_status, headers=headers)
 
 
 @app.exception_handler(Exception)
@@ -3302,8 +3311,52 @@ def _zplanner_week_target(data: Any) -> Dict[str, Any]:
     return out
 
 
-def _zplanner_week_section(week_start: str) -> Dict[str, Any]:
-    """週檢視裡 ZPlanner 那一段。**永遠不拋**，不可用就回 reason。"""
+def _zplanner_week_mismatch(data: Any, dates: List[str]) -> Optional[Dict[str, Any]]:
+    """ZPlanner 回的那一週，跟我們請求的七天是同一段嗎？不是就回描述，是就回 None。
+
+    🔴 `list_weekly_worklogs` 的 docstring 寫得很清楚：**它會把日期正規化到
+    那一週的週一**，所以「傳出去的那天所在的週」不保證等於「回來的那一週」。
+    我們的端點又明說 `week_start` 不強制是星期一（見 `get_worklog_week`），
+    兩件事湊在一起就會錯開。
+
+    錯開之後最危險的不是少一格，是**總計**：ZPlanner 的 `total_hours`／
+    `target_hours`／`completion_pct` 描述的是**它那一週**，直接抄過來就變成
+    「表頭的數字跟下面七個格子加起來對不上」。2026-09-13 實測（週日起的
+    `2026-09-06`）：格子合計 40.0 小時，表頭卻寫 44.00 小時、完成率 110%。
+    兩個數字都看起來很合理，沒有人會發現它算的是別的區間。
+
+    舊版回應沒有 `week_start`／`week_end` 時回 None——**沒有東西可以比對不等於
+    對得起來**，但也不能憑空判它錯；這種情況只靠逐日資料的日期自然過濾。
+    """
+    if not isinstance(data, dict):
+        return None
+    zp_start = str(data.get("week_start") or "").strip()[:10]
+    zp_end = str(data.get("week_end") or "").strip()[:10]
+    if not zp_start and not zp_end:
+        return None
+    if zp_start == dates[0] and (not zp_end or zp_end == dates[-1]):
+        return None
+    return {
+        "requested_week_start": dates[0],
+        "requested_week_end": dates[-1],
+        "zplanner_week_start": zp_start or None,
+        "zplanner_week_end": zp_end or None,
+        "reason": (
+            f"ZPlanner 回的是 {zp_start or '?'}～{zp_end or '?'} 這一週"
+            f"（它會把日期正規化到週一），與這裡顯示的 {dates[0]}～{dates[-1]} "
+            "不是同一段。目標時數與完成率描述的是它那一週，拿來用會對不上，"
+            "所以整個不顯示；下面每一格仍然是各自那天的實際工時。"
+        ),
+    }
+
+
+def _zplanner_week_section(dates: List[str]) -> Dict[str, Any]:
+    """週檢視裡 ZPlanner 那一段。**永遠不拋**，不可用就回 reason。
+
+    `dates` 是這支端點要顯示的七天（`dates[0]` 就是送給 ZPlanner 的
+    `week_start`）。**要整份七天而不是只要開頭**：回來的資料得先濾回這七天，
+    總計才會等於畫面上七個格子的和（見 `_zplanner_week_mismatch`）。
+    """
     try:
         client = zplanner_client()
         ok, reason = client.available()
@@ -3321,7 +3374,7 @@ def _zplanner_week_section(week_start: str) -> Dict[str, Any]:
             "（GET /api/worklogs/weekly/），本地草稿不受影響。",
         }
     try:
-        data = fetch(week_start)
+        data = fetch(dates[0])
     except ChatPulseError as exc:
         return {"available": False, "reason": exc.message}
     except Exception as exc:  # noqa: BLE001
@@ -3331,16 +3384,28 @@ def _zplanner_week_section(week_start: str) -> Dict[str, Any]:
     days, error = _zplanner_week_rows(data)
     if days is None:
         return {"available": False, "reason": error}
-    return {
+
+    # 只留落在這七天裡的。ZPlanner 正規化到週一之後可能回到別的日期（週日
+    # 起算時必然如此），而那些日期前端根本沒有格子可以畫——算進總計就是
+    # 「表頭與格子對不起來」。
+    inside = {d: days[d] for d in dates if d in days}
+    section: Dict[str, Any] = {
         "available": True,
-        "days": days,
-        "total_hours": f"{sum(float(v['hours']) for v in days.values()):.2f}",
-        "worklog_count": sum(int(v["worklog_count"]) for v in days.values()),
+        "days": inside,
+        "total_hours": f"{sum(float(v['hours']) for v in inside.values()):.2f}",
+        "worklog_count": sum(int(v["worklog_count"]) for v in inside.values()),
+    }
+    mismatch = _zplanner_week_mismatch(data, dates)
+    if mismatch is None:
         # target_hours／completion_pct 取不到時整個不出現，前端據此決定要不要
         # 畫「還差多少」那一行。**不要在這裡補預設值**——編出來的目標會讓
         # 完成率變成一個看起來精確的假數字。
-        **_zplanner_week_target(data),
-    }
+        section.update(_zplanner_week_target(data))
+    else:
+        # 對不起來就**一個總計都不抄**：ZPlanner 的目標與完成率是按它那一週
+        # 算的，硬套到我們這七天上會得到一個算錯卻看起來精確的數字。
+        section["week_mismatch"] = mismatch
+    return section
 
 
 @app.get("/api/v1/worklogs/week")
@@ -3365,7 +3430,7 @@ def get_worklog_week(
         row["work_date"]: row
         for row in repo.list_worklog_drafts_in_range(viewer_id, dates[0], dates[-1])
     }
-    zplanner = _zplanner_week_section(dates[0])
+    zplanner = _zplanner_week_section(dates)
     zp_days = zplanner.get("days") or {}
 
     days = []
@@ -3418,6 +3483,13 @@ class WorklogDraftRequest(BaseModel):
     space_ids: Optional[List[str]] = None
     total_hours: Optional[float] = None
     provider: Optional[str] = None
+    #: 明示「我知道重產會清掉已經選好的專案，還是要重來」。
+    #:
+    #: 預設 `False`，因為選專案是這個功能裡最花心力的一步（ADR-0008：系統只
+    #: 給候選，一律由 Viewer 選），而重產是整組 DELETE——安靜地清掉那些決定
+    #: 跟弄丟它們沒有差別。`force=true` **不能**用來蓋過「已經送進 ZPlanner」
+    #: 那條線：worklog id 弄丟了就是永遠對不回來。
+    force: bool = False
 
 
 def _worklog_chat_space_ids(
@@ -3670,6 +3742,47 @@ def _worklog_candidates(
     return by_cluster, meta
 
 
+def _refuse_destructive_regeneration(
+    date: str, entries: List[Dict[str, Any]], *, force: bool
+) -> None:
+    """重產前的守門。重產 ＝ `replace_worklog_entries` 整組 DELETE 再 INSERT。
+
+    那次 DELETE 會帶走兩種東西，性質完全不同，所以擋法也不同：
+
+      1. **`zplanner_worklog_id`**——修改／刪除遠端工時的唯一入口。本地刪掉
+         不會讓 ZPlanner 那側跟著消失，只會讓兩邊永遠對不回來，之後只剩
+         correction-request。這條線 **`force` 也不給過**。
+      2. **Viewer 已經選好的 issue**——ADR-0008 的唯一硬規則是「系統只給候選，
+         一律由人選」，所以這是整個功能裡最花心力的一步。它可以重選，但
+         **不可以沒人講一聲就清掉**：擋下來，說清楚會影響幾筆，由呼叫端帶
+         `force=true` 明示。
+
+    兩種都把筆數放進 `detail`（dict → 會進回應的 `error.detail`，見
+    `chatpulse_error_handler`），前端才不必從中文句子裡用正則挖數字。
+    """
+    sent = [e for e in entries if e["zplanner_worklog_id"]]
+    if sent:
+        raise WorklogAlreadySubmitted(
+            f"{date} 已經有 {len(sent)} 筆工時送進 ZPlanner 了，不能重產草稿。"
+            "重產會弄丟那幾筆的 worklog id，之後只能走 correction-request。",
+            detail={"submitted_count": len(sent), "force_allowed": False},
+        )
+
+    assigned = [e for e in entries if e["issue_id"] or e["issue_key"]]
+    if assigned and not force:
+        keys = [str(e["issue_key"]) for e in assigned if e["issue_key"]]
+        shown = ("（" + "、".join(keys[:5]) + "）") if keys else ""
+        raise InvalidParameter(
+            f"{date} 的草稿裡有 {len(assigned)} 筆已經選好專案了{shown}，"
+            "重產會把那些選擇整組清掉。確定要重來請帶 force=true。",
+            detail={
+                "assigned_count": len(assigned),
+                "assigned_issue_keys": keys,
+                "force_allowed": True,
+            },
+        )
+
+
 @app.post("/api/v1/worklogs/{work_date}/draft/stream")
 def worklog_draft_stream(
     work_date: str, req: WorklogDraftRequest, viewer: Dict[str, Any] = ViewerDep
@@ -3709,14 +3822,7 @@ def worklog_draft_stream(
 
     existing = repo.get_worklog_draft(viewer_id, date)
     if existing:
-        # 重產會整組取代 entries，連帶刪掉 `zplanner_worklog_id`——那是修改／
-        # 刪除遠端工時的唯一入口，刪掉之後只剩 correction-request 這條路。
-        sent = [e for e in existing["entries"] if e["zplanner_worklog_id"]]
-        if sent:
-            raise InvalidParameter(
-                f"{date} 已經有 {len(sent)} 筆工時送進 ZPlanner 了，不能重產草稿。"
-                "重產會弄丟那幾筆的 worklog id，之後只能走 correction-request。"
-            )
+        _refuse_destructive_regeneration(date, existing["entries"], force=req.force)
 
     def generate() -> Generator[str, None, None]:
         try:
@@ -3788,6 +3894,22 @@ def worklog_draft_stream(
                 )
             allocated = {e.index: e for e in (allocation.entries if allocation else ())}
 
+            # 寫之前再查一次「這一天有沒有已經送出的工時」。
+            #
+            # 正確性不靠這一道——`replace_worklog_entries(refuse_submitted=True)`
+            # 已經在同一個交易裡把關了。這裡多查一次是為了**不留副作用**：
+            # `upsert_worklog_draft` 會更新 generation_meta 與 generated_at，
+            # 而它排在 replace 前面。少了這一道，一次被拒絕的重產仍然會把證據欄
+            # 換成新證據、entries 卻還是舊的——畫面上兩邊對不起來，而使用者
+            # 剛剛才收到一句「已經送出了，不能重產」。
+            #
+            # 被拒絕的操作不該留下任何痕跡，這是那一道的全部理由。
+            current = repo.get_worklog_draft(viewer_id, date)
+            if current:
+                _refuse_destructive_regeneration(
+                    date, current["entries"], force=req.force
+                )
+
             draft = repo.upsert_worklog_draft(
                 viewer_id,
                 date,
@@ -3819,7 +3941,13 @@ def worklog_draft_stream(
                         "state": "pending",
                     }
                 )
-            saved = repo.replace_worklog_entries(viewer_id, draft["id"], rows)
+            # `refuse_submitted=True`：上面那道守門在掃 git／打 ZPlanner **之前**
+            # 就跑完了，中間可能過了數十秒。這段時間若有另一條路徑把工時送出去，
+            # 整組取代就會把剛拿到的 `zplanner_worklog_id` 抹掉——所以真正的
+            # 判定要跟 DELETE 在同一個交易裡再做一次（見 repository 的 docstring）。
+            saved = repo.replace_worklog_entries(
+                viewer_id, draft["id"], rows, refuse_submitted=True
+            )
             assert saved is not None
 
             yield sse(

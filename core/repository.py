@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 
 from . import config as cfg
 from . import crypto, db
+from .errors import WorklogAlreadySubmitted
 
 
 def _now() -> str:
@@ -1658,7 +1659,11 @@ def upsert_worklog_draft(
 
 
 def replace_worklog_entries(
-    viewer_id: int, draft_id: int, entries: List[Dict[str, Any]]
+    viewer_id: int,
+    draft_id: int,
+    entries: List[Dict[str, Any]],
+    *,
+    refuse_submitted: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """**整組取代**這份草稿的 entries，回傳更新後的草稿；不是這位 Viewer 的回 None。
 
@@ -1666,13 +1671,23 @@ def replace_worklog_entries(
     「把某一筆刪掉」這個動作沒有辦法表達。`seq` 由這裡按清單順序重新編號，
     呼叫端不必自己維護——它唯一的用途是「畫面上的第幾張卡」。
 
-    ⚠️ **呼叫端必須先確認沒有任何一筆已經送進 ZPlanner。** 這裡不擋（本模組
-    的函式一律不拋業務錯誤，見既有慣例），但整組取代會連帶刪掉那筆的
-    `zplanner_worklog_id`——而那是修改／刪除遠端工時的唯一入口，刪掉之後
-    只剩 correction-request 這條路。
-
     刪除與新增在**同一個 transaction**，理由同 `create_code_project`：
     中途失敗會留下一份沒有任何 entries 的草稿，而那看起來就像「這天沒事做」。
+
+    ⚠️ `refuse_submitted=True` 時，**已經有任何一筆帶著 `zplanner_worklog_id`
+    就整筆拒絕**（拋 `WorklogAlreadySubmitted`，交易回捲，一行都不動）。
+
+    本模組的函式一律不拋業務錯誤——**這是唯一的例外，而且是刻意的**。呼叫端
+    自己在外面先查一次是不夠的：草稿產生要掃 git、要打 ZPlanner，守門與真正
+    寫入之間隔得掉數十秒，那段時間另一條路徑把工時送出去，這裡的 DELETE 就會
+    把剛拿到的 `zplanner_worklog_id` **安靜地抹掉**——正好是守門要防的事。
+    檢查必須跟 DELETE 在同一個交易裡才擋得住。
+
+    順序也是刻意的：**先做 `UPDATE worklog_drafts`** 把交易升級成寫入交易
+    （SQLite 的 deferred transaction 要等到第一個寫入語句才真的開始；純 SELECT
+    不會拿到 writer lock），拿到鎖之後再查 `zplanner_worklog_id`。倒過來寫的話
+    查與刪之間仍然有一條縫，等於把幾十秒的競態縮小成幾微秒的競態——**還是
+    競態**。
     """
     draft = get_worklog_draft_by_id(viewer_id, draft_id, with_entries=False)
     if draft is None:
@@ -1681,6 +1696,23 @@ def replace_worklog_entries(
     now = _now()
     conn = db.get_connection()
     with conn:
+        conn.execute(
+            "UPDATE worklog_drafts SET updated_at = ? WHERE id = ? AND viewer_id = ?",
+            (now, draft_id, viewer_id),
+        )
+        if refuse_submitted:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM worklog_draft_entries "
+                "WHERE draft_id = ? AND zplanner_worklog_id IS NOT NULL",
+                (draft_id,),
+            ).fetchone()
+            sent = int(row[0])
+            if sent:
+                raise WorklogAlreadySubmitted(
+                    f"這份草稿已經有 {sent} 筆工時送進 ZPlanner 了，不能整組取代。"
+                    "取代會弄丟那幾筆的 worklog id，之後只能走 correction-request。",
+                    detail={"submitted_count": sent, "force_allowed": False},
+                )
         conn.execute("DELETE FROM worklog_draft_entries WHERE draft_id = ?", (draft_id,))
         for seq, entry in enumerate(entries or [], start=1):
             conn.execute(
@@ -1721,10 +1753,8 @@ def replace_worklog_entries(
                     now,
                 ),
             )
-        conn.execute(
-            "UPDATE worklog_drafts SET updated_at = ? WHERE id = ? AND viewer_id = ?",
-            (now, draft_id, viewer_id),
-        )
+        # `updated_at` 已經在交易最前面寫過了（見 docstring：那一步同時是
+        # 「拿 writer lock」）。這裡不再寫第二次。
     return get_worklog_draft_by_id(viewer_id, draft_id)
 
 

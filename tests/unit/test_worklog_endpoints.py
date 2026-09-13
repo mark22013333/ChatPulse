@@ -27,6 +27,7 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import date, timedelta
 from typing import Any, Dict, List
 from unittest import mock
 
@@ -37,6 +38,7 @@ from core import db, repository as repo  # noqa: E402
 from core.errors import (  # noqa: E402
     InvalidParameter,
     WorkRepoNotFound,
+    WorklogAlreadySubmitted,
     ZPlannerUnavailable,
 )
 from core.worklog_evidence import DayEvidence, Evidence, extract_terms  # noqa: E402
@@ -89,6 +91,39 @@ def day_evidence(*items) -> DayEvidence:
         until="2026-09-14T00:00:00+08:00",
         evidence=tuple(items),
     )
+
+
+def zplanner_week(monday: str, per_day_hours) -> Dict[str, Any]:
+    """照 `list_weekly_worklogs` 的真實回應形狀（2026-09-13 對正式站實測）造一週。
+
+    `monday` 刻意叫這個名字：ZPlanner **一定**把 `week_start` 正規化到那一週
+    的週一，所以測非週一起算時，這裡要給的是它會回的那個週一，不是我們請求
+    的那一天。
+    """
+    start = date.fromisoformat(monday)
+    days = []
+    for offset, hours in enumerate(per_day_hours):
+        days.append(
+            {
+                "date": (start + timedelta(days=offset)).isoformat(),
+                "weekday": ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")[offset],
+                "hours": float(hours),
+                "entries": [{"id": 900 + offset, "hours": f"{float(hours):.2f}"}]
+                if hours
+                else [],
+            }
+        )
+    total = float(sum(per_day_hours))
+    return {
+        "year": start.year,
+        "week": start.isocalendar().week,
+        "week_start": monday,
+        "week_end": (start + timedelta(days=6)).isoformat(),
+        "total_hours": total,
+        "target_hours": 40.0,
+        "completion_pct": round(total / 40.0 * 100, 1),
+        "days": days,
+    }
 
 
 class FakeZPlanner:
@@ -295,6 +330,49 @@ class TestWeekEndpoint(EndpointCase):
         result = self.week(zplanner=FakeZPlannerWeekly(weekly={"總時數": 8}))
         self.assertFalse(result["zplanner"]["available"])
         self.assertIn("形狀不認得", result["zplanner"]["reason"])
+
+    def test_非週一起算時不拿_zplanner_那一週的總計來用(self):
+        """🔴 ZPlanner 會把 `week_start` 正規化到**那一週的週一**。
+
+        我們的端點明說 `week_start` 不強制是星期一，兩件事湊在一起就會錯開。
+        錯開之後最危險的不是少一格，是總計：實測請求週日起的 `2026-09-06`，
+        七個格子加起來 40.0 小時，表頭卻顯示 44.00 小時、完成率 110%——因為
+        那是 ZPlanner 週一那一週的和，跟我們回的七格不是同一個區間。
+        """
+        client = FakeZPlannerWeekly(weekly=zplanner_week("2026-09-07", [8, 8, 8, 8, 8, 0, 4]))
+        result = self.week(zplanner=client, week_start="2026-09-06")
+        zp = result["zplanner"]
+
+        self.assertTrue(zp["available"], "逐日資料仍然可用，不是整段報廢")
+        # 這條才是真正的不變式：表頭 ＝ 下面七個格子加起來
+        grid = sum(
+            float(d["zplanner"]["hours"]) for d in result["days"] if d["zplanner"]
+        )
+        self.assertEqual(zp["total_hours"], f"{grid:.2f}")
+        self.assertEqual(zp["total_hours"], "40.00", "不再是修復前的 44.00")
+        # ZPlanner 的目標與完成率算的是它那一週，硬套過來就是一個算錯卻
+        # 看起來很精確的數字
+        self.assertNotIn("target_hours", zp)
+        self.assertNotIn("completion_pct", zp, "不再是修復前的 110%")
+        self.assertEqual(zp["week_mismatch"]["zplanner_week_start"], "2026-09-07")
+        self.assertEqual(zp["week_mismatch"]["requested_week_start"], "2026-09-06")
+        self.assertIn("週一", zp["week_mismatch"]["reason"])
+        # 窗口外的 09-13 不准出現在任何地方
+        self.assertNotIn("2026-09-13", [d["work_date"] for d in result["days"]])
+
+    def test_週對得起來時照抄目標與完成率(self):
+        """正對照：對得起來就要照常帶目標與完成率，不是一律不給。"""
+        client = FakeZPlannerWeekly(weekly=zplanner_week("2026-09-07", [8, 8, 8, 8, 8, 0, 4]))
+        result = self.week(zplanner=client, week_start="2026-09-07")
+        zp = result["zplanner"]
+        grid = sum(
+            float(d["zplanner"]["hours"]) for d in result["days"] if d["zplanner"]
+        )
+        self.assertEqual(zp["total_hours"], f"{grid:.2f}")
+        self.assertEqual(zp["total_hours"], "44.00")
+        self.assertEqual(zp["target_hours"], "40.00")
+        self.assertEqual(zp["completion_pct"], 110.0)
+        self.assertNotIn("week_mismatch", zp)
 
     def test_bad_week_start_is_rejected(self):
         for bad in ("", "2026/09/08", "第三十七週", "2026-13-01"):
@@ -567,9 +645,191 @@ class TestDraftStreamGuards(EndpointCase):
             draft["id"],
             [{"hours": "3.50", "state": "submitted", "zplanner_worklog_id": 9931}],
         )
-        with self.assertRaises(InvalidParameter) as ctx:
+        with self.assertRaises(WorklogAlreadySubmitted) as ctx:
             self.stream_raw(DATE)
         self.assertIn("correction-request", str(ctx.exception))
+        self.assertEqual(ctx.exception.detail["submitted_count"], 1)
+        # worklog id 弄丟就是永遠對不回來，force 不給過
+        self.assertIs(ctx.exception.detail["force_allowed"], False)
+        with self.assertRaises(WorklogAlreadySubmitted):
+            self.stream_raw(DATE, force=True)
+
+    def test_refuses_to_wipe_manually_chosen_issues(self):
+        """🔴 選專案是這個功能裡最花心力的一步，不准安靜清掉。
+
+        原本的守門只看 `zplanner_worklog_id`，於是「還沒送出、但人已經一筆一筆
+        挑好 issue」的草稿重產時會被整組 DELETE，事前沒有任何警告。
+        """
+        draft = repo.upsert_worklog_draft(self.vid, DATE, tz_offset=TZ)
+        repo.replace_worklog_entries(
+            self.vid,
+            draft["id"],
+            [
+                {"hours": "3.50", "issue_id": 501, "issue_key": "PEI-133"},
+                {"hours": "1.00", "issue_id": 502, "issue_key": "PEI-140"},
+                {"hours": "1.00"},  # 這筆還沒選
+            ],
+        )
+        with self.assertRaises(InvalidParameter) as ctx:
+            self.stream_raw(DATE)
+        exc = ctx.exception
+        # 前端要說得出「你有 N 筆已經選好的專案會被清掉」——數字不能只寫在
+        # 中文句子裡，不然前端只能用正則去挖
+        self.assertEqual(exc.detail["assigned_count"], 2)
+        self.assertEqual(exc.detail["assigned_issue_keys"], ["PEI-133", "PEI-140"])
+        self.assertIs(exc.detail["force_allowed"], True)
+        self.assertIn("2 筆", exc.message)
+        # 擋下來＝真的一筆都沒動
+        after = repo.get_worklog_draft(self.vid, DATE)
+        self.assertEqual(
+            [e["issue_key"] for e in after["entries"]], ["PEI-133", "PEI-140", None]
+        )
+
+    def test_detail_reaches_the_http_body(self):
+        """`error.detail` 要真的出現在回應主體裡，不是只進 log。"""
+        exc = InvalidParameter("有 2 筆已經選好專案了", detail={"assigned_count": 2})
+        response = asyncio.run(server.chatpulse_error_handler(mock.Mock(), exc))
+        body = json.loads(response.body)
+        self.assertEqual(body["error"]["code"], "INVALID_PARAMETER")
+        self.assertEqual(body["error"]["detail"], {"assigned_count": 2})
+        # 字串 detail 是給 log 看的內部訊息，不該外洩
+        plain = asyncio.run(
+            server.chatpulse_error_handler(mock.Mock(), InvalidParameter("壞掉了", detail="內部堆疊"))
+        )
+        self.assertNotIn("detail", json.loads(plain.body)["error"])
+
+    def test_force_true_accepts_wiping_chosen_issues(self):
+        """明示 force=true 就放行——擋的是「沒人講一聲」，不是「不准重來」。"""
+        draft = repo.upsert_worklog_draft(self.vid, DATE, tz_offset=TZ)
+        repo.replace_worklog_entries(
+            self.vid, draft["id"], [{"hours": "3.50", "issue_id": 501, "issue_key": "PEI-133"}]
+        )
+        events = self.stream(day_evidence(commit("a" * 40, "fix: PEI-133")), force=True)
+        self.assertEqual(events[-1]["type"], "done")
+        after = repo.get_worklog_draft(self.vid, DATE)
+        # ADR-0008：重產出來的一律沒有歸屬，人要重選一次
+        self.assertEqual([e["issue_key"] for e in after["entries"]], [None])
+
+    def test_submission_between_the_gate_and_the_write_is_still_refused(self):
+        """🔴 TOCTOU：守門通過 → 掃 git／打 ZPlanner（可達數十秒）→ 才寫入。
+
+        那段時間內另一條路徑把工時送出去，整組取代就會把剛拿到的
+        `zplanner_worklog_id` **靜默抹掉**——正好是守門要防的事。所以真正的
+        判定必須跟 DELETE 在同一個交易裡（`refuse_submitted=True`）。
+        """
+        draft = repo.upsert_worklog_draft(self.vid, DATE, tz_offset=TZ)
+        repo.replace_worklog_entries(
+            self.vid, draft["id"], [{"hours": "3.50", "note": "既有"}]
+        )  # ← 守門那一刻沒有任何一筆送出，所以它會放行
+
+        def collect_then_someone_else_submits(**kwargs):
+            # 這裡就是那個窗口：正式流程在這裡掃 git／打 ZPlanner
+            current = repo.get_worklog_draft(self.vid, DATE)
+            repo.replace_worklog_entries(
+                self.vid,
+                draft["id"],
+                [
+                    {**e, "state": "submitted", "zplanner_worklog_id": 9931}
+                    for e in current["entries"]
+                ],
+            )
+            return day_evidence(commit("a" * 40, "fix: PEI-133"))
+
+        with mock.patch.object(
+            server.worklog_evidence, "collect_day_evidence", collect_then_someone_else_submits
+        ), mock.patch.object(server, "zplanner_client", lambda: FakeZPlanner(ok=False)):
+            response = server.worklog_draft_stream(
+                DATE, server.WorklogDraftRequest(tz_offset=TZ), self.viewer
+            )
+            events = _parse(asyncio.run(_collect(response.body_iterator)))
+
+        self.assertEqual(events[-1]["type"], "error")
+        self.assertEqual(events[-1]["code"], "WORKLOG_ALREADY_SUBMITTED")
+
+    def test_被拒絕的重產不會留下痕跡(self):
+        """守門擋下來時，`generation_meta` 與 `generated_at` 都不該被動到。
+
+        `upsert_worklog_draft` 排在 `replace_worklog_entries` **前面**，所以
+        少了「寫之前再查一次」那一道，一次被拒絕的重產仍然會把證據欄換成
+        新證據、entries 卻還是舊的——畫面上兩邊對不起來，而使用者剛剛才
+        收到一句「已經送出了，不能重產」。
+
+        被拒絕的操作不該留下任何痕跡。
+        """
+        draft = repo.upsert_worklog_draft(
+            self.vid,
+            DATE,
+            tz_offset=TZ,
+            generation_meta={"type": "meta", "marker": "原本的證據"},
+            generated_at="2026-09-01T00:00:00+00:00",
+        )
+        repo.replace_worklog_entries(
+            self.vid, draft["id"], [{"hours": "3.50", "note": "既有"}]
+        )
+        before = repo.get_worklog_draft(self.vid, DATE)
+
+        def collect_then_someone_else_submits(**kwargs):
+            current = repo.get_worklog_draft(self.vid, DATE)
+            repo.replace_worklog_entries(
+                self.vid,
+                draft["id"],
+                [
+                    {**e, "state": "submitted", "zplanner_worklog_id": 9931}
+                    for e in current["entries"]
+                ],
+            )
+            return day_evidence(commit("b" * 40, "fix: PEI-140"))
+
+        with mock.patch.object(
+            server.worklog_evidence, "collect_day_evidence", collect_then_someone_else_submits
+        ), mock.patch.object(server, "zplanner_client", lambda: FakeZPlanner(ok=False)):
+            response = server.worklog_draft_stream(
+                DATE, server.WorklogDraftRequest(tz_offset=TZ), self.viewer
+            )
+            events = _parse(asyncio.run(_collect(response.body_iterator)))
+
+        self.assertEqual(events[-1]["code"], "WORKLOG_ALREADY_SUBMITTED")
+
+        after = repo.get_worklog_draft(self.vid, DATE)
+        # 證據欄的唯一來源沒有被換掉
+        self.assertEqual(
+            before["generation_meta"], after["generation_meta"], "generation_meta 被動到了"
+        )
+        self.assertEqual(before["generated_at"], after["generated_at"])
+        # entries 也還是原本那筆（連同別人剛送出的 worklog id）
+        self.assertEqual(["9931"], [str(e["zplanner_worklog_id"]) for e in after["entries"]])
+        after = repo.get_worklog_draft(self.vid, DATE)
+        self.assertEqual(
+            [e["zplanner_worklog_id"] for e in after["entries"]],
+            [9931],
+            "遠端 worklog id 是修改／刪除工時的唯一入口，一筆都不准被抹掉",
+        )
+        self.assertEqual([e["note"] for e in after["entries"]], ["既有"])
+
+    def test_force_does_not_override_a_late_submission(self):
+        """`force=true` 能蓋過「已選專案」，但蓋不過「已送出」。"""
+        draft = repo.upsert_worklog_draft(self.vid, DATE, tz_offset=TZ)
+        repo.replace_worklog_entries(self.vid, draft["id"], [{"hours": "3.50"}])
+
+        def collect_then_someone_else_submits(**kwargs):
+            current = repo.get_worklog_draft(self.vid, DATE)
+            repo.replace_worklog_entries(
+                self.vid,
+                draft["id"],
+                [{**e, "zplanner_worklog_id": 9932} for e in current["entries"]],
+            )
+            return day_evidence(commit("a" * 40, "fix: PEI-133"))
+
+        with mock.patch.object(
+            server.worklog_evidence, "collect_day_evidence", collect_then_someone_else_submits
+        ), mock.patch.object(server, "zplanner_client", lambda: FakeZPlanner(ok=False)):
+            response = server.worklog_draft_stream(
+                DATE, server.WorklogDraftRequest(tz_offset=TZ, force=True), self.viewer
+            )
+            events = _parse(asyncio.run(_collect(response.body_iterator)))
+        self.assertEqual(events[-1]["code"], "WORKLOG_ALREADY_SUBMITTED")
+        after = repo.get_worklog_draft(self.vid, DATE)
+        self.assertEqual([e["zplanner_worklog_id"] for e in after["entries"]], [9932])
 
     def test_regenerating_an_untouched_draft_replaces_entries(self):
         evidence = day_evidence(commit("a" * 40, "fix: PEI-133"))
@@ -689,6 +949,25 @@ class TestZplannerWeekParsing(unittest.TestCase):
         self.assertEqual(server._zplanner_week_target({"total_hours": 8.0}), {})
         self.assertEqual(server._zplanner_week_target(None), {})
         self.assertEqual(server._zplanner_week_target({"target_hours": "四十"}), {})
+
+    def test_週對得起來就沒有_mismatch(self):
+        dates = [f"2026-09-{d:02d}" for d in range(7, 14)]
+        self.assertIsNone(server._zplanner_week_mismatch(self._weekly(), dates))
+
+    def test_週錯開時說得出兩邊各是哪一週(self):
+        dates = [f"2026-09-{d:02d}" for d in range(6, 13)]  # 週日起
+        out = server._zplanner_week_mismatch(self._weekly(), dates)
+        self.assertEqual(out["requested_week_start"], "2026-09-06")
+        self.assertEqual(out["requested_week_end"], "2026-09-12")
+        self.assertEqual(out["zplanner_week_start"], "2026-09-07")
+        self.assertEqual(out["zplanner_week_end"], "2026-09-13")
+
+    def test_沒有週欄位就沒有東西可以比對(self):
+        # 舊版回應（或裸清單）沒有 week_start：不能憑空判它錯，
+        # 這種情況只靠逐日資料的日期自然過濾
+        dates = [f"2026-09-{d:02d}" for d in range(7, 14)]
+        self.assertIsNone(server._zplanner_week_mismatch({"days": []}, dates))
+        self.assertIsNone(server._zplanner_week_mismatch([], dates))
 
     def test_bool_不算數字(self):
         # `isinstance(True, int)` 在 Python 是 True——不特別擋的話，

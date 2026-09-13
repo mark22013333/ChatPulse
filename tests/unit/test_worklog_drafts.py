@@ -29,6 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from core import config as cfg  # noqa: E402
 from core import db, repository as repo  # noqa: E402
+from core.errors import WorklogAlreadySubmitted  # noqa: E402
 
 
 def days_ago(days: int) -> str:
@@ -220,6 +221,54 @@ class TestEntries(TempDbCase):
         before = repo.get_worklog_draft(self.vid, "2026-09-13")
         after = repo.replace_worklog_entries(self.vid, self.draft["id"], [dict(ENTRY)])
         self.assertNotEqual(after["updated_at"], before["updated_at"])
+
+    def test_refuse_submitted_rolls_the_whole_thing_back(self):
+        """🔴 守門與寫入必須在**同一個交易**裡，中間不能有縫。
+
+        呼叫端在外面先查一次是不夠的：草稿產生要掃 git、要打 ZPlanner，守門與
+        真正寫入之間隔得掉數十秒；那段時間內另一條路徑把工時送出去，這裡的
+        整組 DELETE 就會把剛拿到的 `zplanner_worklog_id` 靜默抹掉。
+        """
+        repo.replace_worklog_entries(
+            self.vid,
+            self.draft["id"],
+            [dict(ENTRY, note="已送出", zplanner_worklog_id=9931, state="submitted")],
+        )
+        before = repo.get_worklog_draft(self.vid, "2026-09-13")
+
+        with self.assertRaises(WorklogAlreadySubmitted) as ctx:
+            repo.replace_worklog_entries(
+                self.vid,
+                self.draft["id"],
+                [dict(ENTRY, note="重產出來的")],
+                refuse_submitted=True,
+            )
+        self.assertEqual(ctx.exception.detail["submitted_count"], 1)
+
+        after = repo.get_worklog_draft(self.vid, "2026-09-13")
+        self.assertEqual([e["note"] for e in after["entries"]], ["已送出"])
+        self.assertEqual([e["zplanner_worklog_id"] for e in after["entries"]], [9931])
+        # 交易整個回捲：連 updated_at 都不該動
+        self.assertEqual(after["updated_at"], before["updated_at"])
+
+    def test_refuse_submitted_lets_an_untouched_draft_through(self):
+        """正對照：沒有任何一筆送出時，這道守門不准擋路。"""
+        repo.replace_worklog_entries(self.vid, self.draft["id"], [dict(ENTRY)])
+        saved = repo.replace_worklog_entries(
+            self.vid,
+            self.draft["id"],
+            [dict(ENTRY, note="重產出來的")],
+            refuse_submitted=True,
+        )
+        self.assertEqual([e["note"] for e in saved["entries"]], ["重產出來的"])
+
+    def test_refuse_submitted_defaults_to_off(self):
+        """預設不擋——是否要擋是呼叫端的政策，不是這一層的（模組慣例）。"""
+        repo.replace_worklog_entries(
+            self.vid, self.draft["id"], [dict(ENTRY, zplanner_worklog_id=9932)]
+        )
+        saved = repo.replace_worklog_entries(self.vid, self.draft["id"], [dict(ENTRY)])
+        self.assertEqual([e["zplanner_worklog_id"] for e in saved["entries"]], [None])
 
     def test_hours_may_be_null(self):
         """沒決定總時數時 `hours` 留 null——不是 0，0 的意思是「不送出」。"""

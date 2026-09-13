@@ -12,6 +12,9 @@
   ```json
   { "error": { "code": "SPACE_NOT_FOUND", "message": "找不到指定的聊天室" } }
   ```
+  少數錯誤會多一個 `error.detail`（**物件**），放前端需要照數字處理的結構化補充，
+  例如「重產會清掉幾筆已選的專案」。**沒有這個欄位是常態**，前端要當它可能不在；
+  它出現時才是權威，不要從 `message` 那句中文裡用正則挖數字。
 - `limit` 的**範圍**一律 1~1000，超出回 `400 INVALID_PARAMETER`。**預設值多為 50，但依端點而異**（`/mentions` 是 200——那是「列幾筆 Mention」，與「一個 Space 抓幾則對話」不是同一件事），各端點的預設值見下方各節
 - `style` 只接受 `general` / `technical` / `action_only`
 - `provider` 選填，決定用哪個 AI 供應商。可用值：`claude_cli`／`gemini`
@@ -795,13 +798,31 @@ POST／PATCH／verify 都回帶 `verification` 的單筆：
   整個不出現（不是 `null`）。前端據此決定要不要畫「還差多少」那一行。
   ⚠️ **不會補預設值**：編一個 40 小時的目標會讓完成率變成看起來精確的假數字。
   `target_hours` 是字串（與其他時數一致），`completion_pct` 是 float。
+- 🔴 **`zplanner.total_hours` 永遠等於 `days[].zplanner.hours` 的和。** ZPlanner 的
+  週端點會把 `week_start` **正規化到那一週的週一**，所以 `week_start` 不是週一時，
+  它回的七天與這裡顯示的七天不是同一段。落在窗口外的日期一律**不算進總計**，
+  否則表頭與下面的格子會對不起來（實測：請求週日起的 `2026-09-06`，格子合計
+  40.0 小時、表頭卻寫 44.00 小時、完成率 110%——那是 ZPlanner 週一那一週的和）。
+- 錯開時多一個 `zplanner.week_mismatch`，且 **`target_hours` 與 `completion_pct`
+  整個不出現**（它們描述的是 ZPlanner 那一週，套到這七天上就是算錯的數字）：
+  ```json
+  { "available": true, "total_hours": "40.00", "worklog_count": 5,
+    "week_mismatch": { "requested_week_start": "2026-09-06",
+                       "requested_week_end": "2026-09-12",
+                       "zplanner_week_start": "2026-09-07",
+                       "zplanner_week_end": "2026-09-13",
+                       "reason": "…可直接顯示的繁中句子…" } }
+  ```
+  `available` 仍然是 `true`：逐日資料照樣對得起來，整段報廢反而少給了能用的東西。
+  ZPlanner 回應沒有 `week_start`／`week_end`（舊版或裸清單）時不判定錯開——
+  沒有東西可以比對，就只靠逐日資料的日期自然過濾。
 
 ### `POST /api/v1/worklogs/{date}/draft/stream`
 
 需登入。**SSE**。`{date}` 是 `YYYY-MM-DD`。body：
 ```json
 { "tz_offset": "+08:00", "repo_ids": [3], "space_ids": ["spaces/AAA"],
-  "total_hours": 8, "provider": null }
+  "total_hours": 8, "provider": null, "force": false }
 ```
 
 | 欄位 | 語意 |
@@ -811,6 +832,7 @@ POST／PATCH／verify 都回帶 `verification` 的單筆：
 | `space_ids` | 省略 ＝ 釘選的 Space ∪ 當天有 Mention 命中的 Space。**絕不掃全部 436 個**；非 `spaces/` 開頭 → `400` |
 | `total_hours` | **省略就不分配**，`entries[].hours` 一律 `null` |
 | `provider` | 這一階段**不接 AI**，只回進 `meta.provider` 備查 |
+| `force` | 預設 `false`。明示「我知道重產會清掉已經選好的專案，還是要重來」。**蓋不過「已送進 ZPlanner」那條線**（見下方重產規則） |
 
 事件序：`meta` → 每群一個 `chunk` → `done`。**事件型別不新增**，仍只有
 `meta`／`chunk`／`done`／`error`。以上參數錯誤全部**在 SSE 開始之前**回 4xx。
@@ -899,10 +921,25 @@ POST／PATCH／verify 都回帶 `verification` 的單筆：
   前端不可拿它去預選。）
 - `total_hours` 省略時 `hours`／`allocated_hours`／`allocation` 全部是 `null`——
   使用者還沒決定總時數之前，不該看到憑空冒出來的數字。
-- 草稿**一天一份**（`UNIQUE(viewer_id, work_date)`），同一天再產一次是覆蓋。
-  但該天若已有任何一筆送進 ZPlanner（`zplanner_worklog_id` 有值），重產會回
-  `400 INVALID_PARAMETER`：整組取代會弄丟那筆的 worklog id，之後只剩
-  correction-request 這條路。
+- 草稿**一天一份**（`UNIQUE(viewer_id, work_date)`），同一天再產一次是覆蓋——
+  覆蓋是**整組 DELETE 再 INSERT**，所以重產前有兩道守門，兩道都會把「會影響
+  幾筆」放進 `error.detail`，讓前端說得出具體數字而不必從中文句子裡挖：
+
+  | 情況 | 回應 | `force` 蓋得過嗎 |
+  | :--- | :--- | :--- |
+  | 有任何一筆送進 ZPlanner（`zplanner_worklog_id` 有值） | `409 WORKLOG_ALREADY_SUBMITTED`，`detail: { submitted_count, force_allowed: false }` | ❌ **不行**。worklog id 弄丟就永遠對不回來，之後只剩 correction-request |
+  | 沒送出、但有任何一筆已經選好 issue（`issue_id`／`issue_key` 有值） | `400 INVALID_PARAMETER`，`detail: { assigned_count, assigned_issue_keys, force_allowed: true }` | ✅ 帶 `force: true` 放行 |
+
+  🔴 選專案是這個功能裡最花心力的一步（ADR-0008：系統只給候選，一律由 Viewer 選），
+  所以**不准安靜覆蓋**——擋下來、說清楚會清掉幾筆，由人決定。`force: true` 之後重產
+  出來的 `issue_id`／`issue_key` 一樣全是 `null`，要重選一次。
+  ⚠️ 已送出的那道守門在串流開始前檢查一次，**並且在真正寫入的那個 transaction 裡
+  再檢查一次**：中間隔著 git 掃描與 ZPlanner 呼叫（可達數十秒），這段時間內若有另一
+  條路徑把工時送出去，只靠前面那次檢查會把剛拿到的 worklog id 靜默抹掉。串流已經
+  開始時，這道守門會變成 `error` 事件（`code: "WORKLOG_ALREADY_SUBMITTED"`），**草稿
+  一筆都不會被改到**。
+- 錯誤主體的 `error.detail` **只有拋的人刻意給結構化補充時才出現**，型別是物件。
+  其餘情況（大多數錯誤）沒有這個欄位——字串型的 detail 是內部訊息，只進 log。
 - 候選 issue 用 `list_worklogable_issues(q=群的關鍵字)` 撈，**`q` 必填**
   （ZPlanner 對空字串回 0 筆而不是全部）。`confidence` 只有三級並**一律附一句可見
   的理由**：不做排名徽章、不做百分比、不做進度條——要讓人讀理由而不是讀名次。
