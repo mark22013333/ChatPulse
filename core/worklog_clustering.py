@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import config as cfg
-from .worklog_evidence import Evidence, find_issue_keys
+from .worklog_evidence import Evidence, find_issue_keys, is_standards_reference
 
 
 #: 群的種類。順序即強度，也決定顯示順序（強訊號排前面）。
@@ -46,33 +46,21 @@ KIND_SPACE = "space"
 
 _KIND_RANK = {KIND_ISSUE: 0, KIND_REPO: 1, KIND_SPACE: 2}
 
-#: 長得像 issue key、但**不是**單號的前綴。
-#:
-#: 2026-09-13 拿本 repo 自己的 commit 實跑時抓到的：`docs(zplanner): 補
-#: ADR-0008 …` 被分成一個 label 是 `ADR-0008` 的群。`ADR-0008`、`UTF-8`、
-#: `RFC-3339`、`ISO-8601`、`SHA-256` 全都完全符合「大寫前綴 ＋ 連字號 ＋
-#: 數字」——技術團隊的 commit message 裡遍地都是。
-#:
-#: 誤判的代價不只是難看：這個 label 會被當成**最強訊號**拿去 ZPlanner 撈
-#: 候選（`query_term`），於是那一群的候選清單必然是空的或胡亂命中。
-#:
-#: 濾在這裡而不是 `worklog_evidence.find_issue_keys`：那個函式是「這個形狀
-#: 叫 issue key」的**單一定義**，該保持純粹；「哪些看起來像但其實不是」是
-#: 分群的判斷。若哪天真的有一個代號叫 ADR 的專案，從這張表拿掉即可。
-_NON_ISSUE_PREFIXES = frozenset(
-    {"ADR", "RFC", "ISO", "UTF", "SHA", "AES", "RSA", "UTC", "CVE", "PEP", "HTTP", "SQL"}
-)
-
 
 def issue_keys_of(evidence: Evidence) -> List[str]:
-    """這筆證據提到的 issue key（已濾掉 ADR／UTF 那類假單號）。
+    """這筆證據提到的 issue key（已濾掉 ADR／UTF 那類標準編號）。
 
     從 `terms` 與 `title` 兩邊找：`terms` 是從**完整內文**抽的（Chat 的
     `title` 只是 80 字節錄，長訊息的單號會被截掉），`title` 則涵蓋
     「terms 因為數量上限被擠掉」的邊角情況。
+
+    「哪些看起來像但其實不是」的判準在 `worklog_evidence.is_standards_reference`
+    ——2026-09-13 這張黑名單原本放在本模組，只擋得住 `label`：`ADR-0008` 照樣
+    是 `terms[0]`，於是 `query_term` 還是把它送去 ZPlanner 當 `q`，正是黑名單
+    本來要防的後果。判準搬到抽詞那側之後才是同一份定義管兩件事。
     """
     keys = find_issue_keys(" ".join(evidence.terms), evidence.title)
-    return [k for k in keys if k.split("-", 1)[0].upper() not in _NON_ISSUE_PREFIXES]
+    return [k for k in keys if not is_standards_reference(k)]
 
 
 @dataclass(frozen=True)
@@ -109,8 +97,17 @@ class Cluster:
         （見 `core/zplanner_client.py`），空手去查會得到「我沒有任何可填
         工時的 issue」這個完全錯誤的結論。所以抽不到關鍵字時退回 `label`
         （repo 名或 Space 名）——查不準好過不查。
+
+        **跳過標準編號**（`ADR-0008`、`UTF-8`）：拿它去查，候選清單必然是空的
+        ——那正是「有候選卻查不到」與「真的沒有候選」長得一模一樣的情況。
+        `extract_terms` 已經把這種詞排到最後，這裡再擋一次是因為 `Evidence`
+        的 `terms` 可以由呼叫端自行組（測試與未來的第三種來源都會這麼做），
+        而這是送出查詢前的最後一道。
         """
-        return self.terms[0] if self.terms else self.label
+        for term in self.terms:
+            if not is_standards_reference(term):
+                return term
+        return self.label
 
     def to_meta(self) -> Dict[str, Any]:
         """SSE `meta.clusters[]` 的形狀（計畫 §5）。

@@ -227,6 +227,32 @@ def find_issue_keys(*texts: str) -> List[str]:
     return out
 
 
+def is_standards_reference(text: str) -> bool:
+    """這個「長得像 issue key」的字串其實是標準／文件編號嗎（`ADR-0008`、`UTF-8`）？
+
+    `ADR-0008`、`RFC-3339`、`ISO-8601`、`UTF-8`、`SHA-256` 全都完全符合
+    `_ISSUE_KEY_RE`（大寫前綴 ＋ 連字號 ＋ 數字），而技術團隊的 commit message
+    裡遍地都是。誤判的代價不只是難看：那個字串會被當成**最強訊號**拿去
+    ZPlanner 撈候選，於是那一群的候選清單必然是空的。
+
+    **判準只看前綴**（清單見 `cfg.WORKLOG_NON_ISSUE_PREFIXES`，可用環境變數
+    覆寫），所以它一定會誤殺——真的有一個代號叫 `SQL` 的專案時，`SQL-1234`
+    也會被歸到這裡。取捨寫在 config 那一段：誤殺只是退回用 repo 分群、換一個
+    關鍵字去查候選，沒有人會被填錯工時；而放過 `ADR-0008` 是每個 commit 都在
+    發生的事。
+
+    **`find_issue_keys` 刻意不套這個判準**：那個函式是「什麼形狀叫 issue key」
+    的唯一定義，該保持純粹。這裡是另一個問題——「這個形狀的東西是不是真的
+    單號」，兩邊分開才不會互相汙染。判準放在本模組而不是分群那側，是因為
+    `extract_terms` 的排序也需要它（`terms[0]` 就是送去查候選的 `q`），
+    複製第二份的那天兩邊會各自漂移，而且不會有任何測試變紅。
+    """
+    raw = (text or "").strip()
+    if not _ISSUE_KEY_RE.fullmatch(raw):
+        return False
+    return raw.split("-", 1)[0].upper() in cfg.WORKLOG_NON_ISSUE_PREFIXES
+
+
 def extract_terms(text: str, extra: str = "", *, max_terms: Optional[int] = None) -> List[str]:
     """從 commit subject 或發言抽出拿得去配 issue 的關鍵字。
 
@@ -235,11 +261,17 @@ def extract_terms(text: str, extra: str = "", *, max_terms: Optional[int] = None
       2. Conventional Commits 的 scope（`feat(worklog):` 的 `worklog`）
       3. `code_search.extract_search_terms` 的程式碼形狀 token
       4. 中日韓連續字串（扣掉每則都會出現的動作詞）
+      5. 標準／文件編號（`ADR-0008`、`UTF-8`）——形狀是 issue key，但**排到最後**
 
     第 4 項是相對計畫 §8 的**增補**，不是取代：這個團隊的 commit subject
     多半是中文，只跑 `_IDENT_RE` 的話整天的證據會一個詞都抽不出來，而
     `terms` 的唯一用途就是去撈候選 issue。抽錯不會有人被填錯工時（歸屬
     一律由 Viewer 選），抽不到才是真的沒用。
+
+    第 5 項是 2026-09-13 補的：`terms[0]` 會原封不動變成送去 ZPlanner 的 `q`
+    （`worklog_clustering.Cluster.query_term`），所以 `docs(zplanner): 補
+    ADR-0008 …` 的候選清單必然是空的。**降級而不是刪掉**：那個編號仍然是這筆
+    commit 在講什麼的線索，只是它不該排在第一個。
     """
     limit = max_terms or cfg.WORKLOG_MAX_TERMS
     primary = text or ""
@@ -258,9 +290,15 @@ def extract_terms(text: str, extra: str = "", *, max_terms: Optional[int] = None
         seen.add(low)
         ordered.append(token)
 
+    # 標準編號先擱著，最後才補進清單（優先序第 5 項）。
+    deferred: List[str] = []
     for src in (primary, secondary):
         for m in _ISSUE_KEY_RE.finditer(src):
-            add(m.group(0))
+            key = m.group(0)
+            if is_standards_reference(key):
+                deferred.append(key)
+            else:
+                add(key)
 
     scope = _CONVENTIONAL_SCOPE_RE.match(primary)
     if scope and scope.group(1):
@@ -273,6 +311,9 @@ def extract_terms(text: str, extra: str = "", *, max_terms: Optional[int] = None
     for src in (primary, secondary):
         for m in _CJK_RUN_RE.finditer(src):
             add(m.group(0).strip(_CJK_EDGE_PARTICLES))
+
+    for key in deferred:
+        add(key)
 
     return ordered[:limit]
 
@@ -599,9 +640,22 @@ def _log_args(
 ) -> List[str]:
     """組 `git log` 的 argv。
 
-    `--since`／`--until` 前後各放寬 `WORKLOG_GIT_WINDOW_PADDING_HOURS`，
-    因為**它們濾的是 committer date 而不是 `%aI`**；真正的日界在 Python
-    用 author date 切。細節見 `cfg.WORKLOG_GIT_WINDOW_PADDING_HOURS`。
+    🔴 **沒有 `--until` 上界，這是刻意的。** `--since`／`--until` 濾的是
+    committer date 而不是 `%aI`，而 rebase 可以發生在寫程式之後的**任何時候**
+    ——把功能分支擺兩週再 rebase 是日常。上界放寬固定時數只覆蓋得了「N 小時內
+    完成的 rebase」，超過的那些會被 git 直接濾掉，`truncated` 還是 `False`、
+    `skipped` 還是空的，使用者完全看不出那天少了東西（2026-09-13 實測：
+    author date 9/01、committer date 9/13 的 commit，查 9/01 撈不到）。
+    未來的 committer date 本來就不存在，上界本身沒有在擋任何東西。
+
+    代價是視窗變成 `[日界 − padding, ∞)`，而 git log 是 **committer date 由新
+    到舊**輸出，`-n` 砍掉的正好是最舊的那一端（＝目標日）。所以 `-n` 用的是
+    `WORKLOG_GIT_SCAN_LIMIT`（掃描預算，遠大於單日保留上限），而且
+    `collect_repo_commits` 碰到這個上限一定會標 `truncated`——那是使用者唯一
+    能察覺「可能漏了」的訊號。
+
+    `until` 參數保留但只用來算下界的合理性，不再進 argv：拿掉它會讓呼叫端
+    以為日界只有一半，而日界的兩端在 Python 那側都還要用。
 
     `--fixed-strings` ＋ `--regexp-ignore-case` 是給 `--author=` 用的：
     預設 `--author` 吃正規表示式，信箱裡的 `.` 與 `+` 會被當成元字元。
@@ -614,9 +668,8 @@ def _log_args(
         "--numstat",
         "--fixed-strings",
         "--regexp-ignore-case",
-        f"-n{cfg.WORKLOG_MAX_COMMITS_PER_REPO}",
+        f"-n{cfg.WORKLOG_GIT_SCAN_LIMIT}",
         f"--since={(since - pad).isoformat()}",
-        f"--until={(until + pad).isoformat()}",
         f"--pretty=format:{_PRETTY_FORMAT}",
     ]
     for email in author_emails:
@@ -720,6 +773,17 @@ def collect_repo_commits(
         )
 
     evidence.sort(key=lambda e: (e.occurred_at, e.sha))
+
+    # `truncated` 只代表一件事：**有東西沒進來**。兩種情況都算。
+    #   (a) git 的掃描預算用完 —— 輸出是 committer date 由新到舊，砍掉的是最舊
+    #       的一端，也就是目標日；漏掉的正是我們要的那些。
+    #   (b) 這一天自己的 commit 多到超過單日保留上限。
+    # 先排序再截斷，留下來的才是決定性的（同一天重產兩次要得到同一份草稿）。
+    scan_limit_hit = len(raw_commits) >= cfg.WORKLOG_GIT_SCAN_LIMIT
+    day_limit_hit = len(evidence) > cfg.WORKLOG_MAX_COMMITS_PER_REPO
+    if day_limit_hit:
+        evidence = evidence[: cfg.WORKLOG_MAX_COMMITS_PER_REPO]
+
     scan = RepoScan(
         repo_id=repo_id,
         name=repo_name,
@@ -727,7 +791,7 @@ def collect_repo_commits(
         branches_scanned=tuple(branch_filter),
         scanned_all_branches=not branch_filter,
         author_emails=tuple(author_emails),
-        truncated=len(raw_commits) >= cfg.WORKLOG_MAX_COMMITS_PER_REPO,
+        truncated=scan_limit_hit or day_limit_hit,
     )
     return evidence, scan
 
@@ -841,6 +905,69 @@ def _message_text(message: Mapping[str, Any]) -> str:
     return (message.get("text") or message.get("formattedText") or "").strip()
 
 
+#: 每次向 `list_messages_since` 要幾則。`GoogleChatClient` 內部以 100 一頁自己
+#: 翻，所以這個值等於「一次外層呼叫最多翻幾頁」。取太大會在訊息稀疏的 Space
+#: 白白多打幾次 API，取太小則是外層多轉幾圈——200 是兩頁，兩邊都不難看。
+_CHAT_SCAN_CHUNK = 200
+
+
+def _scan_space_messages(
+    client: Any,
+    space_id: str,
+    *,
+    start: datetime,
+    end: datetime,
+) -> Tuple[List[Mapping[str, Any]], bool]:
+    """把一個 Space 從日界起翻到**越過日界**為止，回 `(訊息, 掃描預算用完了嗎)`。
+
+    🔴 **停止條件是「訊息時間越過日界」，不是「額度用完」。**
+    `list_messages_since` 的 filter 只有 `createTime >`（沒有上界，見
+    `docs/R1-findings.md:68`）、排序是 ASC（見 `docs/HANDOFF.md:147`），所以撈
+    回來的是**整個 Space 的**訊息，不是 Viewer 的。用「額度用完」當停止條件的
+    話，額度會被別人的閒聊吃光：2026-09-13 實測，一個從 09:00 起每 2 分鐘一則
+    的聊天室，Viewer 當天 5 則發言只蒐集到 3 則——17:00 與 18:20 那兩則不見了，
+    而 `skipped` 是空的、`message_count` 看起來就像那天只講了 3 句話。
+
+    第二個回傳值只在「**還沒翻到日界就用完掃描預算**」時為真。翻到日界自然
+    停下、或 API 已經沒有更多訊息，都是正常結束，不該讓 `truncated` 亮起來
+    ——一個同時代表正常與異常的旗標，等於沒有旗標。
+    """
+    collected: List[Mapping[str, Any]] = []
+    seen: set = set()
+    # filter 是嚴格大於（`>=` 實測回 400），退一秒才不會掉整點發的那一則。
+    cursor = start - timedelta(seconds=1)
+    budget = cfg.WORKLOG_CHAT_SCAN_PER_SPACE
+
+    while budget > 0:
+        want = min(_CHAT_SCAN_CHUNK, budget)
+        batch = list(client.list_messages_since(space_id, cursor, max_messages=want) or ())
+        budget -= len(batch)
+
+        newest: Optional[datetime] = None
+        for message in batch:
+            name = message.get("name") or ""
+            if name:
+                if name in seen:
+                    continue
+                seen.add(name)
+            collected.append(message)
+            created = parse_rfc3339(message.get("createTime") or "")
+            if created is not None and (newest is None or created > newest):
+                newest = created
+
+        if len(batch) < want:
+            return collected, False  # API 沒有更多訊息了
+        if newest is None:
+            # 整批的 createTime 都解析不出來 ⇒ 游標推不動。只能停，而且必須誠實：
+            # 這不是「翻到日界」，是翻不下去了。
+            return collected, True
+        if newest >= end:
+            return collected, False  # 已經越過日界，後面的都不屬於這一天
+        cursor = newest
+
+    return collected, True
+
+
 def collect_chat_evidence(
     client: Any,
     space_ids: Sequence[str],
@@ -854,7 +981,9 @@ def collect_chat_evidence(
 
     `client` 只需要有 `list_messages_since(space_id, since, max_messages=…)`
     （`GoogleChatClient` 的既有介面）——收 duck-typed 物件是為了讓測試餵
-    假 client，不必碰真的 Google API。
+    假 client，不必碰真的 Google API。**同一個 Space 可能會呼叫它不只一次**：
+    停止條件是翻到日界，不是額度用完（見 `_scan_space_messages`），所以假
+    client 必須真的照 `since` 過濾、照 `max_messages` 截斷，否則模擬本身是錯的。
 
     `google_user_id` 是 `users/{id}` 形式，用來比對 `sender.name`。**沒帶就
     回空**：不比對發送者的話，整個 Space 別人的閒聊都會變成你的工時證據。
@@ -885,12 +1014,8 @@ def collect_chat_evidence(
     for space_id in space_ids or ():
         label = names.get(space_id) or space_id
         try:
-            # `list_messages_since` 的 filter 是 `createTime >`（嚴格大於，
-            # 實測 `>=` 回 400），所以退一秒再撈，精確的日界在下面自己切。
-            messages = client.list_messages_since(
-                space_id,
-                start - timedelta(seconds=1),
-                max_messages=cfg.WORKLOG_MAX_CHAT_MESSAGES_PER_SPACE,
+            messages, scan_exhausted = _scan_space_messages(
+                client, space_id, start=start, end=end
             )
         except ChatPulseError as exc:
             skipped.append(
@@ -898,8 +1023,8 @@ def collect_chat_evidence(
             )
             continue
 
-        kept = 0
-        for message in messages or ():
+        mine: List[Evidence] = []
+        for message in messages:
             if ((message.get("sender") or {}).get("name")) != google_user_id:
                 continue
             created = parse_rfc3339(message.get("createTime") or "")
@@ -913,7 +1038,7 @@ def collect_chat_evidence(
             if not message_name:
                 continue
             is_mention = _message_is_mention(message)
-            evidence.append(
+            mine.append(
                 Evidence(
                     kind="chat",
                     ref=f"chat:{message_name}",
@@ -928,14 +1053,21 @@ def collect_chat_evidence(
                     char_count=len(text),
                 )
             )
-            kept += 1
+
+        # 自己一天在同一個 Space 發言多到超過保留上限，也是「有東西沒進來」。
+        # 先排序再截斷，同一天重產兩次才會得到同一份草稿（理由同 commit 那側）。
+        mine.sort(key=lambda e: (e.occurred_at, e.ref))
+        over_cap = len(mine) > cfg.WORKLOG_MAX_CHAT_MESSAGES_PER_SPACE
+        if over_cap:
+            mine = mine[: cfg.WORKLOG_MAX_CHAT_MESSAGES_PER_SPACE]
+        evidence.extend(mine)
 
         scans.append(
             SpaceScan(
                 space_id=space_id,
                 space_name=label,
-                message_count=kept,
-                truncated=len(messages or ()) >= cfg.WORKLOG_MAX_CHAT_MESSAGES_PER_SPACE,
+                message_count=len(mine),
+                truncated=scan_exhausted or over_cap,
             )
         )
 

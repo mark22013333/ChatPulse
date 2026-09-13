@@ -878,6 +878,23 @@ POST／PATCH／verify 都回帶 `verification` 的單筆：
 `clusters[].evidence_refs` 用字串指回 `commits[]`／`chat[]` 的 `ref`，
 **前端拿到指不到的 ref 直接丟棄**。
 
+`repos[].truncated`／`spaces[].truncated` 的語意是「**有東西沒進來**」，不是
+「掃到了上限」。它是使用者唯一能察覺「那天可能漏了證據」的訊號，所以只有
+真的可能漏掉時才是 `true`：
+
+- **repo**：掃描預算（`WORKLOG_GIT_SCAN_LIMIT`）用完，或那天的 commit 超過
+  單日保留上限。
+  ⚠️ **`git log` 刻意沒有 `--until` 上界**——`--since`／`--until` 濾的是
+  committer date，而 rebase 可以發生在寫程式之後的**任何時候**（把功能分支
+  擺兩週再 rebase 是日常）。固定的上界只覆蓋得了「N 小時內完成的 rebase」，
+  超過的會被 git 直接濾掉，而且 `truncated` 還是 `false`、`skipped` 還是空的
+  ——使用者完全看不出那天少了東西。代價是視窗變成 `[日界−72h, ∞)`，而 git log
+  是 committer date 由新到舊輸出，`-n` 砍掉的正好是最舊的那一端（＝目標日）。
+- **space**：翻頁預算用完卻還沒翻到日界，或自己的發言超過保留上限。
+  ⚠️ Google Chat 的 `list_messages_since` 只支援 `createTime >`、預設 ASC，
+  所以額度**會被別人的閒聊吃光**。翻頁的停止條件因此是「訊息時間越過日界」，
+  不是「拿到 N 則」——後者會讓當天下午之後自己的發言整批消失。
+
 分群規則（由強到弱，先命中先歸群，實作在 `core/worklog_clustering.py`）：
 
 | 序 | 規則 | `label` | `kind` |

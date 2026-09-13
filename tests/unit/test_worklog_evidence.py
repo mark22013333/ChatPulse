@@ -158,6 +158,48 @@ class TermTests(unittest.TestCase):
         self.assertLessEqual(len(we.extract_terms(long_text)), cfg.WORKLOG_MAX_TERMS)
 
 
+class StandardsReferenceTests(unittest.TestCase):
+    """⚠️ 迴歸：`terms[0]` 會原封不動變成送去 ZPlanner 的 `q`。
+
+    2026-09-13 實測：`docs(zplanner): 補 ADR-0008 的降級路徑說明` 的 `terms[0]`
+    是 `ADR-0008`，於是那一群的候選清單必然是空的——正是上一輪加黑名單本來要
+    防的後果，只是黑名單當時只作用在分群的 `label` 上。
+    """
+
+    def test_needs_the_full_issue_key_shape(self):
+        self.assertTrue(we.is_standards_reference("ADR-0008"))
+        self.assertTrue(we.is_standards_reference("UTF-8"))
+        self.assertTrue(we.is_standards_reference("CVE-2024"))
+        self.assertFalse(we.is_standards_reference("PEI-133"), "真的單號不可以被誤殺")
+        self.assertFalse(we.is_standards_reference("zplanner"))
+        self.assertFalse(we.is_standards_reference(""))
+        self.assertFalse(
+            we.is_standards_reference("照 ADR-0008 改"),
+            "只認完整形狀，不是包含就算——不然整句話都會被當成標準編號",
+        )
+
+    def test_find_issue_keys_stays_pure(self):
+        """形狀的唯一定義不套這個判準，兩個問題分開才不會互相汙染。"""
+        self.assertEqual(we.find_issue_keys("ADR-0008"), ["ADR-0008"])
+
+    def test_standards_reference_is_demoted_not_dropped(self):
+        terms = we.extract_terms("docs(zplanner): 補 ADR-0008 的降級路徑說明")
+        self.assertNotEqual(terms[0], "ADR-0008", "它不可以是送去查候選的那個詞")
+        self.assertIn("ADR-0008", terms, "但它仍然是這筆 commit 在講什麼的線索，不要刪")
+
+    def test_a_real_key_still_comes_first(self):
+        terms = we.extract_terms("fix: PEI-133 照 ADR-0008 改用 UTF-8")
+        self.assertEqual(terms[0], "PEI-133")
+
+    def test_the_blacklist_has_an_escape_hatch(self):
+        """誤殺的出口：真的有一個代號叫 `SQL` 的專案時，把前綴拿掉即可。"""
+        self.assertTrue(we.is_standards_reference("SQL-1234"), "預設會誤殺，這是已知取捨")
+        trimmed = frozenset(cfg.WORKLOG_NON_ISSUE_PREFIXES - {"SQL"})
+        with mock.patch.object(cfg, "WORKLOG_NON_ISSUE_PREFIXES", trimmed):
+            self.assertFalse(we.is_standards_reference("SQL-1234"))
+            self.assertEqual(we.extract_terms("fix: SQL-1234 修好了")[0], "SQL-1234")
+
+
 # --------------------------------------------------------------------------
 # git log 的輸出解析（subject 可以含任何字元）
 # --------------------------------------------------------------------------
@@ -292,13 +334,37 @@ class LogArgsTests(unittest.TestCase):
         self.assertIn("--fixed-strings", args)
         self.assertIn("--regexp-ignore-case", args)
 
-    def test_window_is_padded_beyond_the_day(self):
-        """`--since`／`--until` 濾 committer date，所以視窗要比那一天寬。"""
+    def test_lower_bound_is_padded(self):
+        """`--since` 濾的是 committer date，所以下界要比那一天早。"""
         args = self._args(["a@x.com"])
         since = next(a for a in args if a.startswith("--since="))[len("--since=") :]
-        until = next(a for a in args if a.startswith("--until="))[len("--until=") :]
         self.assertLess(datetime.fromisoformat(since), self.start)
-        self.assertGreater(datetime.fromisoformat(until), self.end)
+
+    def test_there_is_no_upper_bound(self):
+        """🔴 不可以有 `--until`。
+
+        上界放寬固定時數只覆蓋得了「N 小時內完成的 rebase」，把功能分支擺兩週
+        再 rebase 是日常。超過的那些會被 git 直接濾掉，而且 `truncated` 仍是
+        `False`、`skipped` 仍是空的——使用者完全看不出那天少了東西。
+        這條測試就是釘住那個上界不會被「為了效能」加回來。
+        """
+        args = self._args(["a@x.com"])
+        self.assertEqual([a for a in args if a.startswith("--until")], [])
+
+    def test_scan_limit_is_not_the_per_day_cap(self):
+        """`-n` 用的是掃描預算，不是單日保留上限。
+
+        拿掉上界之後視窗是 `[日界 − padding, ∞)`，git log 由新到舊輸出，`-n`
+        砍掉的正好是最舊的一端（＝目標日）。用單日上限當 `-n` 等於把預算花在
+        目標日**之後**的 commit 上。
+        """
+        args = self._args(["a@x.com"])
+        self.assertIn(f"-n{cfg.WORKLOG_GIT_SCAN_LIMIT}", args)
+        self.assertGreater(
+            cfg.WORKLOG_GIT_SCAN_LIMIT,
+            cfg.WORKLOG_MAX_COMMITS_PER_REPO,
+            "掃描預算必須大於單日保留上限，否則回補舊日期一定撈不到",
+        )
 
 
 # --------------------------------------------------------------------------
@@ -439,6 +505,81 @@ class RepoCollectionTests(TempRepoCase):
             tz_offset="+08:00",
         )
         self.assertEqual([e.title for e in found], ["rebase 過的"])
+
+    def test_commit_rebased_two_weeks_later_is_still_found(self):
+        """⚠️ 迴歸：committer date 比 author date 晚**兩週**。
+
+        舊寫法前後各放寬 72 小時，只覆蓋得了「3 天內完成的 rebase」。
+        2026-09-13 實測：author date 9/01、committer date 9/13 的 commit，
+        查 9/01 只撈到 1 筆（實際 2 筆），而且 `truncated=False`、`skipped=[]`
+        ——完全無聲。把功能分支擺兩週再 rebase 是日常，不是邊緣情況。
+        """
+        self._commit(
+            "被 rebase 過的",
+            email="me@example.com",
+            authored="2026-08-18T10:00:00+08:00",
+            committed="2026-09-01T10:00:00+08:00",  # 晚了兩週才進主線
+        )
+        self._commit(
+            "當天就 push 的",
+            email="me@example.com",
+            authored="2026-08-18T11:00:00+08:00",
+        )
+        found, scan = we.collect_repo_commits(
+            repo_path=self.repo_path,
+            repo_name="r",
+            author_emails=["me@example.com"],
+            work_date="2026-08-18",
+            tz_offset="+08:00",
+        )
+        self.assertEqual([e.title for e in found], ["被 rebase 過的", "當天就 push 的"])
+        self.assertFalse(scan.truncated, "全部撈到了就不該亮旗標")
+
+    def _three_commits_on_one_day(self):
+        for i in range(3):
+            self._commit(
+                f"第 {i} 筆",
+                email="me@example.com",
+                authored=f"2026-09-13T1{i}:00:00+08:00",
+            )
+
+    def _collect_one_day(self):
+        return we.collect_repo_commits(
+            repo_path=self.repo_path,
+            repo_name="r",
+            author_emails=["me@example.com"],
+            work_date="2026-09-13",
+            tz_offset="+08:00",
+        )
+
+    def test_scan_budget_exhausted_is_flagged_as_truncated(self):
+        """掃描預算用完 ⇒ 被砍掉的是最舊的一端（＝目標日），一定要標 truncated。
+
+        沒有這個旗標的話，「漏了」與「那天真的只做這些」長得一模一樣。
+        """
+        self._three_commits_on_one_day()
+        with mock.patch.object(cfg, "WORKLOG_GIT_SCAN_LIMIT", 2):
+            found, scan = self._collect_one_day()
+        self.assertTrue(scan.truncated)
+        self.assertEqual(len(found), 2)
+
+    def test_a_complete_scan_is_not_truncated(self):
+        """正對照：預算沒用完就不可以亮旗標，不然旗標等於沒有。"""
+        self._three_commits_on_one_day()
+        _found, scan = self._collect_one_day()
+        self.assertFalse(scan.truncated)
+        self.assertEqual(scan.commit_count, 3)
+
+    def test_per_day_cap_truncates_and_flags(self):
+        """單日保留上限是另一種「有東西沒進來」，同樣要標 truncated。"""
+        self._three_commits_on_one_day()
+        with mock.patch.object(cfg, "WORKLOG_MAX_COMMITS_PER_REPO", 2):
+            found, scan = self._collect_one_day()
+        self.assertEqual(len(found), 2)
+        self.assertEqual(scan.commit_count, 2)
+        self.assertTrue(scan.truncated)
+        # 先排序再截斷：同一天重產兩次要得到同一份草稿
+        self.assertEqual([e.title for e in found], ["第 0 筆", "第 1 筆"])
 
     def test_scans_unmerged_branches_by_default(self):
         """「這天我在哪都做了什麼」——還沒合併的 feature 分支不可以漏掉。"""
@@ -621,7 +762,20 @@ class GitEvidenceDegradationTests(TempRepoCase):
 
 
 class FakeChatClient:
-    """只實作 `list_messages_since`。**沒有任何網路呼叫。**"""
+    """只實作 `list_messages_since`。**沒有任何網路呼叫。**
+
+    ⚠️ 這個假 client 必須**照著真 API 的三個實測行為**做，否則模擬本身是錯的，
+    而「模擬錯了」的失敗與通過一樣不可信：
+
+      1. filter 只有 `createTime >`（**嚴格大於、沒有上界**），見
+         `docs/R1-findings.md:68`；
+      2. 預設排序是 `createTime` **ASC**，見 `docs/HANDOFF.md:147`；
+      3. `max_messages` 從**最舊的那一端**開始截斷。
+
+    2026-09-13 之前的版本三條都沒做（`since` 與 `max_messages` 直接忽略、
+    原樣回傳整份清單），所以「額度被別人的閒聊吃光」這個缺陷在測試裡
+    完全表現不出來。`FakeChatClientFidelityTests` 是它的正對照。
+    """
 
     def __init__(self, by_space, error_spaces=()):
         self.by_space = by_space
@@ -632,7 +786,19 @@ class FakeChatClient:
         self.calls.append((space_id, since, max_messages))
         if space_id in self.error_spaces:
             raise ChatApiError("連線 Google Chat 失敗：測試用")
-        return list(self.by_space.get(space_id, []))
+        cutoff = since if since.tzinfo else since.replace(tzinfo=timezone.utc)
+        matched = [
+            m
+            for m in self.by_space.get(space_id, [])
+            if (we.parse_rfc3339(m.get("createTime") or "") or _FAR_PAST) > cutoff
+        ]
+        matched.sort(key=lambda m: m["createTime"])
+        return matched[:max_messages] if max_messages is not None else matched
+
+
+#: 解析不出時間的訊息一律排在最前面，讓它被 `createTime >` 濾掉——真 API 不會
+#: 回這種東西，這裡只是不讓假 client 在畸形輸入上爆掉。
+_FAR_PAST = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
 def _msg(name, *, sender, create_time, text, mention=False):
@@ -734,7 +900,9 @@ class ChatEvidenceTests(unittest.TestCase):
         _space, since, max_messages = self.client.calls[0]
         start, _end = we.day_bounds("2026-09-13", "+08:00")
         self.assertLess(since, start)
-        self.assertEqual(max_messages, cfg.WORKLOG_MAX_CHAT_MESSAGES_PER_SPACE)
+        # 每次要的是**翻頁的一塊**，不是「自己的發言保留上限」。兩個常數的
+        # 預設值剛好都是 200，寫錯了會矇混過關，所以這裡指名道姓比對。
+        self.assertEqual(max_messages, we._CHAT_SCAN_CHUNK)
 
     def test_api_failure_degrades_to_skipped(self):
         client = FakeChatClient({}, error_spaces={self.space})
@@ -748,6 +916,179 @@ class ChatEvidenceTests(unittest.TestCase):
         self.assertEqual((evidence, scans), ([], []))
         self.assertEqual(skipped[0].kind, "space")
         self.assertIn("Google Chat", skipped[0].reason)
+
+
+class FakeChatClientFidelityTests(unittest.TestCase):
+    """正對照：先證明假 client 真的像那支 API，再相信它跑出來的結論。
+
+    模擬沒做對的時候，「未通過」跟「通過」一樣不可信。
+    """
+
+    def setUp(self):
+        self.msgs = [
+            _msg("spaces/S/messages/a", sender=ME, create_time="2026-09-13T01:00:00Z", text="一"),
+            _msg("spaces/S/messages/b", sender=ME, create_time="2026-09-13T03:00:00Z", text="三"),
+            _msg("spaces/S/messages/c", sender=ME, create_time="2026-09-13T02:00:00Z", text="二"),
+        ]
+        self.client = FakeChatClient({"spaces/S": self.msgs})
+
+    def _names(self, since, max_messages=None):
+        got = self.client.list_messages_since("spaces/S", since, max_messages=max_messages)
+        return [m["name"].rsplit("/", 1)[-1] for m in got]
+
+    def test_filter_is_strictly_greater_and_has_no_upper_bound(self):
+        at_two = datetime(2026, 9, 13, 2, 0, tzinfo=timezone.utc)
+        self.assertEqual(self._names(at_two), ["b"], "02:00 那則自己要被排除（嚴格大於）")
+
+    def test_results_are_ascending(self):
+        epoch = datetime(2000, 1, 1, tzinfo=timezone.utc)
+        self.assertEqual(self._names(epoch), ["a", "c", "b"])
+
+    def test_cap_cuts_the_newest_end(self):
+        epoch = datetime(2000, 1, 1, tzinfo=timezone.utc)
+        self.assertEqual(self._names(epoch, max_messages=2), ["a", "c"])
+
+
+class ChatPagingTests(unittest.TestCase):
+    """⚠️ 迴歸：則數上限數的是「整個 Space 的訊息」，不是「你的訊息」。
+
+    2026-09-13 實測：一個從 09:00 起每 2 分鐘一則的聊天室，Viewer 當天 5 則
+    發言只蒐集到 3 則——17:00 與 18:20 那兩則不見了，而 `skipped` 是空的、
+    `message_count: 3` 看起來就像那天只講了 3 句話。
+
+    所以停止條件必須是「翻到日界」而不是「額度用完」，`truncated` 也必須
+    只在後者成立時才為真。
+    """
+
+    SPACE = "spaces/BUSY"
+    MINE = ("09:05", "14:10", "15:30", "17:00", "18:20")
+
+    def setUp(self):
+        messages = []
+        # 熱門聊天室：當天 09:00 起每 2 分鐘一則**別人的**訊息，共 300 則
+        for i in range(300):
+            hour, minute = 9 + (i * 2) // 60, (i * 2) % 60
+            messages.append(
+                _msg(
+                    f"{self.SPACE}/messages/other{i}",
+                    sender=OTHER,
+                    create_time=f"2026-09-13T{hour:02d}:{minute:02d}:00+08:00",
+                    text="閒聊閒聊",
+                )
+            )
+        for i, clock in enumerate(self.MINE):
+            messages.append(
+                _msg(
+                    f"{self.SPACE}/messages/mine{i}",
+                    sender=ME,
+                    create_time=f"2026-09-13T{clock}:00+08:00",
+                    text=f"我報告進度第 {i} 次，改好了登入的問題",
+                )
+            )
+        self.client = FakeChatClient({self.SPACE: messages})
+
+    def _collect(self):
+        return we.collect_chat_evidence(
+            self.client,
+            [self.SPACE],
+            work_date="2026-09-13",
+            tz_offset="+08:00",
+            google_user_id=ME,
+            space_names={self.SPACE: "專案討論"},
+        )
+
+    def test_my_messages_survive_a_busy_space(self):
+        evidence, scans, skipped = self._collect()
+        self.assertEqual(skipped, [])
+        self.assertEqual(
+            [e.occurred_at[11:16] for e in evidence],
+            list(self.MINE),
+            "下午之後的發言不可以被別人的閒聊擠掉",
+        )
+        self.assertEqual(scans[0].message_count, len(self.MINE))
+
+    def test_reaching_the_day_boundary_is_not_truncated(self):
+        """翻到日界自然停下是**正常結束**。
+
+        一個同時代表「正常」與「漏了」的旗標等於沒有旗標——使用者看到它亮著
+        卻沒事，下一次真的漏了也不會再看。
+        """
+        _evidence, scans, _skipped = self._collect()
+        self.assertFalse(scans[0].truncated)
+
+    def test_it_really_had_to_page(self):
+        """前置條件：這個情境確實翻了不只一次，否則上面兩條沒有證明力。"""
+        self._collect()
+        self.assertGreater(len(self.client.calls), 1)
+        self.assertEqual({c[0] for c in self.client.calls}, {self.SPACE})
+
+    def test_budget_running_out_before_the_boundary_is_truncated(self):
+        """預算用完而且還沒翻到日界 —— 這才是 truncated 的唯一意思。"""
+        with mock.patch.object(cfg, "WORKLOG_CHAT_SCAN_PER_SPACE", 50):
+            evidence, scans, _skipped = self._collect()
+        self.assertTrue(scans[0].truncated)
+        self.assertLess(len(evidence), len(self.MINE), "前置條件：這樣確實會漏")
+
+    def test_own_message_cap_is_also_truncated(self):
+        """自己的發言多到超過保留上限，同樣是「有東西沒進來」。"""
+        with mock.patch.object(cfg, "WORKLOG_MAX_CHAT_MESSAGES_PER_SPACE", 2):
+            evidence, scans, _skipped = self._collect()
+        self.assertEqual(len(evidence), 2)
+        self.assertTrue(scans[0].truncated)
+        self.assertEqual(
+            [e.occurred_at[11:16] for e in evidence],
+            list(self.MINE[:2]),
+            "先排序再截斷，同一天重產兩次要得到同一份草稿",
+        )
+
+    def test_a_quiet_space_costs_one_call(self):
+        """正對照：訊息少的時候不可以為了翻頁多打 API。"""
+        client = FakeChatClient(
+            {
+                self.SPACE: [
+                    _msg(
+                        f"{self.SPACE}/messages/only",
+                        sender=ME,
+                        create_time="2026-09-13T10:00:00+08:00",
+                        text="今天只講了這一句，改好了登入的問題",
+                    )
+                ]
+            }
+        )
+        evidence, scans, _skipped = we.collect_chat_evidence(
+            client,
+            [self.SPACE],
+            work_date="2026-09-13",
+            tz_offset="+08:00",
+            google_user_id=ME,
+        )
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(len(client.calls), 1)
+        self.assertFalse(scans[0].truncated)
+
+    def test_repeated_messages_are_counted_once(self):
+        """假設 API 在翻頁邊界重複給了同一則，也不可以變成兩筆工時證據。"""
+        repeated = _msg(
+            f"{self.SPACE}/messages/dup",
+            sender=ME,
+            create_time="2026-09-13T10:00:00+08:00",
+            text="同一則訊息被回了兩次",
+        )
+
+        class RepeatingClient(FakeChatClient):
+            def list_messages_since(self, space_id, since, max_messages=None):
+                got = super().list_messages_since(space_id, since, max_messages=max_messages)
+                return got + [repeated]
+
+        client = RepeatingClient({self.SPACE: [repeated]})
+        evidence, _scans, _skipped = we.collect_chat_evidence(
+            client,
+            [self.SPACE],
+            work_date="2026-09-13",
+            tz_offset="+08:00",
+            google_user_id=ME,
+        )
+        self.assertEqual(len(evidence), 1)
 
 
 class SpacePopulationTests(unittest.TestCase):

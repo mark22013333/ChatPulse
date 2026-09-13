@@ -296,6 +296,47 @@ class TestQueryTerm(unittest.TestCase):
         clusters = wc.build_clusters([chat("m1", "ok", space_name="平台維運")])
         self.assertTrue(clusters[0].query_term.strip())
 
+    def test_never_queries_a_standards_reference(self):
+        """⚠️ 迴歸：黑名單原本只擋 `label`，`ADR-0008` 照樣是 `terms[0]`。
+
+        2026-09-13 實測 `q='ADR-0008'` 真的被送出去，那一群的候選清單必然是空的
+        ——正是黑名單本來要防的後果。而「有候選卻查不到」與「真的沒有候選」在
+        畫面上長得一模一樣。
+        """
+        clusters = wc.build_clusters(
+            [commit("a" * 40, "docs(zplanner): 補 ADR-0008 的降級路徑說明", repo="chatpulse")]
+        )
+        self.assertEqual(clusters[0].query_term, "zplanner")
+        self.assertIn("ADR-0008", clusters[0].terms, "降級而不是刪掉：它仍然是線索")
+
+    def test_handmade_terms_are_guarded_too(self):
+        """`terms` 可以由呼叫端自行組，所以送出查詢前還要再擋一次。"""
+        handmade = Evidence(
+            kind="commit",
+            ref="commit:" + "c" * 40,
+            occurred_at="2026-09-13T10:00:00+08:00",
+            title="改編碼",
+            source_label="cs-backend",
+            terms=("UTF-8", "登入流程"),
+            weight_input=1.0,
+            sha="c" * 40,
+        )
+        self.assertEqual(wc.build_clusters([handmade])[0].query_term, "登入流程")
+
+    def test_all_standards_falls_back_to_the_label(self):
+        """全部都是標準編號時退回 repo 名——查不準好過不查。"""
+        only_standards = Evidence(
+            kind="commit",
+            ref="commit:" + "d" * 40,
+            occurred_at="2026-09-13T10:00:00+08:00",
+            title="改編碼",
+            source_label="cs-backend",
+            terms=("UTF-8", "SHA-256"),
+            weight_input=1.0,
+            sha="d" * 40,
+        )
+        self.assertEqual(wc.build_clusters([only_standards])[0].query_term, "cs-backend")
+
 
 class TestDeterminismAndShape(unittest.TestCase):
     def test_empty_evidence_returns_no_clusters(self):
