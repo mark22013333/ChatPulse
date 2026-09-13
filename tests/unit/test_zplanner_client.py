@@ -555,6 +555,8 @@ class ConfigHygiene(unittest.TestCase):
             "core/zplanner_client.py",
             "scripts/zplanner_smoke.py",
             "tests/unit/test_zplanner_client.py",
+            "docs/adr/0008-draft-worklog-over-clipboard-export.md",
+            "README.md",
         ):
             with self.subTest(檔案=rel):
                 # 用 assertFalse 而不是 assertNotIn：後者失敗時會把整個檔案

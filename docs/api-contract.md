@@ -684,7 +684,9 @@ GitHub 未認證每小時只有 60 次呼叫，前端不要拿它做輸入即時
 1. **SSE 一律用 `fetch` + `getReader()`**，不可用 `EventSource`（端點是 POST）。
    元件 unmount 時要 `AbortController.abort()`，否則串流會繼續跑。
 2. **任何送出動作都要二次確認對話框**（5.4、7.2 步驟 6）。
-3. **ZPlanner 相關功能已於 v2.0 移除**，不要保留任何按鈕或 handler。
+3. **v1 的 ZPlanner 匯出按鈕已於 v2.0 移除**，不要在 Action Items 那裡保留任何
+   剪貼簿 handler。（**Draft Worklog 是另一件事**，見 ADR-0008 與規格 5.3——它走真正的
+   API 串接、有自己的畫面，目前只完成 client 層，前端尚未實作。）
 4. Action Items 萃取：從摘要 Markdown 中抓 `• [負責人] 任務` 這種行，轉為可勾選項目，
    支援「複製為 Markdown」。
 5. 空間清單有 436 個，列表需要虛擬滾動或分頁，並提供名稱搜尋。

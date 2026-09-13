@@ -372,7 +372,11 @@ Phase 2 另需 `userinfo.profile`，用於取得 Viewer 自己的 user id（見 
 
 ### 5.3 Action Items 萃取
 
-摘要中的待辦轉為可勾選項目，支援複製為 Markdown。**ZPlanner 相關功能於 v2.0 移除**：Phase 1 重寫前端時未搬移該按鈕與 handler。驗證方式是在 `dashboard/frontend/src` 與 `dist` 全庫 grep `ZPlanner`／`zplanner`，2026-09-05 實測 0 命中。
+摘要中的待辦轉為可勾選項目，支援複製為 Markdown。**v1 的剪貼簿式 ZPlanner 匯出於 v2.0 移除**：那個版本只是一段把待辦組成字串丟進 `navigator.clipboard.writeText()` 的前端 handler，Phase 1 重寫前端時未搬移。
+
+> ⚠️ **這不表示本專案不與 ZPlanner 往來。** 2026-09-13 起另有 **Draft Worklog**（見 [ADR-0008](./docs/adr/0008-draft-worklog-over-clipboard-export.md)），走的是真正的 API 串接，與這裡講的剪貼簿匯出是兩件不同的事。
+>
+> 因此上面這句的驗證方式要限定範圍：grep `zplanner` 只在 `dashboard/frontend/` 應為 0 命中（2026-09-05 實測）。在 `core/zplanner_client.py`、`tests/unit/`、`scripts/` 命中是 Draft Worklog 的 client 層，**不是該刪的殘留**。
 
 ### 5.4 推播回 Google Chat
 
@@ -962,7 +966,7 @@ Phase 2 的核心條件「Draft Reply 引用 Reference Space」已取得 A 級�
 - 自動發言：任何未經 Viewer 確認的訊息送出
 - Chat App / Bot 架構（ADR-0001）
 - 跨群向量檢索 RAG（ADR-0003）
-- ZPlanner 整合
+- ZPlanner 的**剪貼簿式匯出**（v1 那個版本。真正的 API 串接是 Draft Worklog，見 ADR-0008 與 5.3；它不在這份清單上）
 - 定時排程自動摘要
 - 員工發言量統計與考核
 
