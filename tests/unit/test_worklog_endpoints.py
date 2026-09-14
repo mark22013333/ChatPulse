@@ -36,10 +36,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from core import config as cfg  # noqa: E402
 from core import db, repository as repo  # noqa: E402
 from core.errors import (  # noqa: E402
+    ChatPulseError,
     InvalidParameter,
     WorkRepoNotFound,
     WorklogAlreadySubmitted,
+    WorklogDraftNotFound,
+    ZPlannerForbidden,
     ZPlannerUnavailable,
+    ZPlannerWriteIndeterminate,
 )
 from core.worklog_evidence import DayEvidence, Evidence, extract_terms  # noqa: E402
 from dashboard.api import server  # noqa: E402
@@ -990,6 +994,699 @@ class TestZplannerWeekParsing(unittest.TestCase):
         # target_hours 會變成 "1.00"，而那是一個完全編出來的目標
         self.assertEqual(server._zplanner_week_target({"target_hours": True}), {})
         self.assertEqual(server._zplanner_week_target({"completion_pct": False}), {})
+
+
+# --------------------------------------------------------------------------
+# 送出到 ZPlanner（POST /api/v1/worklogs/{date}/submit）
+#
+# 🔴 這一區與上面的差別：**這裡的每個錯誤都是不可逆的。** 上面那些端點算錯
+# 只是畫面難看，這裡算錯會在 ZPlanner 那邊多出或少掉一筆工時，而工時進了月結
+# 就刪不掉，只能走 correction-request（要人審核）。
+#
+# 所以這裡有兩類斷言，**第二類才是重點**：
+#   1. 回應長對不對（好驗，但驗不到真正的風險）
+#   2. **到底有沒有打出去、打了幾次、失敗前落了多少地**——只有數假 client 的
+#      呼叫次數與回頭查 DB 才驗得到。AC-1、AC-5、AC-8、D-9(a) 全部靠第二類。
+# --------------------------------------------------------------------------
+
+
+DATE2 = "2026-09-12"
+
+
+def exported(issue_key: str, hours: str, *, work_date: str = DATE, note: str = ""):
+    """一列 `export_worklogs` 的回傳。
+
+    🔴 **每個值都是字串**——client 刻意不轉型（見 `export_worklogs` 的
+    docstring：轉 float 會讓 `2` 與 `2.0` 在比對時錯開）。fixture 也不准偷偷
+    用數字，不然就驗不到真正會發生的那種輸入。
+    """
+    return {
+        "date": work_date,
+        "user_name": "我",
+        "project_code": "PEI",
+        "issue_key": issue_key,
+        "issue_title": "匯出效能",
+        "hours": hours,
+        "note": note,
+    }
+
+
+class FakeZPlannerSubmit(FakeZPlanner):
+    """會寫入的假 client（duck-typing，不是 `unittest.mock.Mock`）。
+
+    用真的假物件而不是 Mock 是有理由的：Mock 對**任何**屬性都會回一個新的
+    Mock，所以「端點呼叫了一支根本不存在的方法」在 Mock 底下會靜默通過，而
+    在正式環境是 AttributeError。這裡少一支方法就會當場炸——那正是我們要的。
+
+    `results` 用 issue_id 當鍵，值是例外（拋出來）或 dict（覆蓋預設回應）。
+    """
+
+    def __init__(self, *, exported_rows=None, export_error=None, results=None, **kwargs):
+        kwargs.setdefault("ok", True)
+        super().__init__(**kwargs)
+        self._exported = [dict(r) for r in (exported_rows or [])]
+        self._export_error = export_error
+        self._results = dict(results or {})
+        self.export_calls: List[Any] = []
+        self.create_calls: List[Dict[str, Any]] = []
+        self._next_id = 116800
+
+    def export_worklogs(self, date_from: str, date_to: str):
+        self.export_calls.append((date_from, date_to))
+        if self._export_error is not None:
+            raise self._export_error
+        return [dict(r) for r in self._exported]
+
+    def create_worklog(self, issue_id, date, hours, *, note=None, start_time=None):
+        self.create_calls.append(
+            {"issue_id": issue_id, "date": date, "hours": hours, "note": note}
+        )
+        outcome = self._results.get(issue_id)
+        if isinstance(outcome, Exception):
+            raise outcome
+        self._next_id += 1
+        created = {
+            "id": self._next_id,
+            "issue_key": f"KEY-{issue_id}",
+            "user_name": "我",
+            "is_locked": False,
+        }
+        if isinstance(outcome, dict):
+            created.update(outcome)
+        return created
+
+    @property
+    def created_issue_ids(self) -> List[int]:
+        return [c["issue_id"] for c in self.create_calls]
+
+
+class SubmitCase(EndpointCase):
+    """送出端點的共用底座。沿用 `EndpointCase` 的暫存 DB 與 viewer。"""
+
+    def seed(self, *entries: Dict[str, Any], work_date: str = DATE) -> Dict[str, Any]:
+        draft = repo.upsert_worklog_draft(
+            self.vid, work_date, tz_offset=TZ, total_hours="8.00"
+        )
+        repo.replace_worklog_entries(self.vid, draft["id"], list(entries))
+        return repo.get_worklog_draft(self.vid, work_date)
+
+    def submit(self, *, zplanner=None, work_date: str = DATE, **body) -> Dict[str, Any]:
+        client = zplanner if zplanner is not None else FakeZPlannerSubmit()
+        self.client = client
+        request = server.WorklogSubmitRequest(**body)
+        with mock.patch.object(server, "zplanner_client", lambda: client):
+            return server.submit_worklog(work_date, request, self.viewer)
+
+    def stored(self, work_date: str = DATE) -> Dict[str, Any]:
+        """回頭查 DB。**回應說了什麼不算數，落地了什麼才算。**"""
+        return repo.get_worklog_draft(self.vid, work_date)
+
+    def states(self, work_date: str = DATE) -> List[str]:
+        return [e["state"] for e in self.stored(work_date)["entries"]]
+
+
+def entry(**extra) -> Dict[str, Any]:
+    """一筆已經選好 issue、還沒送出的草稿 entry。"""
+    row = {
+        "issue_id": 501,
+        "issue_key": "PEI-133",
+        "project_id": 42,
+        "project_key": "PEI",
+        "hours": "2.00",
+        "note": "做了匯出效能",
+        "state": "pending",
+    }
+    row.update(extra)
+    return row
+
+
+class TestSubmitUnassignedGate(SubmitCase):
+    """AC-1／D-3：有任何一筆沒選 issue 就擋下整批。"""
+
+    def test_未指派時整批擋下且一筆都沒送(self):
+        """🔴 「回 400」只是表象，真正要守的是**一筆都沒打出去**。
+
+        部分送出會讓那天的工時停在半送出狀態，而使用者從畫面上看不出哪幾筆
+        送了（D-3 的原話）。所以這裡數的是假 client 的呼叫次數——只斷言拋了
+        例外的話，「先送出去再拋」一樣會是綠的。
+        """
+        self.seed(entry(), entry(issue_id=None, issue_key=None, hours="1.50"))
+        client = FakeZPlannerSubmit()
+        with self.assertRaises(ChatPulseError) as ctx:
+            self.submit(zplanner=client)
+        self.assertEqual(400, ctx.exception.http_status)
+        self.assertEqual([], client.create_calls, "擋下來就是一筆都不准打出去")
+        self.assertEqual(["pending", "pending"], self.states(), "DB 也不該被動到")
+
+    def test_全部選好時正常送出(self):
+        """正對照：閘不是恆真。少了這條，「永遠擋下」也會讓上一條變綠。"""
+        self.seed(entry(), entry(issue_id=502, issue_key="PEI-140", hours="1.50"))
+        result = self.submit()
+        self.assertEqual(2, result["summary"]["submitted_count"])
+
+    def test_已經是_skipped_的未指派筆不擋(self):
+        # 被併成 0 小時的筆本來就不會送出去，把它算進閘裡會讓整天永遠送不出去
+        self.seed(entry(), entry(issue_id=None, issue_key=None, hours="0.00", state="skipped"))
+        result = self.submit()
+        self.assertEqual(1, result["summary"]["submitted_count"])
+
+    def test_帶_entry_ids_時只檢查選中的那幾筆(self):
+        """D-8 的連帶條款。
+
+        否則當天別處有一筆沒選專案，`failed` 的那筆就**永遠重打不了**——
+        重打是為了救那一筆，結果被另一筆完全無關的筆卡住。
+        """
+        draft = self.seed(
+            entry(state="failed"),
+            entry(issue_id=None, issue_key=None, hours="1.50"),
+        )
+        target = draft["entries"][0]["id"]
+        result = self.submit(entry_ids=[target])
+        self.assertEqual(1, result["summary"]["submitted_count"])
+        self.assertEqual([501], self.client.created_issue_ids)
+
+
+class TestSubmitSkipsAlreadySent(SubmitCase):
+    """AC-2：已經有 `zplanner_worklog_id` 的筆直接跳過。"""
+
+    def test_已送出的筆不重打(self):
+        """重打會在 ZPlanner 那邊變成兩筆，而多出來的那筆月結後刪不掉。"""
+        self.seed(
+            entry(state="submitted", zplanner_worklog_id=99310, zplanner_issue_key="PEI-133"),
+            entry(issue_id=502, issue_key="PEI-140", hours="1.50"),
+        )
+        self.submit()
+        self.assertEqual([502], self.client.created_issue_ids, "只打沒送過的那筆")
+
+    def test_已送出的筆的_worklog_id_不會被動到(self):
+        self.seed(entry(state="submitted", zplanner_worklog_id=99310))
+        self.submit()
+        self.assertEqual(
+            [99310],
+            [e["zplanner_worklog_id"] for e in self.stored()["entries"]],
+            "遠端 worklog id 是修改／刪除的唯一入口，一筆都不准被蓋掉",
+        )
+
+
+class TestSubmitDeduplication(SubmitCase):
+    """AC-3／D-2：送出前查當天，同 issue ＋ 同 hours 已存在就跳過。"""
+
+    def test_遠端已有同_issue_同時數時跳過(self):
+        self.seed(entry(hours="2.00"))
+        client = FakeZPlannerSubmit(exported_rows=[exported("PEI-133", "2.00")])
+        result = self.submit(zplanner=client)
+        self.assertEqual([], client.create_calls, "重複的筆一筆都不准打出去")
+        self.assertEqual(["skipped"], self.states())
+        self.assertEqual(1, result["summary"]["skipped_count"])
+
+    def test_字串刻度不同仍然判得出重複(self):
+        """🔴 plan.md 風險段唯一點名的漏判來源。
+
+        export 回的 `hours` 是 CSV **字串**且 client 刻意不轉型，本地存的是
+        `format_hours()` 產的兩位小數字串。直接 `==` 比的話，遠端 `"2"`、本地
+        `"2.00"` 就漏判 → 那天多出一筆 2 小時的工時 → 月結後刪不掉。
+        """
+        for remote_hours, local_hours in (
+            ("2", "2.00"),
+            ("2.0", "2.00"),
+            ("2.00", "2"),
+            (".5", "0.50"),
+            ("0.5", "0.50"),
+        ):
+            with self.subTest(遠端=remote_hours, 本地=local_hours):
+                self.seed(entry(hours=local_hours))
+                client = FakeZPlannerSubmit(
+                    exported_rows=[exported("PEI-133", remote_hours)]
+                )
+                self.submit(zplanner=client)
+                self.assertEqual([], client.create_calls)
+                self.assertEqual(["skipped"], self.states())
+
+    def test_時數不同就照送(self):
+        """正對照：去重不是「同一個 issue 就不送」。
+
+        一天在同一個 issue 上填兩筆不同時數是完全正常的事，判成重複會安靜
+        吃掉第二筆。少了這條，「一律跳過」也會讓上面那些測試全綠。
+        """
+        self.seed(entry(hours="1.50"))
+        client = FakeZPlannerSubmit(exported_rows=[exported("PEI-133", "2.00")])
+        self.submit(zplanner=client)
+        self.assertEqual([501], client.created_issue_ids)
+
+    def test_被跳過的筆一定看得見(self):
+        """🔴 D-9(b)：AC-3 會誤殺「同一天、同一 issue、同時數」的合法第二筆。
+
+        取捨是寧可漏送也不要重複，**代價是那筆必須列進回報讓人看得見**——
+        靜默跳過的話，使用者永遠不知道自己少填了兩小時。
+        """
+        draft = self.seed(entry(hours="2.00"))
+        entry_id = draft["entries"][0]["id"]
+        client = FakeZPlannerSubmit(exported_rows=[exported("PEI-133", "2.00")])
+        result = self.submit(zplanner=client)
+
+        duplicates = result["summary"]["skipped_duplicates"]
+        self.assertEqual(1, len(duplicates))
+        # 指得回是本地哪一筆——不然前端畫不出「這張卡被跳過了」
+        self.assertEqual(entry_id, duplicates[0]["entry_id"])
+        # 也要說得出比對到的是什麼，人才判斷得出這次跳過是對的還是誤殺
+        self.assertIn("PEI-133", json.dumps(duplicates[0], ensure_ascii=False))
+
+    def test_跳過的筆不認領遠端的_worklog_id(self):
+        """🔴 D-9(b) 的另一半：**不**把比對到的遠端 id 寫進 `zplanner_worklog_id`。
+
+        那筆不是我們建的。認領它會讓 D-2 自承的誤殺變成**永久且看不見**——
+        以後重產草稿時守門會說「已經送出了」，而其實我們從來沒送過它。
+        """
+        self.seed(entry(hours="2.00"))
+        client = FakeZPlannerSubmit(exported_rows=[exported("PEI-133", "2.00")])
+        self.submit(zplanner=client)
+        self.assertEqual(
+            [None], [e["zplanner_worklog_id"] for e in self.stored()["entries"]]
+        )
+
+    def test_去重只查當天(self):
+        # 查整週的話，昨天同一個 issue 同時數的工時會讓今天這筆被誤殺
+        self.seed(entry())
+        client = FakeZPlannerSubmit()
+        self.submit(zplanner=client)
+        self.assertEqual([(DATE, DATE)], client.export_calls)
+
+    def test_export_失敗時整批中止(self):
+        """🔴 D-9(a)：不得「查不到就當沒重複照送」。
+
+        去重是唯一擋得住重複工時的那道，而重複的代價不可逆（D-2）。查不到
+        就照送等於把那道關掉，卻沒有任何人知道它被關掉了。
+        """
+        self.seed(entry())
+        client = FakeZPlannerSubmit(export_error=ZPlannerUnavailable("ZPlanner 連線逾時"))
+        with self.assertRaises(ChatPulseError):
+            self.submit(zplanner=client)
+        self.assertEqual([], client.create_calls, "查不到重複就一筆都不准送")
+        self.assertEqual(["pending"], self.states())
+
+
+class TestSubmitSuccessWriteBack(SubmitCase):
+    """AC-4：建立成功後要寫回什麼。"""
+
+    def test_成功的筆寫回_id_與_key_與時間(self):
+        self.seed(entry())
+        result = self.submit()
+        stored = self.stored()["entries"][0]
+        self.assertEqual("submitted", stored["state"])
+        self.assertEqual(116801, stored["zplanner_worklog_id"])
+        self.assertEqual("KEY-501", stored["zplanner_issue_key"])
+        self.assertTrue(stored["submitted_at"], "沒有時間就無從對帳")
+        self.assertEqual(1, result["summary"]["submitted_count"])
+
+    def test_ZPlanner_說鎖住了就記下來(self):
+        """`is_locked` 直接抄 `create_worklog` 回應的欄位。
+
+        全庫至今恆為 0，送出是第一個賦予它語意的地方——鎖住的工時 PATCH 與
+        DELETE 都不會生效，唯一途徑是 correction-request。前端要畫得出來。
+        """
+        self.seed(entry())
+        self.submit(zplanner=FakeZPlannerSubmit(results={501: {"is_locked": True}}))
+        self.assertIs(True, self.stored()["entries"][0]["is_locked"])
+
+    def test_送出的內容就是本地那筆(self):
+        self.seed(entry(hours="3.50", note="改了說明"))
+        self.submit()
+        call = self.client.create_calls[0]
+        self.assertEqual(501, call["issue_id"])
+        self.assertEqual(DATE, call["date"])
+        self.assertEqual("3.50", call["hours"])
+        self.assertEqual("改了說明", call["note"])
+
+
+class TestSubmitFailureIsolation(SubmitCase):
+    """AC-5／AC-6：一筆失敗不准影響其餘各筆。"""
+
+    def test_不確定的筆標_unknown_而且不重試(self):
+        """🔴 AC-5。`ZPlannerWriteIndeterminate` ＝ **不知道有沒有寫進去**。
+
+        自動重試可能在 ZPlanner 那邊變成兩筆，而月結後多出來的那筆刪不掉。
+        所以這裡數呼叫次數：只斷言 state 的話，「重試三次後標 unknown」也會
+        是綠的，而那正好是最貴的那種錯。
+        """
+        self.seed(
+            entry(),
+            entry(issue_id=502, issue_key="PEI-140", hours="1.50"),
+        )
+        client = FakeZPlannerSubmit(
+            results={501: ZPlannerWriteIndeterminate("連線在讀回應時斷掉")}
+        )
+        result = self.submit(zplanner=client)
+
+        self.assertEqual(1, client.created_issue_ids.count(501), "unknown 一律不重試")
+        self.assertEqual(["unknown", "submitted"], self.states(), "其餘各筆照送")
+        self.assertEqual(1, result["summary"]["unknown_count"])
+        self.assertEqual(1, result["summary"]["submitted_count"])
+
+    def test_信封說失敗的筆標_failed_並留下錯誤(self):
+        """AC-6：`code != 200` 是 ZPlanner 應用層親口說「沒做」。"""
+        self.seed(
+            entry(),
+            entry(issue_id=502, issue_key="PEI-140", hours="1.50"),
+        )
+        client = FakeZPlannerSubmit(
+            results={501: ZPlannerForbidden("你在該專案沒有填工時的權限")}
+        )
+        result = self.submit(zplanner=client)
+
+        failed = self.stored()["entries"][0]
+        self.assertEqual("failed", failed["state"])
+        # 斷言錯誤**碼**而不是訊息措辭——措辭會隨著我們對成因的理解改寫
+        self.assertEqual("ZPLANNER_FORBIDDEN", failed["last_error_code"])
+        self.assertTrue(failed["last_error_message"], "要留得下訊息，人才知道去找誰")
+        self.assertEqual("submitted", self.states()[1], "其餘各筆不受影響")
+        self.assertEqual(1, result["summary"]["failed_count"])
+
+    def test_失敗的筆不會留下_worklog_id(self):
+        self.seed(entry())
+        self.submit(zplanner=FakeZPlannerSubmit(results={501: ZPlannerForbidden("沒權限")}))
+        self.assertIsNone(self.stored()["entries"][0]["zplanner_worklog_id"])
+
+    def test_有筆失敗仍然回二百(self):
+        """🔴 D-7：只要送出任何一筆就回 HTTP 200。
+
+        4xx 會讓前端以為整批沒送、使用者再按一次 ＝ ZPlanner 重複工時。
+        這裡「回 200」在函式層的意思是**不拋例外**——錯誤信封一律只留給整批
+        拒絕（AC-1 的 400、AC-7 的 404）。
+        """
+        self.seed(
+            entry(),
+            entry(issue_id=502, issue_key="PEI-140", hours="1.50"),
+        )
+        result = self.submit(
+            zplanner=FakeZPlannerSubmit(results={501: ZPlannerForbidden("沒權限")})
+        )
+        self.assertEqual(1, result["summary"]["submitted_count"])
+        self.assertEqual(1, result["summary"]["failed_count"])
+
+    def test_全部失敗也不拋(self):
+        self.seed(entry(), entry(issue_id=502, issue_key="PEI-140", hours="1.50"))
+        result = self.submit(
+            zplanner=FakeZPlannerSubmit(
+                results={
+                    501: ZPlannerForbidden("沒權限"),
+                    502: ZPlannerForbidden("沒權限"),
+                }
+            )
+        )
+        self.assertEqual(2, result["summary"]["failed_count"])
+        self.assertEqual(0, result["summary"]["submitted_count"])
+
+
+class TestSubmitWritesEachEntryImmediately(SubmitCase):
+    """🔴 AC-8／D-4：每成功一筆立刻落 DB，不等整批跑完。
+
+    這是整組設計的核心，也是唯一一條「正常路徑上完全看不出來」的規則：整批
+    成功時，先寫與後寫的結果一模一樣。差別只在失敗窗口裡——第 N 筆失敗時，
+    前面已成功的幾筆若還沒落地就成為**孤兒工時**：ZPlanner 那邊有、本地沒有
+    記錄，重送會再建一次，而原本那筆永遠不會被認領。
+    """
+
+    def test_跑到一半爆掉時前面成功的筆已經在_DB_裡(self):
+        """讓第三筆的**寫入**爆掉，藉此區分「逐筆寫」與「最後一次寫」。
+
+        這裡刻意炸在 repository 而不是 ZPlanner：ZPlanner 的例外會被分類成
+        failed／unknown 而不中斷迴圈（AC-5／AC-6 要求的），那樣就測不到
+        「整批跑完之前程序就沒了」這種情況。
+        """
+        self.seed(
+            entry(),
+            entry(issue_id=502, issue_key="PEI-140", hours="1.50"),
+            entry(issue_id=503, issue_key="PEI-150", hours="1.00"),
+        )
+        real = repo.update_worklog_entry_state
+        calls = {"n": 0}
+
+        def explode_on_third(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] >= 3:
+                raise RuntimeError("寫入時整個程序沒了")
+            return real(*args, **kwargs)
+
+        with mock.patch.object(server.repo, "update_worklog_entry_state", explode_on_third):
+            try:
+                self.submit()
+            except Exception:
+                pass  # 炸不炸出來不是重點，重點是 DB 裡剩下什麼
+
+        stored = self.stored()["entries"]
+        self.assertEqual(
+            [116801, 116802],
+            [e["zplanner_worklog_id"] for e in stored[:2]],
+            "前兩筆在 ZPlanner 已經建好了，本地沒記＝孤兒工時",
+        )
+        self.assertEqual(["submitted", "submitted"], [e["state"] for e in stored[:2]])
+
+    def test_落地的順序跟得上送出的順序(self):
+        """第一筆送出之後、第二筆送出之前，第一筆就要已經在 DB 裡。
+
+        用 client 的 `create_worklog` 當探針去查 DB——這是唯一能在「整批跑完
+        之前」觀察到中間狀態的位置。
+        """
+        self.seed(
+            entry(),
+            entry(issue_id=502, issue_key="PEI-140", hours="1.50"),
+        )
+        seen: List[List[Any]] = []
+
+        class ProbingClient(FakeZPlannerSubmit):
+            def create_worklog(inner, issue_id, date, hours, **kwargs):
+                seen.append(
+                    [e["zplanner_worklog_id"] for e in self.stored()["entries"]]
+                )
+                return super().create_worklog(issue_id, date, hours, **kwargs)
+
+        self.submit(zplanner=ProbingClient())
+        self.assertEqual([None, None], seen[0], "第一筆送出前，兩筆都還沒有 id")
+        self.assertEqual(
+            116801, seen[1][0], "第二筆送出時，第一筆必須已經落地——否則它是孤兒"
+        )
+
+
+class TestSubmitOrphanReporting(SubmitCase):
+    """D-6：repository 回 `False`（影響 0 列）＝ 這筆在送出期間被重產清掉了。"""
+
+    def test_影響零列時不可以當成功(self):
+        """🔴 ZPlanner 那邊建好了、本地卻沒有任何一列記得住那個 id。
+
+        當成功回報的話，這筆孤兒工時就再也沒有人會發現——而它每個月都會出現
+        在報表上，沒有人知道它從哪來。
+        """
+        self.seed(entry())
+        with mock.patch.object(
+            server.repo, "update_worklog_entry_state", lambda *a, **k: False
+        ):
+            result = self.submit()
+        self.assertEqual(
+            0, result["summary"]["submitted_count"], "寫不進去就不是送出成功"
+        )
+        # 🔴 `zplanner_worklog_id` 要原封不動回報出去——那是**唯一**能再找到那筆
+        # 工時的線索（本地一列都沒寫進去，下次重送只會再建一筆）
+        orphans = result["summary"]["orphans"]
+        self.assertEqual(1, len(orphans))
+        self.assertEqual(116801, orphans[0]["zplanner_worklog_id"])
+
+    def test_孤兒不算失敗也不算不確定(self):
+        """它不是「送出失敗」——ZPlanner 那邊**確實建好了**。
+
+        歸進 failed 會讓人重送而製造重複；歸進 unknown 則是說「不知道有沒有寫
+        進去」，但我們知道得很清楚。所以它只能是獨立的一類。
+        """
+        self.seed(entry())
+        with mock.patch.object(
+            server.repo, "update_worklog_entry_state", lambda *a, **k: False
+        ):
+            summary = self.submit()["summary"]
+        self.assertEqual(0, summary["failed_count"])
+        self.assertEqual(0, summary["unknown_count"])
+
+
+class TestSubmitRetrySingleEntry(SubmitCase):
+    """AC-7／D-8：`entry_ids` 單筆重打，走同一支端點。"""
+
+    def test_只打選中的那一筆(self):
+        draft = self.seed(
+            entry(state="failed", last_error_code="ZPLANNER_FORBIDDEN"),
+            entry(issue_id=502, issue_key="PEI-140", hours="1.50", state="failed"),
+        )
+        target = draft["entries"][1]["id"]
+        self.submit(entry_ids=[target])
+        self.assertEqual([502], self.client.created_issue_ids)
+        self.assertEqual(["failed", "submitted"], self.states())
+
+    def test_重打成功要清掉上一次的錯誤(self):
+        # 留著舊的 last_error_code 會讓畫面上一筆已經成功的工時仍然標紅
+        self.seed(entry(state="failed", last_error_code="ZPLANNER_FORBIDDEN",
+                        last_error_message="你在該專案沒有這項權限"))
+        draft = self.stored()
+        self.submit(entry_ids=[draft["entries"][0]["id"]])
+        stored = self.stored()["entries"][0]
+        self.assertEqual("submitted", stored["state"])
+        self.assertIsNone(stored["last_error_code"])
+
+    def test_沒帶_entry_ids_就是整批(self):
+        self.seed(entry(), entry(issue_id=502, issue_key="PEI-140", hours="1.50"))
+        self.submit()
+        self.assertEqual([501, 502], self.client.created_issue_ids)
+
+    def test_那天沒有草稿回四零四(self):
+        """AC-7。`WorklogDraftNotFound` 是 404——「這天還沒產草稿」是正常狀態。"""
+        client = FakeZPlannerSubmit()
+        with self.assertRaises(WorklogDraftNotFound) as ctx:
+            self.submit(zplanner=client)
+        self.assertEqual(404, ctx.exception.http_status)
+        self.assertEqual([], client.create_calls)
+
+    def test_entry_ids_指到別份草稿回四百而不是四零四(self):
+        """plan.md 的「未涵蓋」段明訂：這種情況回 400 不是 404。
+
+        404 的意思是「這天沒有草稿」，而這裡草稿明明在——是呼叫端把別天的
+        entry id 帶過來了，屬於違反 API 契約，前端該去修的是自己的程式。
+        """
+        other = self.seed(entry(), work_date=DATE2)
+        self.seed(entry(), work_date=DATE)
+        client = FakeZPlannerSubmit()
+        with self.assertRaises(ChatPulseError) as ctx:
+            self.submit(zplanner=client, entry_ids=[other["entries"][0]["id"]])
+        self.assertEqual(400, ctx.exception.http_status)
+        self.assertNotIsInstance(ctx.exception, WorklogDraftNotFound)
+        self.assertEqual([], client.create_calls, "擋下來就是一筆都不准打出去")
+
+    def test_別人的草稿碰不到(self):
+        other_vid = int(repo.upsert_viewer("users/000002", "other@corp.com", "別人")["id"])
+        other_draft = repo.upsert_worklog_draft(other_vid, DATE, tz_offset=TZ)
+        repo.replace_worklog_entries(other_vid, other_draft["id"], [entry()])
+        client = FakeZPlannerSubmit()
+        with self.assertRaises(ChatPulseError):
+            self.submit(zplanner=client)
+        self.assertEqual([], client.create_calls)
+
+
+class TestSubmitDraftStatus(SubmitCase):
+    """D-9(c)：`worklog_drafts.status` 的三態。
+
+    ⚠️ **`partial` 在這個 codebase 至今從未被寫入過，這是第一處。**
+    """
+
+    def test_全部成功轉_submitted(self):
+        self.seed(entry(), entry(issue_id=502, issue_key="PEI-140", hours="1.50"))
+        result = self.submit()
+        self.assertEqual("submitted", result["status"])
+        self.assertEqual("submitted", self.stored()["status"], "回應說了不算，DB 才算")
+
+    def test_成功混跳過也算轉_submitted(self):
+        """「每筆都 submitted **或 skipped**」。
+
+        少了 skipped 這一半，只要那天有任何一筆重複，週檢視的
+        `totals.days_submitted` 就永遠數不到它。
+        """
+        self.seed(entry(hours="2.00"), entry(issue_id=502, issue_key="PEI-140", hours="1.50"))
+        client = FakeZPlannerSubmit(exported_rows=[exported("PEI-133", "2")])
+        result = self.submit(zplanner=client)
+        self.assertEqual(["skipped", "submitted"], self.states())
+        self.assertEqual("submitted", result["status"])
+        self.assertEqual("submitted", self.stored()["status"])
+
+    def test_有成功有失敗是_partial(self):
+        """🔴 partial 必須是獨立狀態（DDL 原話）。
+
+        算成 draft 會讓人以為整天都還沒送，再按一次就把已經成功的那幾筆重複
+        填一遍；算成 submitted 則會讓失敗的那幾筆永遠沒人管。
+        """
+        self.seed(entry(), entry(issue_id=502, issue_key="PEI-140", hours="1.50"))
+        result = self.submit(
+            zplanner=FakeZPlannerSubmit(results={502: ZPlannerForbidden("沒權限")})
+        )
+        self.assertEqual("partial", result["status"])
+        self.assertEqual("partial", self.stored()["status"])
+
+    def test_不確定的那筆也讓整天停在_partial(self):
+        self.seed(entry(), entry(issue_id=502, issue_key="PEI-140", hours="1.50"))
+        result = self.submit(
+            zplanner=FakeZPlannerSubmit(
+                results={502: ZPlannerWriteIndeterminate("連線斷了")}
+            )
+        )
+        self.assertEqual("partial", result["status"])
+
+    def test_全部失敗時狀態不前進(self):
+        """標成 partial 會讓畫面顯示「部分已送出」，而 ZPlanner 那邊一筆都沒有
+        ——使用者於是不敢重送。"""
+        self.seed(entry())
+        result = self.submit(
+            zplanner=FakeZPlannerSubmit(results={501: ZPlannerForbidden("沒權限")})
+        )
+        self.assertEqual("draft", result["status"])
+        self.assertEqual("draft", self.stored()["status"])
+
+
+class TestSubmitResponseShape(SubmitCase):
+    """回應要帶前端畫得出混合狀態的東西。
+
+    逐筆一交易 ＝ 整批不再有一致快照，跑到一半的草稿是混合狀態（plan.md 的
+    風險段）。前端必須畫得出來，所以回應不能只給計數。
+    """
+
+    def test_回應帶重讀後的完整_entries(self):
+        self.seed(entry(), entry(issue_id=502, issue_key="PEI-140", hours="1.50"))
+        result = self.submit(
+            zplanner=FakeZPlannerSubmit(results={502: ZPlannerForbidden("沒權限")})
+        )
+        self.assertEqual(DATE, result["work_date"])
+        self.assertEqual(2, len(result["entries"]))
+        # 重讀後的 ＝ 與 DB 完全一致，不是送出前那份加工過的
+        self.assertEqual(
+            [e["state"] for e in self.stored()["entries"]],
+            [e["state"] for e in result["entries"]],
+        )
+        self.assertEqual(116801, result["entries"][0]["zplanner_worklog_id"])
+
+    def test_summary_的四個計數加起來就是全部的筆數(self):
+        """不變式：每一筆都恰好落在一個計數裡。
+
+        少了這條，一筆被漏掉（既沒 submitted 也沒 failed）完全看不出來——
+        而它在畫面上的樣子是「這張卡什麼都沒發生」。
+        """
+        self.seed(
+            entry(hours="2.00"),
+            entry(issue_id=502, issue_key="PEI-140", hours="1.50"),
+            entry(issue_id=503, issue_key="PEI-150", hours="1.00"),
+            entry(issue_id=504, issue_key="PEI-160", hours="0.50"),
+        )
+        client = FakeZPlannerSubmit(
+            exported_rows=[exported("PEI-133", "2")],
+            results={
+                503: ZPlannerForbidden("沒權限"),
+                504: ZPlannerWriteIndeterminate("連線斷了"),
+            },
+        )
+        summary = self.submit(zplanner=client)["summary"]
+        self.assertEqual(1, summary["submitted_count"])
+        self.assertEqual(1, summary["skipped_count"])
+        self.assertEqual(1, summary["failed_count"])
+        self.assertEqual(1, summary["unknown_count"])
+        total = sum(
+            summary[k]
+            for k in ("submitted_count", "skipped_count", "failed_count", "unknown_count")
+        )
+        self.assertEqual(4, total, "有一筆既沒送出也沒被歸類，它在畫面上會是空白的")
+
+    def test_summary_的鍵名與週檢視一致(self):
+        """D-7：鍵名沿用週檢視，兩個畫面才講同一套話。"""
+        self.seed(entry())
+        summary = self.submit()["summary"]
+        for key in (
+            "submitted_count",
+            "skipped_count",
+            "failed_count",
+            "unknown_count",
+            "skipped_duplicates",
+        ):
+            self.assertIn(key, summary, f"summary 少了 {key}，前端就畫不出來")
 
 
 if __name__ == "__main__":  # pragma: no cover

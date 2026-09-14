@@ -669,9 +669,10 @@ GitHub 未認證每小時只有 60 次呼叫，前端不要拿它做輸入即時
 從 Viewer 的 git commit 與 Chat 發言產生每日工時草稿。
 
 目前完成：「我的工作 repo」登錄、**週檢視**（`GET /worklogs/week`）、**草稿產生**
-（`POST /worklogs/{date}/draft/stream`）。**尚未實作**：`GET`／`PUT /worklogs/{date}`、
-`POST /worklogs/{date}/submit`、`GET /zplanner/issues/search`、`GET /zplanner/permissions`
-（候選與權限目前只在草稿的 SSE `meta` 裡一次帶回，沒有獨立的搜尋端點）。
+（`POST /worklogs/{date}/draft/stream`）、**送出**（`POST /worklogs/{date}/submit`）。
+**尚未實作**：`GET`／`PUT /worklogs/{date}`、`GET /zplanner/issues/search`、
+`GET /zplanner/permissions`（候選與權限目前只在草稿的 SSE `meta` 裡一次帶回，
+沒有獨立的搜尋端點）。
 
 ### 我的工作 repo
 
@@ -979,6 +980,101 @@ POST／PATCH／verify 都回帶 `verification` 的單筆：
 `NO_MESSAGES`），**且不落地任何草稿**——硬產一份空草稿會讓使用者把時數分給不存在
 的證據。其餘串流中的錯誤照 8.3 轉成 `error` 事件。
 
+### `POST /api/v1/worklogs/{date}/submit`
+
+需登入。`{date}` 是 `YYYY-MM-DD`。把那一天的草稿**逐筆**寫進 ZPlanner。body：
+```json
+{ "entry_ids": [12, 13] }
+```
+
+| 欄位 | 語意 |
+| :--- | :--- |
+| `entry_ids` | **省略 ＝ 送整天**。給了就只處理那幾筆——`failed`／`unknown` 的單筆重打走的是這同一支端點，不另開路徑。⚠️ 帶了它的時候，「有筆沒選專案就擋下整批」那道閘**只檢查選中的那幾筆**（否則當天別處只要有一筆沒選專案，`failed` 的那筆就永遠重打不了）。空陣列 `[]` 回 `400`：送 0 筆卻回成功，分不出是前端漏帶 id 還是真的沒東西要送 |
+
+```json
+{ "work_date": "2026-09-13", "status": "partial",
+  "entries": [ { "id": 12, "seq": 1, "issue_id": 4821, "issue_key": "PEI-133",
+                 "hours": "3.50", "note": "…", "state": "submitted",
+                 "zplanner_worklog_id": 116847, "zplanner_issue_key": "PEI-133",
+                 "is_locked": false, "submitted_at": "…",
+                 "last_error_code": null, "last_error_message": null,
+                 "...": "（其餘欄位同草稿的 entries[]）" } ],
+  "summary": { "submitted_count": 3, "skipped_count": 1,
+               "failed_count": 1, "unknown_count": 0,
+               "skipped_duplicates": [
+                 { "entry_id": 15, "seq": 4, "issue_key": "PEI-140", "hours": "1.00",
+                   "existing": { "hours": "1.0", "note": "…", "issue_title": "…" },
+                   "reason": "…可直接顯示的繁中句子…" } ],
+               "orphans": [] } }
+```
+
+- 🔴 **HTTP 200 不代表每一筆都送成功。** 只要這一批開始送了，回的就是 200，
+  逐筆成敗看 `entries[].state` 與 `summary`。用 4xx 表達「有筆失敗」會讓前端
+  顯示成「整批沒送出」，使用者於是再按一次送出鈕——ZPlanner 那側已經成功的
+  那幾筆就變成重複工時，而**重複工時在月結之後刪不掉**（只能走
+  correction-request）。**也刻意不用 207 Multi-Status**：既有錯誤契約沒有這一類。
+  錯誤信封只留給**一筆都沒送**的整批拒絕（見下方錯誤表）。
+- `entries[]` 是**寫完之後重讀**的完整草稿明細，形狀與草稿的 `entries[]` 相同
+  （多出來的欄位本來就在：`state`／`zplanner_worklog_id`／`zplanner_issue_key`／
+  `is_locked`／`submitted_at`／`last_error_code`／`last_error_message`）。
+  前端拿它直接重畫那一天，不必自己合併。
+- 🔴 **`summary` 的四個計數描述的是「重讀之後整份草稿」，不是「這一次送了幾筆」。**
+  單筆重打時 `submitted_count` 會包含上次就已經成功的那幾筆——它與 `entries[]`
+  是同一份帳，也與週檢視的 `submitted_count`／`failed_count`／`unknown_count`
+  是同一套鍵名，兩個畫面才講同一套話。
+- `status` 是重算後的草稿狀態，同時會寫回 DB：**每一筆都 `submitted` 或
+  `skipped`** 才變成 `submitted`，完全沒有任何一筆送成功維持 `draft`，其餘是
+  `partial`。少了這一步，週檢視的 `totals.days_submitted` 會永遠是 0。
+- **逐筆一交易，每成功一筆立刻落 DB**，不等整批跑完。所以跑到一半的草稿是
+  混合狀態（同一份草稿裡 `submitted`／`failed`／`unknown` 並存），前端必須畫得
+  出來。不這樣做的話，第 N 筆失敗時前面幾筆的 `zplanner_worklog_id` 就沒落地，
+  ZPlanner 那側的工時變成沒有人認領的孤兒，下次重送會再建一次。
+- 🔴 **有任何一筆送不出去就一筆都不送**（沒選專案、或沒有時數），回 `400`。
+  兩種筆送到 ZPlanner 之前都會先被 client 的參數檢查擋下，所以**不會**造成重複
+  工時——擋在前面是為了不要**部分送出**：那天的工時會變成不完整，而畫面上沒有
+  任何訊號說明少了什麼。
+  ⚠️ 沒有時數不是罕見的邊界情況：產草稿時省略 `total_hours` 就不分配，那時候
+  **整份草稿的 `hours` 一律是 `null`**——那是正常流程的中間狀態，不是壞掉的資料。
+- **已經有 `zplanner_worklog_id` 的筆直接跳過，不重打。** 那是「這筆送過了」的
+  唯一憑據。
+- **送出前先查 ZPlanner 這一天已經有哪些工時**（`GET /api/worklogs/export/`，
+  `date_from` ＝ `date_to` ＝ 這一天，**整天只查一次、不逐筆查**）。同一個 issue
+  ＋ 同樣時數已經存在 → 這筆標 `state: "skipped"`，並列進
+  `summary.skipped_duplicates`。
+  - 比對 **issue ＋ 時數，不比對 note**：note 會被使用者編輯過，比對它會漏判而
+    造出重複工時。時數兩側正規化到同一刻度後再比（`"2"` 與 `"2.0"` 算同一個）。
+  - ⚠️ 代價是會誤殺「同一天、同一 issue、同樣時數」的第二筆合法工時（罕見但
+    存在）。取捨是寧可漏送也不要重複——**所以被跳過的筆一定看得見**，
+    `skipped_duplicates` 是它唯一的出口。`existing` 是比對到的那一列遠端工時原文。
+  - 🔴 `state: "skipped"` 的筆**不會**把比對到的遠端 id 寫進 `zplanner_worklog_id`：
+    那筆不是我們建的，認領它會讓上面說的誤殺變成永久而且再也看不見。
+  - 🔴 **這支查詢失敗 ＝ 整批中止**（回錯誤信封，一筆都不送）。不准「查不到就
+    當作沒有重複、照送」——那等於放棄唯一的去重依據，而重送的代價不可逆。
+- **`unknown` 不是「失敗」，是「不知道送進去沒有」**（`ZPLANNER_WRITE_INDETERMINATE`：
+  請求在傳輸層就斷了，連「連線被拒」也算，因為分不出是送達前還是送達後斷的）。
+  這種筆**不會被自動重試**，要先用 ZPlanner 的匯出查那一天對帳再決定。
+  ⚠️ ZPlanner 回了成功、但回應主體裡沒有 worklog id 時**也算 `unknown`**（不是
+  `failed`）：那筆工時很可能已經建好了，標成 `failed` 會讓重打再建一次。
+- `summary.orphans` 是「工時已經寫進 ZPlanner，但要寫回草稿時那一筆已經不在了」
+  （送出期間草稿被重新產生）。裡面帶著 `zplanner_worklog_id`——那是唯一還找得到
+  那筆遠端工時的線索，要改要刪都只能直接去 ZPlanner。正常情況這個陣列是空的。
+- `is_locked` 直接抄 `POST /api/worklogs/` 回應的欄位。「送出時沒鎖、之後月結才
+  鎖」這支端點看不到，那要靠對帳補。
+
+整批拒絕（**一筆都沒送**，回 8.4 的錯誤信封）：
+
+| 情況 | 回應 |
+| :--- | :--- |
+| 這一天沒有草稿 | `404 WORKLOG_DRAFT_NOT_FOUND` |
+| **有筆送不出去**：沒選 ZPlanner 專案、或沒有時數（帶 `entry_ids` 時只看選中的那幾筆） | `400 INVALID_PARAMETER`，`detail: { unassigned_count, unassigned_entries: [{ entry_id, seq }], missing_hours_count, missing_hours_entries: [{ entry_id, seq }] }`。**四個鍵一律都在，即使是 0**。兩種分開數、分開講——使用者的下一步不同（一個去選專案，一個去輸入總時數）。未指派的判準是 `issue_id`（`create_worklog` 吃的是它），不是給人看的 `issue_key`；`seq` 帶著，人才找得到該去補畫面上的第幾張卡 |
+| `entry_ids` 指到不屬於這份草稿的 id | `400 INVALID_PARAMETER`，`detail: { unknown_entry_ids, draft_entry_ids }`。**是 400 不是 404**——404 的語意是「這天還沒有草稿」，前端收到它會去畫空狀態，但草稿明明在，錯的是送過來的 id |
+| `entry_ids` 是空陣列 | `400 INVALID_PARAMETER` |
+| `{date}` 格式不對 | `400 INVALID_PARAMETER` |
+| 沒設定 ZPlanner（`ZPLANNER_BASE_URL`／`APIKEY`） | `500 CONFIGURATION_ERROR`。⚠️ 與週檢視不同：那支沒有 ZPlanner 照樣回本地草稿，這支整個目的就是對 ZPlanner 寫入，降級之後一件事都做不成 |
+| 查「這一天已有哪些工時」失敗 | 照 client 的錯誤原樣往上（`502 ZPLANNER_UNAVAILABLE`／`ZPLANNER_AUTH_ERROR`／`ZPLANNER_API_ERROR`…） |
+| 某筆選了 `issue_id` 卻沒有 `issue_key` | `400 INVALID_PARAMETER`。少了 key 就沒有東西可以跟遠端對，等於完全沒有去重 |
+| 遠端某列的 issue 正是要送的那個，但它的時數解析不出來 | `502 ZPLANNER_API_ERROR`。判不出時數就判不出是不是重複，而「判不出就當沒有」正是要防的不可逆錯誤 |
+
 ---
 
 ## 維運
@@ -1010,8 +1106,11 @@ POST／PATCH／verify 都回帶 `verification` 的單筆：
 3. **v1 的 ZPlanner 匯出按鈕已於 v2.0 移除**，不要在 Action Items 那裡保留任何
    剪貼簿 handler。（**Draft Worklog 是另一件事**，見 ADR-0008 與規格 5.3——它走真正的
    API 串接、有自己的畫面。目前完成到：ZPlanner client 層、「我的工作 repo」
-   登錄端點與設定頁、工時工作台的導航與路由骨架、週檢視與草稿產生（SSE）。
-   單日的讀取／整組取代與送出（`GET`／`PUT`／`submit`）尚未實作。）
+   登錄端點與設定頁、工時工作台的導航與路由骨架、週檢視、草稿產生（SSE）與
+   送出（`POST /worklogs/{date}/submit`）。單日的讀取／整組取代（`GET`／`PUT`）
+   尚未實作。
+   ⚠️ 送出那支的畫面要記得：**HTTP 200 不代表每一筆都成功**，逐筆狀態在
+   `entries[].state`；跑到一半的草稿是混合狀態，前端必須畫得出來。）
 4. Action Items 萃取：從摘要 Markdown 中抓 `• [負責人] 任務` 這種行，轉為可勾選項目，
    支援「複製為 Markdown」。
 5. 空間清單有 436 個，列表需要虛擬滾動或分頁，並提供名稱搜尋。

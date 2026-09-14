@@ -9,6 +9,7 @@ ADR-0002 的執行點在這裡：所有 summaries 與 mentions 的查詢函式�
 
 import json
 import secrets
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -1756,6 +1757,101 @@ def replace_worklog_entries(
         # `updated_at` 已經在交易最前面寫過了（見 docstring：那一步同時是
         # 「拿 writer lock」）。這裡不再寫第二次。
     return get_worklog_draft_by_id(viewer_id, draft_id)
+
+
+def update_worklog_entry_state(
+    viewer_id: int,
+    draft_id: int,
+    entry_id: int,
+    *,
+    state: str,
+    zplanner_worklog_id: Optional[int] = None,
+    zplanner_issue_key: Optional[str] = None,
+    is_locked: Optional[bool] = None,
+    error_code: Optional[str] = None,
+    error_message: Optional[str] = None,
+) -> bool:
+    """把**一筆** entry 的送出結果寫回去。回 `True` ＝ 影響 1 列，`False` ＝ 0 列。
+
+    🔴 **一筆一個交易，刻意不沿用 `replace_worklog_entries` 的整批
+    all-or-nothing。** 那支的回捲是為了「不留下一份沒有 entries 的草稿」；這裡
+    回捲會把**已經寫進 ZPlanner 的 worklog id 一起抹掉**——ZPlanner 那邊的工時
+    還在，本地卻沒有任何人認領它，而認領不到就沒有修改與刪除的入口（月結後
+    只能走 correction-request）。所以每成功一筆就立刻落地，不等整批跑完。
+
+    **三個守門條件併進同一句 `UPDATE` 的 `WHERE`**，不先 SELECT 再 UPDATE：
+
+    1. `id`／`draft_id` 相符——id 是前端傳回來的；
+    2. 這份草稿屬於這位 Viewer（用 `EXISTS` 繞回 `worklog_drafts`，
+       entries 表本身沒有 viewer_id 欄位）；
+    3. `zplanner_worklog_id IS NULL`——已經認領過遠端工時的筆不准被改寫。
+
+    查了再寫的話，查與寫之間那條縫剛好是「另一條路徑把同一份草稿重產掉」的
+    窗口，而那正是守門要防的事。單句 `UPDATE` 本身即原子，不必像
+    `replace_worklog_entries` 那樣先搶 writer lock。
+
+    ⚠️ **`False` 是呼叫端必須處理的結果，不是「沒事發生」。** 走到這裡代表
+    ZPlanner 那筆很可能已經建好了，卻沒能記回任何一筆草稿 ＝ 孤兒工時，
+    要當成需要人工對帳回報出去。四種成因都回 `False`，因為對使用者來說要做的
+    事情一樣（去 ZPlanner 對帳）：這筆在送出期間被重產清掉、id 指到別份草稿、
+    不是這位 Viewer 的、或這個遠端 id 已經被別筆認領（撞 `idx_worklog_entry_remote`
+    這道 partial unique index——它是重複送出的最後一道防線，見 `core/db.py`）。
+    最後那種會拋 `sqlite3.IntegrityError`，這裡接住轉成 `False`：讓它往上炸會
+    中斷整個逐筆迴圈，於是**後面每一筆都不會被送出，前面剛建好的那筆也沒人
+    記錄**——一個約束衝突換來一整天的工時失聯。
+
+    各欄位「沒給」的語意刻意不一致，因為它們本來就不是同一種東西
+    （所以也沒有套用本檔上面 `upsert_worklog_draft` 的 `UNSET` 哨兵）：
+
+    * `error_code`／`error_message` 直接寫入，`None` 就是**清掉**。重打成功之後
+      舊的錯誤訊息必須消失，否則畫面上會同時看到 `submitted` 與上一輪的錯誤，
+      沒有人分得出那是歷史還是現況。
+    * `is_locked` 用 `COALESCE`，`None` ＝ **不動**。它只有 `create_worklog` 的
+      回應講得出來（`is_locked` 是 ZPlanner 的月結鎖），失敗那幾筆我們沒有這個
+      資訊，寫成 0 等於謊稱「查過了，沒鎖」。
+    * `submitted_at` 只在 `state='submitted'` 時寫入。被去重跳過的筆是
+      `skipped`，**那筆工時不是我們送的**，給它一個送出時間會讓對帳的人以為是。
+    """
+    now = _now()
+    params = (
+        state,
+        zplanner_worklog_id,
+        zplanner_issue_key,
+        None if is_locked is None else int(bool(is_locked)),
+        now if state == "submitted" else None,
+        error_code,
+        error_message,
+        now,
+        entry_id,
+        draft_id,
+        viewer_id,
+    )
+    try:
+        cur = db.execute(
+            """
+            UPDATE worklog_draft_entries
+               SET state               = ?,
+                   zplanner_worklog_id = ?,
+                   zplanner_issue_key  = ?,
+                   is_locked           = COALESCE(?, is_locked),
+                   submitted_at        = COALESCE(?, submitted_at),
+                   last_error_code     = ?,
+                   last_error_message  = ?,
+                   updated_at          = ?
+             WHERE id = ?
+               AND draft_id = ?
+               AND zplanner_worklog_id IS NULL
+               AND EXISTS (
+                     SELECT 1 FROM worklog_drafts
+                      WHERE worklog_drafts.id = worklog_draft_entries.draft_id
+                        AND worklog_drafts.viewer_id = ?
+                   )
+            """,
+            params,
+        )
+    except sqlite3.IntegrityError:
+        return False
+    return cur.rowcount == 1
 
 
 def list_worklog_drafts_in_range(

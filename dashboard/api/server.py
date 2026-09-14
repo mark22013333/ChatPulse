@@ -56,6 +56,7 @@ from core import (
     worklog_allocation,
     worklog_clustering,
     worklog_evidence,
+    worklog_submit,
 )
 from core import repository as repo
 from core.chat_client import (
@@ -80,6 +81,7 @@ from core.errors import (
     SepiaUnavailable,
     WorkRepoNotFound,
     WorklogAlreadySubmitted,
+    WorklogDraftNotFound,
 )
 from core.mentions import CollectorRunner
 from core.polishers import sepia as sepia_polisher
@@ -3993,6 +3995,394 @@ def worklog_draft_stream(
             )
 
     return sse_response(generate())
+
+
+# --------------------------------------------------------------------------
+# 送出：把一天份的草稿逐筆寫進 ZPlanner
+#
+# 這一段的每個決定都繞著同一件事轉：**重複的工時在月結之後刪不掉**，
+# 只能走 correction-request（要人審核）。所以整段的偏好一律是
+# 「寧可漏送，不要重送」——漏送看得見（草稿還停在那裡），重送看不見。
+# --------------------------------------------------------------------------
+
+
+class WorklogSubmitRequest(BaseModel):
+    """把某一天的工時草稿送進 ZPlanner。
+
+    `entry_ids` 省略 ＝ 送整天。給了就只處理那幾筆——`failed`／`unknown` 的
+    單筆重打走的是**同一支端點**，不另開路徑：重打與整批的流程完全一樣，
+    另開等於把同一段邏輯寫兩次，然後在其中一份忘記修 bug。
+
+    ⚠️ 帶了 `entry_ids` 時，「有筆沒選專案就擋下整批」那道閘**只檢查選中的
+    那幾筆**。不這樣做的話，當天別處只要有一筆還沒選專案，`failed` 的那筆
+    就永遠重打不了——而重打正是這個欄位存在的唯一理由。
+    """
+
+    entry_ids: Optional[List[int]] = None
+
+
+def _worklog_submit_targets(
+    entries: List[Dict[str, Any]], entry_ids: Optional[List[int]]
+) -> List[Dict[str, Any]]:
+    """挑出這次要處理的幾筆，並把「指錯 id」變成 400。
+
+    挑選本身在 `worklog_submit.select_entries`（含「照 seq 排、不照 entry_ids
+    的順序」那條規則）。這裡只做兩件屬於 HTTP 層的事：把空陣列與指錯的 id
+    翻成錯誤信封。
+
+    指到不屬於這份草稿的 id 一律回 **400，不是 404**。404 的語意是「這一天
+    還沒有草稿」，前端收到它會去畫「還沒產草稿」的空狀態——但草稿明明就在，
+    錯的是送過來的 id。兩種情況畫面不一樣，共用一個碼會讓人以為草稿不見了。
+    """
+    if entry_ids is not None and not entry_ids:
+        raise InvalidParameter(
+            "entry_ids 是空陣列。要送整天請把這個欄位整個省略——空陣列會送出 0 筆"
+            "卻回成功，而那種「成功」分不出是前端漏帶了 id，還是真的沒東西要送。"
+        )
+    selection = worklog_submit.select_entries(entries, entry_ids)
+    if selection.unknown_ids:
+        missing = list(selection.unknown_ids)
+        raise InvalidParameter(
+            f"entry_ids 裡的 {', '.join(str(i) for i in missing)} 不屬於這一天的草稿。",
+            detail={
+                "unknown_entry_ids": missing,
+                "draft_entry_ids": sorted(e["id"] for e in entries),
+            },
+        )
+    return list(selection.selected)
+
+
+def _refuse_incomplete_worklog_entries(
+    date: str, entries: List[Dict[str, Any]], entry_ids: Optional[List[int]]
+) -> None:
+    """送出前的守門：**有任何一筆送不出去，就一筆都不送**（AC-1／D-3）。
+
+    擋兩種「這筆還沒準備好」，它們的成因與補救動作完全不同，所以分開數、
+    分開講——訊息只寫「有 3 筆不能送」的話，使用者不知道要去選專案還是去
+    填時數：
+
+      1. **沒選 ZPlanner 專案**（`issue_id` 是空的）。ADR-0008 的唯一硬規則是
+         歸屬由人選，系統不會替他填。
+      2. **沒有時數**。⚠️ 這不是罕見的邊界情況：產草稿時省略 `total_hours`
+         就不分配，那時候**整份草稿的 `hours` 一律是 null**（見
+         `WorklogDraftRequest`）——那是正常流程的中間狀態，不是壞掉的資料。
+
+    為什麼要擋在前面，而不是讓它們在迴圈裡各自變成 `failed`：兩種筆送到
+    `create_worklog` 都會在**發出 HTTP 之前**被擋下（`_require_int`／
+    `_require_hours`），所以確實不會造成重複工時。但那樣做等於**部分送出**——
+    D-3 明文否決過：那天的工時會變成不完整，而畫面上沒有任何訊號說明少了什麼。
+
+    帶 `entry_ids` 時只檢查選中的那幾筆（判斷在 `worklog_submit`，這裡只是
+    把它翻成 400）。否則當天別處有一筆沒選專案，`failed` 的那筆就永遠重打不了。
+
+    兩個計數都放進 `detail`（dict → 會進回應的 `error.detail`，見
+    `chatpulse_error_handler`），前端才不必從中文句子裡用正則挖數字。
+    **兩個鍵一律都在**，即使是 0——形狀穩定比少幾個位元組重要。
+    """
+    unassigned = worklog_submit.find_unassigned(entries, entry_ids=entry_ids)
+    missing_hours = worklog_submit.find_missing_hours(entries, entry_ids=entry_ids)
+    if not unassigned and not missing_hours:
+        return
+
+    reasons = []
+    if unassigned:
+        reasons.append(f"{len(unassigned)} 筆還沒選 ZPlanner 專案（去挑一個候選 issue）")
+    if missing_hours:
+        reasons.append(f"{len(missing_hours)} 筆沒有時數（先輸入當天的總時數讓它分配）")
+    raise InvalidParameter(
+        f"{date} 的草稿還不能送出：{'、'.join(reasons)}。整批都不會送出——"
+        "先送一半會讓這天的工時變成不完整，而且看不出少了哪幾筆。",
+        detail={
+            "unassigned_count": len(unassigned),
+            "unassigned_entries": [e.to_dict() for e in unassigned],
+            "missing_hours_count": len(missing_hours),
+            "missing_hours_entries": [e.to_dict() for e in missing_hours],
+        },
+    )
+
+
+def _count_state(entries: List[Dict[str, Any]], state: str) -> int:
+    """整份草稿裡有幾筆是這個 state。鍵名沿用週檢視，兩個畫面才講同一套話。"""
+    return sum(1 for e in entries if e["state"] == state)
+
+
+def _worklog_submit_client() -> ZPlannerClient:
+    """送出用的 ZPlanner client。**不可用就拋**，不像週檢視那樣降級。
+
+    週檢視沒設 ZPlanner 也該看得到本地草稿，所以那邊回 `available: false`
+    照常把草稿吐出來。這支端點整個存在的目的就是對 ZPlanner 寫入——降級之後
+    一件事都做不成，回一個「送出 0 筆」的 200 會讓人以為工時已經填好了。
+    """
+    try:
+        client = zplanner_client()
+        ok, reason = client.available()
+    except ChatPulseError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        log.exception("建立 ZPlanner client 失敗（送出工時）")
+        raise ConfigurationError(f"ZPlanner client 無法建立：{exc}") from exc
+    if not ok:
+        raise ConfigurationError(f"沒辦法把工時送進 ZPlanner：{reason}")
+    return client
+
+
+def _submit_one_worklog_entry(
+    client: ZPlannerClient,
+    entry: Dict[str, Any],
+    *,
+    viewer_id: int,
+    draft_id: int,
+    date: str,
+) -> Optional[Dict[str, Any]]:
+    """送出一筆，並**立刻**把結果落 DB。回傳孤兒描述，沒有孤兒就回 None。
+
+    立刻落地是 D-4：等整批跑完再一次寫，第 N 筆失敗時前面那幾筆的
+    `zplanner_worklog_id` 還在記憶體裡就沒了——ZPlanner 那側的工時仍然存在，
+    但本地永遠不知道它是誰的，下次重送會再建一次。
+
+    `update_worklog_entry_state` 回 `False` ＝ 影響 0 列 ＝ 這一筆在送出期間
+    被重產清掉了（守門條件併在 UPDATE 的 WHERE 裡，不先查再寫）。此時
+    ZPlanner 那側**已經有一筆工時**而本地沒有任何東西指向它，這就是孤兒。
+    🔴 孤兒一定要把 `zplanner_worklog_id` 原封不動回報出去——那是唯一能再找到
+    它的線索，吞掉的話那筆工時就永遠只能靠人翻 ZPlanner 網頁找。
+    """
+    try:
+        created = client.create_worklog(
+            entry["issue_id"],
+            date,
+            entry["hours"],
+            # 空字串的 note 不送。`None ＝ 整個不送` 是 client 的約定，
+            # 送一個空字串上去只是讓 ZPlanner 那側多一筆看起來像壞掉的資料。
+            note=entry["note"] or None,
+        )
+    except BaseException as exc:  # noqa: BLE001 - 分類完就繼續跑，單筆失敗不中斷整批
+        # 「這筆到底寫進去了沒有」的判斷全在 worklog_submit（判準只有一條：
+        # 只有拿到 `code != 200` 的回應信封才證明沒寫進去）。這裡只負責把
+        # 例外身上的碼與訊息取出來落 DB——那是搬字串，不是判斷。
+        state = worklog_submit.classify_write_error(exc)
+        if isinstance(exc, ChatPulseError):
+            error_code, error_message = exc.code, exc.message
+        else:
+            error_code = "INTERNAL_ERROR"
+            error_message = f"送出時發生未預期的錯誤（{type(exc).__name__}）：{exc}"
+        if state == worklog_submit.STATE_UNKNOWN:
+            error_message = (
+                f"{error_message}｜這筆**可能已經寫進 ZPlanner 了**，所以不會自動重試。"
+                "請先用 ZPlanner 的匯出查這一天對帳，確認沒有之後再重送。"
+            )
+            log.error(
+                "送出工時結果不明（draft=%s entry=%s issue=%s）：%s",
+                draft_id, entry["id"], entry["issue_id"], error_message,
+            )
+        else:
+            log.warning(
+                "送出工時失敗（draft=%s entry=%s issue=%s）：%s",
+                draft_id, entry["id"], entry["issue_id"], error_message,
+            )
+        repo.update_worklog_entry_state(
+            viewer_id, draft_id, entry["id"],
+            state=state, error_code=error_code, error_message=error_message,
+        )
+        return None
+
+    worklog_id = created.get("id")
+    if worklog_id is None:
+        # 🔴 這一筆算 `unknown`，**不是 `failed`**。
+        #
+        # 走到這裡代表 ZPlanner 的應用層回了成功（`_request` 已經確認過信封的
+        # `code == 200`），只是回應主體裡沒有 id。也就是說**那筆工時很可能已經
+        # 建好了**，我們只是拿不到它的號碼。標成 `failed` 的話，重打會再建
+        # 一次——那正是這整段最想避免的事。`unknown` 的語意就是「不知道有沒有
+        # 寫進去，不准自動重試，請先對帳」。
+        message = (
+            f"ZPlanner 回報建立成功，但回應裡沒有 worklog id（拿到的欄位："
+            f"{sorted(created)[:10]}）。這筆工時很可能已經建好了，只是對不回來——"
+            "請用 ZPlanner 的匯出功能查這一天，確認之後再決定要不要重送。"
+        )
+        log.error("建立工時後拿不到 id（draft=%s entry=%s）：%r", draft_id, entry["id"], created)
+        repo.update_worklog_entry_state(
+            viewer_id, draft_id, entry["id"],
+            state=worklog_submit.STATE_UNKNOWN,
+            error_code="ZPLANNER_API_ERROR",
+            error_message=message,
+        )
+        return None
+
+    ok = repo.update_worklog_entry_state(
+        viewer_id, draft_id, entry["id"],
+        state=worklog_submit.STATE_SUBMITTED,
+        zplanner_worklog_id=worklog_id,
+        # 回應的 issue_key 優先於本地那份：本地那份是選候選時抄下來的，
+        # 期間 issue 有可能被改名，而對帳時要用的是 ZPlanner 現在的說法。
+        zplanner_issue_key=created.get("issue_key") or entry["issue_key"],
+        # 直接抄回應的欄位。「送出時沒鎖、之後月結才鎖」這支端點看不到，
+        # 那要靠對帳補——這裡只記錄送出當下的事實。
+        is_locked=bool(created.get("is_locked")),
+        error_code=None,
+        error_message=None,
+    )
+    if ok:
+        return None
+    return {
+        "entry_id": entry["id"],
+        "zplanner_worklog_id": worklog_id,
+        "issue_key": created.get("issue_key") or entry["issue_key"],
+        "hours": entry["hours"],
+        "reason": (
+            "這筆工時已經建進 ZPlanner，但要寫回草稿時那一筆已經不在了"
+            "（送出期間草稿被重新產生）。ZPlanner 那側的工時仍然存在，"
+            f"編號 {worklog_id}——本地沒有任何東西指向它，要改要刪都得直接去 ZPlanner。"
+        ),
+    }
+
+
+@app.post("/api/v1/worklogs/{work_date}/submit")
+def submit_worklog(
+    work_date: str,
+    req: WorklogSubmitRequest,
+    viewer: Dict[str, Any] = ViewerDep,
+):
+    """把某一天的工時草稿逐筆送進 ZPlanner。
+
+    ⚠️ **最容易誤讀的一點：HTTP 200 不代表每一筆都送成功。** 只要這一批開始
+    送了，回的就是 200，逐筆的成敗在 `entries[].state` 與 `summary` 裡。
+    這是刻意的——用 4xx 表示「有筆失敗」會讓前端顯示成「整批沒送出」，
+    使用者就會再按一次送出鈕，而 ZPlanner 那側已經有的那幾筆會變成重複工時，
+    月結之後刪不掉。錯誤信封只留給**一筆都沒送**的整批拒絕（沒選專案或沒填
+    時數的 400、這一天沒有草稿的 404、ZPlanner 整個連不上）。
+
+    第二點：`summary` 的四個計數描述的是**重讀之後整份草稿**的狀態，不是
+    「這一次送了幾筆」。partial 重打時 `submitted_count` 會含上次就已經送成功
+    的那幾筆——它跟回應裡的 `entries[]` 是同一份帳，前端拿它直接重畫那一天。
+    只有 `skipped_duplicates` 與 `orphans` 是**這一次**才有的資訊：它們在 DB 裡
+    沒有對應欄位可以重算，這個回應是它們唯一的出口（見下）。
+
+    三個「安靜地做了但你看不到」的風險，都有對應的欄位頂住：
+
+      1. **去重跳過的筆**進 `summary.skipped_duplicates`。去重比對 issue ＋
+         時數、不比對 note，所以「同一天、同一個 issue、同樣時數」的第二筆
+         合法工時會被誤殺。這個取捨是刻意的（重送的代價不可逆），但誤殺
+         **必須看得見**——這份清單就是它唯一的出口，`state=skipped` 那一筆
+         身上刻意不寫遠端 id（認領一筆不是我們建的工時，會讓誤殺變成永久）。
+      2. **孤兒**進 `summary.orphans`：工時進了 ZPlanner，但要寫回草稿時那筆
+         已經被重產清掉了。裡面帶著 `zplanner_worklog_id`，那是唯一還找得到
+         它的線索。
+      3. **`unknown`** 是「不知道送進去沒有」，不是「失敗」。這種筆**不會**被
+         自動重試，要先對帳（`export_worklogs` 查那一天）再決定。
+    """
+    viewer_id = viewer["id"]
+    date = worklog_evidence.parse_work_date(work_date).strftime("%Y-%m-%d")
+
+    draft = repo.get_worklog_draft(viewer_id, date)
+    if draft is None:
+        raise WorklogDraftNotFound(
+            f"{date} 還沒有工時草稿，沒有東西可以送出。先產一份草稿再送。"
+        )
+
+    targets = _worklog_submit_targets(draft["entries"], req.entry_ids)
+
+    # AC-1／D-3：有任何一筆送不出去（沒選專案、或沒有時數）就擋下整批。
+    _refuse_incomplete_worklog_entries(date, draft["entries"], req.entry_ids)
+
+    # 已經結束的筆不再送。`submitted`／有 worklog id ＝ 送過了（AC-2，重打就是
+    # 製造重複工時）；`skipped` ＝ 人或去重已經判過「不要送」，重新算進來等於
+    # 推翻那個決定。判準與 `worklog_submit.find_duplicates` 用的是同一套。
+    done = (worklog_submit.STATE_SUBMITTED, worklog_submit.STATE_SKIPPED)
+    pending = [
+        e for e in targets if not e["zplanner_worklog_id"] and e["state"] not in done
+    ]
+
+    skipped_duplicates: List[Dict[str, Any]] = []
+    orphans: List[Dict[str, Any]] = []
+
+    if pending:
+        client = _worklog_submit_client()
+
+        # 去重的底稿：這一天在 ZPlanner 那側已經有哪些工時。
+        #
+        # 🔴 **查不到就整批中止，不准「查不到就當沒重複照送」。** 這支查詢
+        # 失敗時我們對「那邊已經有什麼」一無所知，照送的期望值是造出一批
+        # 重複工時——而重複工時在月結後刪不掉。中止的代價只是使用者再按一次。
+        #
+        # 一天只查一次、不逐筆查：逐筆查會把 N 次網路往返疊在送出流程上，
+        # 而它們拿到的是同一份答案。
+        existing = client.export_worklogs(date, date)
+        duplicates = {
+            match.entry_id: match
+            for match in worklog_submit.find_duplicates(
+                draft["entries"], existing, entry_ids=req.entry_ids
+            )
+        }
+
+        for entry in pending:
+            match = duplicates.get(entry["id"])
+            if match is not None:
+                # D-9(b)：標 skipped，但**不**把比對到的遠端工時認領到
+                # `zplanner_worklog_id` 上。那筆不是我們建的，認領它會讓下面
+                # 講的誤殺變成永久而且再也看不見；改由這份清單交代。
+                repo.update_worklog_entry_state(
+                    viewer_id, draft["id"], entry["id"],
+                    state=worklog_submit.STATE_SKIPPED,
+                    error_code=None,
+                    error_message=None,
+                )
+                skipped_duplicates.append(
+                    {
+                        **match.to_dict(),
+                        "reason": (
+                            "ZPlanner 這一天同一個 issue 已經有同樣時數的工時了，"
+                            "所以這筆沒有送出。比對只看 issue 與時數、不看說明文字"
+                            "（說明會被改過，比對它會漏判而造出重複工時）——如果這"
+                            "真的是另一件事，請直接到 ZPlanner 補。"
+                        ),
+                    }
+                )
+                continue
+
+            orphan = _submit_one_worklog_entry(
+                client, entry, viewer_id=viewer_id, draft_id=draft["id"], date=date
+            )
+            if orphan is not None:
+                orphans.append(orphan)
+
+    # 重讀。逐筆一交易＝整批沒有一致快照，回應裡的 entries 只能以 DB 現況為準，
+    # 不能拿迴圈裡累積的東西湊——湊出來的那份會漏掉「送出期間被別條路徑改掉」的筆。
+    fresh = repo.get_worklog_draft(viewer_id, date)
+    if fresh is None:
+        # 整份草稿在送出期間被刪掉了。已經送進 ZPlanner 的工時仍然存在，
+        # 但本地連草稿都沒了——這件事必須講出來，不能回一個空殼 200。
+        raise WorklogDraftNotFound(
+            f"{date} 的草稿在送出過程中被刪掉了。已經送進 ZPlanner 的工時仍然存在，"
+            "請直接到 ZPlanner 確認那一天的內容。"
+        )
+
+    entries = fresh["entries"]
+    # D-9(c)：每一筆都 submitted 或 skipped 才算這一天送完了。少了這一步，
+    # 週檢視的 `totals.days_submitted` 會永遠是 0。
+    status = worklog_submit.derive_draft_status(entries)
+    if status != fresh["status"]:
+        fresh = repo.upsert_worklog_draft(
+            viewer_id, date, tz_offset=fresh["tz_offset"], status=status
+        )
+        entries = fresh["entries"]
+
+    return {
+        "work_date": date,
+        "status": status,
+        "entries": entries,
+        "summary": {
+            # 四個計數都是**整份草稿**的現況，與上面的 entries 是同一份帳。
+            # 鍵名沿用週檢視（`list_worklog_drafts_in_range`），兩個畫面才
+            # 講同一套話。
+            "submitted_count": _count_state(entries, worklog_submit.STATE_SUBMITTED),
+            "skipped_count": _count_state(entries, worklog_submit.STATE_SKIPPED),
+            "failed_count": _count_state(entries, worklog_submit.STATE_FAILED),
+            "unknown_count": _count_state(entries, worklog_submit.STATE_UNKNOWN),
+            # 以下兩個是**這一次**才有的資訊，DB 裡沒有對應欄位可以重算。
+            "skipped_duplicates": skipped_duplicates,
+            "orphans": orphans,
+        },
+    }
 
 
 # ==========================================================================
