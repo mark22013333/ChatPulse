@@ -4,10 +4,10 @@
   "name": "工時草稿送出到 ZPlanner",
   "type": "feature",
   "inferred": false,
-  "phase": "review",
+  "phase": "close",
   "next": {
-    "command": "/plan-security",
-    "reason": "安全掃描缺"
+    "command": null,
+    "reason": "任務已結案（close 完成），可用 /plan-start 開新任務"
   },
   "steps": {
     "start": {
@@ -59,8 +59,8 @@
       "reason": null
     },
     "close": {
-      "status": "pending",
-      "at": null,
+      "status": "done",
+      "at": "2026-09-14T14:02:59+08:00",
       "commit": null,
       "reason": null
     }
@@ -95,7 +95,7 @@
   "git": {
     "branch": "feature/worklog-scaffold",
     "base": "main",
-    "last_commit": "9332a96f13a8e045522252a1e639cb436f56c599"
+    "last_commit": "a7f615049bff35f226b74f916aa14683757a0ce6"
   },
   "notion": {
     "page_id": null,
@@ -162,8 +162,13 @@
       "at": "2026-09-14T12:29:57+08:00",
       "event": "result",
       "detail": "review: {\"critical\": 0, \"warning\": 0, \"files\": 12, \"mode\": \"full\", \"fixed_in\": \"bb00e8f\", \"status\": \"PASS\"}"
+    },
+    {
+      "at": "2026-09-14T14:02:59+08:00",
+      "event": "set",
+      "detail": "steps.close=done；phase=close；git.last_commit"
     }
   ],
   "created": "2026-09-14T10:19:39+08:00",
-  "updated": "2026-09-14T12:29:57+08:00"
+  "updated": "2026-09-14T14:02:59+08:00"
 }
