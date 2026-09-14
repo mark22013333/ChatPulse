@@ -1005,7 +1005,7 @@ POST／PATCH／verify 都回帶 `verification` 的單筆：
                  { "entry_id": 15, "seq": 4, "issue_key": "PEI-140", "hours": "1.00",
                    "existing": { "hours": "1.0", "note": "…", "issue_title": "…" },
                    "reason": "…可直接顯示的繁中句子…" } ],
-               "orphans": [] } }
+               "orphans": [], "not_attempted_count": 0 } }
 ```
 
 - 🔴 **HTTP 200 不代表每一筆都送成功。** 只要這一批開始送了，回的就是 200，
@@ -1055,17 +1055,56 @@ POST／PATCH／verify 都回帶 `verification` 的單筆：
   這種筆**不會被自動重試**，要先用 ZPlanner 的匯出查那一天對帳再決定。
   ⚠️ ZPlanner 回了成功、但回應主體裡沒有 worklog id 時**也算 `unknown`**（不是
   `failed`）：那筆工時很可能已經建好了，標成 `failed` 會讓重打再建一次。
-- `summary.orphans` 是「工時已經寫進 ZPlanner，但要寫回草稿時那一筆已經不在了」
-  （送出期間草稿被重新產生）。裡面帶著 `zplanner_worklog_id`——那是唯一還找得到
-  那筆遠端工時的線索，要改要刪都只能直接去 ZPlanner。正常情況這個陣列是空的。
+- `summary.orphans` 是「工時已經寫進 ZPlanner，但要寫回草稿時，本地那一筆已經
+  不符合寫回條件了」。裡面帶著 `zplanner_worklog_id`——那是唯一還找得到那筆遠端
+  工時的線索，要改要刪都只能直接去 ZPlanner。正常情況這個陣列是空的。
+  - 🔴 **`reason` 不預設成因**，另附 `possible_causes` 陣列把所有可能列出來：
+    同一天另一個送出同時在跑、送出期間草稿被重新產生、那一筆
+    被其他路徑改成別的狀態。這一層分不出是哪一種（寫回用的 `UPDATE` 只回「影響
+    0 列」，不回為什麼）。**寫死一個成因的代價不是話講得不夠準**——人照那句去查
+    重產紀錄卻查不到東西，就會把一筆真實存在的遠端工時當成誤報放掉，而它每個月
+    都會出現在報表上。
 - `is_locked` 直接抄 `POST /api/worklogs/` 回應的欄位。「送出時沒鎖、之後月結才
   鎖」這支端點看不到，那要靠對帳補。
+- 🔴 **同一天同時只准有一個送出在跑**，第二個**立刻**回 `409`
+  （`WORKLOG_SUBMIT_IN_PROGRESS`，**不排隊等**），一筆都不送。兩個重疊的送出會
+  各自查一次「這天 ZPlanner 已經有哪些工時」當去重底稿，而兩份底稿都是在對方
+  寫入之前拍的，於是去重對兩邊都說「沒有重複」——同一筆被送兩次。
+  2026-09-14 實測（兩條執行緒相隔 20ms、草稿 2 筆）：`create_worklog` 被呼叫
+  **4 次**，而先回的那個請求回報 `submitted=2 failed=0 unknown=0 orphans=0`，
+  **重複工時在它身上完全隱形**。
+  - 不排隊等是刻意的：排隊會讓第二個請求最長卡一整個時間預算（90 秒），而使用者
+    等不到回應時最常做的事就是再按一次——要防的動作被原地放大。前端收到 409 應該
+    顯示「正在送出中，等它跑完」，**不要自動重試**。
+  - ⚠️ **已知邊界：這道防護是行程內的鎖，只在單 worker 部署下有效。** 部署模型是
+    一人一部署、單 worker uvicorn，所以涵蓋得住；**多 worker／多行程時兩個請求會
+    各自拿到自己行程的鎖，防護等於不存在**，那時必須改成 DB 認領。這是刻意的取捨
+    （DB 認領會新增「行程崩潰讓那些筆永久卡在認領中」這個失敗模式，需要另做回收
+    機制），不是疏漏。啟動時若偵測到 `--workers`／`WEB_CONCURRENCY` 大於 1，log
+    會留一行 warning——**那只是提醒不是防護**，偵測不到不代表安全。
+- 🔴 **整批有 90 秒的時間預算**（`WORKLOG_SUBMIT_BUDGET_SECONDS`）。到點就**不再
+  開始新的一筆**，停送的筆維持 `pending`、**仍然回 200**，筆數放在
+  `summary.not_attempted_count`（整數，**一律都在，即使是 0**）。
+  - 到點是「不開始下一筆」，**不是砍掉進行中的那一筆**：砍掉一個已經發出去的寫入
+    只會得到 `unknown`（不知道寫進去沒有、不准自動重試、要人工對帳），比乾脆沒送
+    更糟。
+  - ⚠️ **所以整支端點的實際上限不是 90 秒。** 最後一筆可以在 t=89.9s 才起跑，再吃
+    一次 client 的 `(5, 20)`——正常情況約兩分鐘封頂，對方慢速吐 chunk 時更久。
+    前端設 HTTP timeout 與「請稍候」文案時用這個數字，不要用 90。
+  - ⚠️ 停送的筆在 DB 裡與「從未送過」長得一樣（都是 `pending`），
+    `not_attempted_count` 是使用者唯一看得出「這批沒跑完」的訊號。前端要提示他
+    再按一次把剩下的送完。
+  - 為什麼不靠 client 的 timeout：`(5, 20)` 是 connect 與**每一次 read** 的上限，
+    不是單次請求的總長，更不是整批的總長——對方慢速吐 chunk 時單次請求可以無上限
+    地拖，N=10 的一批最壞約 275 秒。**也不准改用縮短 read timeout 來達成**：那會
+    讓首 byte 比較慢的正常請求變成 `unknown`。
 
 整批拒絕（**一筆都沒送**，回 8.4 的錯誤信封）：
 
 | 情況 | 回應 |
 | :--- | :--- |
 | 這一天沒有草稿 | `404 WORKLOG_DRAFT_NOT_FOUND` |
+| **這一天的送出正在進行中** | `409 WORKLOG_SUBMIT_IN_PROGRESS`，`detail: { work_date }`。**立刻回，不排隊等。** 🔴 刻意與 `WORKLOG_ALREADY_SUBMITTED` 分開，雖然都是 409：那個是「這份草稿已經送過了」（終局狀態，去看結果或走 correction-request），這個是「正在送、還沒結束」（暫時狀態，等一下再試）。使用者的下一步不同，共用一個碼前端只能猜一個 |
 | **有筆送不出去**：沒選 ZPlanner 專案、或沒有時數（帶 `entry_ids` 時只看選中的那幾筆） | `400 INVALID_PARAMETER`，`detail: { unassigned_count, unassigned_entries: [{ entry_id, seq }], missing_hours_count, missing_hours_entries: [{ entry_id, seq }] }`。**四個鍵一律都在，即使是 0**。兩種分開數、分開講——使用者的下一步不同（一個去選專案，一個去輸入總時數）。未指派的判準是 `issue_id`（`create_worklog` 吃的是它），不是給人看的 `issue_key`；`seq` 帶著，人才找得到該去補畫面上的第幾張卡 |
 | `entry_ids` 指到不屬於這份草稿的 id | `400 INVALID_PARAMETER`，`detail: { unknown_entry_ids, draft_entry_ids }`。**是 400 不是 404**——404 的語意是「這天還沒有草稿」，前端收到它會去畫空狀態，但草稿明明在，錯的是送過來的 id |
 | `entry_ids` 是空陣列 | `400 INVALID_PARAMETER` |
@@ -1110,7 +1149,10 @@ POST／PATCH／verify 都回帶 `verification` 的單筆：
    送出（`POST /worklogs/{date}/submit`）。單日的讀取／整組取代（`GET`／`PUT`）
    尚未實作。
    ⚠️ 送出那支的畫面要記得：**HTTP 200 不代表每一筆都成功**，逐筆狀態在
-   `entries[].state`；跑到一半的草稿是混合狀態，前端必須畫得出來。）
+   `entries[].state`；跑到一半的草稿是混合狀態，前端必須畫得出來。另外兩個：
+   收到 `409 WORKLOG_SUBMIT_IN_PROGRESS` 要顯示「正在送出中」並**停止自動重試**；
+   `summary.not_attempted_count > 0` 代表整批超時停送，要提示使用者再按一次把
+   剩下的送完。）
 4. Action Items 萃取：從摘要 Markdown 中抓 `• [負責人] 任務` 這種行，轉為可勾選項目，
    支援「複製為 Markdown」。
 5. 空間清單有 436 個，列表需要虛擬滾動或分頁，並提供名稱搜尋。

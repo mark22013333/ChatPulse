@@ -89,11 +89,6 @@ class EntryRef:
         return {"entry_id": self.entry_id, "seq": self.seq}
 
 
-#: 未指派閘回傳的就是 `EntryRef`。留這個名字是因為「未指派的那一筆」在讀
-#: 呼叫端的程式碼時比「一個 entry 參照」具體。
-UnassignedEntry = EntryRef
-
-
 @dataclass(frozen=True)
 class DuplicateMatch:
     """這一筆在 ZPlanner 當天已經有一模一樣的工時了（同 issue ＋ 同時數）。
@@ -245,7 +240,7 @@ def find_unassigned(
     entries: Sequence[Mapping[str, Any]],
     *,
     entry_ids: Optional[Iterable[Any]] = None,
-) -> Tuple[UnassignedEntry, ...]:
+) -> Tuple[EntryRef, ...]:
     """找出「還沒選 issue 且不是 skipped」的筆。回傳非空就要擋下整批。
 
     為什麼是擋下整批而不是跳過那幾筆照送其餘：ADR-0008 規定歸屬由人選，

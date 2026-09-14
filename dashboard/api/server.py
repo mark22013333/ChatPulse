@@ -21,7 +21,7 @@ import os
 import sys
 import threading
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Generator, List, Optional, Tuple
 
@@ -82,6 +82,7 @@ from core.errors import (
     WorkRepoNotFound,
     WorklogAlreadySubmitted,
     WorklogDraftNotFound,
+    WorklogSubmitInProgress,
 )
 from core.mentions import CollectorRunner
 from core.polishers import sepia as sepia_polisher
@@ -408,6 +409,41 @@ def learn_dm_peer(
 collector_runner = CollectorRunner(_client_factory_for_collector)
 
 
+def _warn_if_multi_worker() -> None:
+    """多 worker 啟動時在 log 留一行警告。
+
+    🔴 **工時送出的並行防護是行程內的**（`_claim_worklog_submit` 用一個模組級
+    的 set）。多 worker 時兩個重疊的送出各自拿到自己行程的鎖，那道防線**完全
+    不存在**，而且沒有任何東西會擋下來：2026-09-14 實測，兩個重疊送出拿到的是
+    **不同**的 `worklog_id`，所以 `idx_worklog_entry_remote` 一次都不會觸發，
+    ZPlanner 就多出幾筆月結後刪不掉的重複工時。
+
+    docstring 寫了不算數——沒有人會在加 `--workers 4` 之前去讀那份 docstring。
+    這裡至少讓它在啟動 log 裡留下一行，事後查得到。要真的支援多 worker，得先
+    把那道鎖換成 DB 認領（見 `_claim_worklog_submit` 與 plan.md 的 D-10）。
+
+    偵測只涵蓋實務上會用到的兩種寫法（`--workers/-w` 與 `WEB_CONCURRENCY`），
+    **偵測不到不代表安全**——這是提醒，不是防護。
+    """
+    workers = 0
+    env_workers = os.environ.get("WEB_CONCURRENCY", "").strip()
+    if env_workers.isdigit():
+        workers = int(env_workers)
+    argv = sys.argv
+    for flag in ("--workers", "-w"):
+        if flag in argv:
+            pos = argv.index(flag) + 1
+            if pos < len(argv) and argv[pos].isdigit():
+                workers = max(workers, int(argv[pos]))
+    if workers > 1:
+        log.warning(
+            "偵測到 %s 個 worker：工時送出的並行防護是行程內的，多 worker 下"
+            "等於沒有防護，重疊送出會在 ZPlanner 造出月結後刪不掉的重複工時。"
+            "要多 worker 請先把 _claim_worklog_submit 換成 DB 認領。",
+            workers,
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
@@ -428,6 +464,7 @@ async def lifespan(app: FastAPI):
             log.info("保留策略清理：%s", purged)
     except Exception:
         log.exception("保留策略清理失敗")
+    _warn_if_multi_worker()
     collector_runner.start()
     try:
         yield
@@ -4106,6 +4143,93 @@ def _count_state(entries: List[Dict[str, Any]], state: str) -> int:
     return sum(1 for e in entries if e["state"] == state)
 
 
+# --------------------------------------------------------------------------
+# AC-9：同一天同時只准有一個送出在跑
+# --------------------------------------------------------------------------
+
+#: 正在送出的 `(viewer_id, work_date)`。用 set 而不是「每個 key 一把 Lock」的
+#: dict：後者會隨著使用過的日期無界成長（沒有人會回頭刪），而我們要的資訊只有
+#: 「這個 key 在不在飛」這一個位元。
+_worklog_submit_running: set = set()
+#: 只保護上面那個 set 的讀寫，**不是**拿來讓請求排隊的。持有時間是幾個指令，
+#: 不涵蓋任何網路或 DB 動作。
+_worklog_submit_lock = threading.Lock()
+
+
+@contextmanager
+def _claim_worklog_submit(viewer_id: int, date: str) -> Generator[None, None, None]:
+    """搶下「這個 Viewer 的這一天」的送出權；搶不到就**立刻**拋 409（AC-9／D-10）。
+
+    🔴 **為什麼需要這道鎖。** 兩個重疊的送出會各自查一次「ZPlanner 這天已經有
+    哪些工時」當去重底稿，而兩份底稿都是在對方寫入之前拍的——於是去重對兩邊
+    都說「沒有重複」，同一筆草稿被送出兩次。2026-09-14 實測（兩條執行緒相隔
+    20ms 打同一天、草稿只有 2 筆）：`create_worklog` 被呼叫 **4 次**，ZPlanner
+    多出 2 筆工時，而先回的那個請求回報 `submitted=2 failed=0 unknown=0
+    orphans=0`——**重複工時在它身上完全隱形**。重複工時月結後刪不掉，只能走
+    correction-request（要人審核）。這支端點存在的唯一理由就是防這件事。
+
+    🔴 **非阻塞：搶不到就拒絕，不排隊等。** 排隊的版本看起來比較友善，實際上
+    是把第二個請求卡住最長一整個時間預算（90 秒），而使用者等不到回應時最常做
+    的事就是再按一次送出鈕——要防的動作被原地放大，而且放大成排隊中的第三、
+    第四個請求。立刻回 409 讓前端能馬上說「正在送，等它跑完」。
+
+    ⚠️ **已知邊界：這道鎖只在單一行程內有效。** 部署模型是一人一部署、單 worker
+    uvicorn（見本檔最後的 `uvicorn.run`），所以涵蓋得住。但**多 worker／多行程
+    部署時，兩個請求會各自拿到自己行程的鎖，這道防護等於不存在**——那時必須改
+    成 DB 認領（在 `worklog_draft_entries` 上用一句帶守門條件的 UPDATE 把要送的
+    筆認領下來，讓 SQLite 的交易當仲裁者）。這是 D-10 刻意選的取捨，不是疏漏：
+    DB 認領會新增一個失敗模式（行程崩潰時那些筆永久卡在認領中，需要另做回收
+    機制）來防另一個失敗模式。要多 worker 就得先付那筆帳。
+
+    `finally` 一定要把 key 移掉，否則一次例外就讓那一天**永遠**送不出去
+    （只能重啟行程）。所以整段用 contextmanager 包起來，不留「某條 return 路徑
+    忘了還鎖」的縫。
+
+    🔴 **`date` 必須是已經正規化過的 `YYYY-MM-DD`**（呼叫端先跑
+    `parse_work_date(...).strftime("%Y-%m-%d")`）。把 claim 移到正規化之前的話，
+    `2026-9-13` 與 `2026-09-13` 會變成兩把不同的鎖，同一天就能靠「不補零」繞過
+    整道防護——而繞過之後的症狀就是這個 docstring 開頭講的那件事，沒有任何
+    錯誤訊息。
+    """
+    key = (viewer_id, date)
+    with _worklog_submit_lock:
+        if key in _worklog_submit_running:
+            raise WorklogSubmitInProgress(
+                f"{date} 的工時正在送出中，這次請求一筆都沒有送。"
+                "同一天同時送兩次會讓兩邊各自拿到過期的去重底稿，"
+                "在 ZPlanner 造出重複工時，而重複工時月結後刪不掉。"
+                # ⚠️ **不要在這裡寫死秒數。** 預算只擋「開始新的一筆」，最後一筆
+                # 可以在 t=89.9s 起跑再吃一次 `(5, 20)`，實際上限約兩分鐘；慢速
+                # 吐 chunk 時更久。寫「最多 90 秒」的話，等滿 90 秒仍拿到 409 的
+                # 人會以為卡死了——那正是他再按一次的理由。
+                "等前一次跑完（約一到兩分鐘）再看結果。",
+                detail={"work_date": date},
+            )
+        _worklog_submit_running.add(key)
+    try:
+        yield
+    finally:
+        with _worklog_submit_lock:
+            _worklog_submit_running.discard(key)
+
+
+# --------------------------------------------------------------------------
+# AC-10：整批的時間預算
+# --------------------------------------------------------------------------
+
+#: 整批送出的時間上限（秒）。到點就停送剩下的，已經送出去的不動。
+#:
+#: 🔴 **這個預算不能靠 client 的 timeout 代替。** `ZPlannerClient` 的
+#: `(5, 20)` 是 connect 與**每一次 read** 的上限，不是單次請求的總長，更不是
+#: 整批的總長：對方慢速吐 chunk 的話單次請求可以無上限地拖下去，而 N=10 的
+#: 一批最壞情況約 275 秒。
+#:
+#: 🔴 **也不准改用「縮短 read timeout」來達成。** 那會讓首 byte 比較慢的**正常**
+#: 請求被砍斷，而被砍斷的寫入是 `unknown`（不知道寫進去沒有、要人工對帳），
+#: 比乾脆沒送出去更糟。要限制的是整批，不是單筆。
+WORKLOG_SUBMIT_BUDGET_SECONDS = 90.0
+
+
 def _worklog_submit_client() -> ZPlannerClient:
     """送出用的 ZPlanner client。**不可用就拋**，不像週檢視那樣降級。
 
@@ -4140,11 +4264,17 @@ def _submit_one_worklog_entry(
     `zplanner_worklog_id` 還在記憶體裡就沒了——ZPlanner 那側的工時仍然存在，
     但本地永遠不知道它是誰的，下次重送會再建一次。
 
-    `update_worklog_entry_state` 回 `False` ＝ 影響 0 列 ＝ 這一筆在送出期間
-    被重產清掉了（守門條件併在 UPDATE 的 WHERE 裡，不先查再寫）。此時
-    ZPlanner 那側**已經有一筆工時**而本地沒有任何東西指向它，這就是孤兒。
+    `update_worklog_entry_state` 回 `False` ＝ 影響 0 列 ＝ 這一筆已經不符合
+    UPDATE 的守門條件了（守門併在 WHERE 裡，不先查再寫）。此時 ZPlanner 那側
+    **已經有一筆工時**而本地沒有任何東西指向它，這就是孤兒。
     🔴 孤兒一定要把 `zplanner_worklog_id` 原封不動回報出去——那是唯一能再找到
     它的線索，吞掉的話那筆工時就永遠只能靠人翻 ZPlanner 網頁找。
+
+    ⚠️ **不要在 reason 裡替它斷定成因**（AC-11）。這段原本寫死成「送出期間草稿
+    被重新產生」，而 2026-09-14 的實測顯示真正跑出孤兒的是**並行送出**（兩個
+    重疊的送出，先跑完的那個把 id 寫上去，後到的那個守門條件就不成立了）。
+    寫死一個成因的代價不是話講得不夠準，是**人照那句去查重產紀錄，永遠查不到
+    東西**，然後把一筆真實存在的遠端工時當成誤報放掉。
     """
     try:
         created = client.create_worklog(
@@ -4229,10 +4359,19 @@ def _submit_one_worklog_entry(
         "issue_key": created.get("issue_key") or entry["issue_key"],
         "hours": entry["hours"],
         "reason": (
-            "這筆工時已經建進 ZPlanner，但要寫回草稿時那一筆已經不在了"
-            "（送出期間草稿被重新產生）。ZPlanner 那側的工時仍然存在，"
+            "這筆工時已經建進 ZPlanner，但要寫回本地草稿時，那一筆已經不符合"
+            "寫回條件了。ZPlanner 那側的工時仍然存在，"
             f"編號 {worklog_id}——本地沒有任何東西指向它，要改要刪都得直接去 ZPlanner。"
         ),
+        # 🔴 **列出可能成因，不挑一個當定論**（AC-11）。這個欄位曾經寫死成
+        # 「送出期間草稿被重新產生」，而實測跑出孤兒的其實是並行送出——人照那句
+        # 去查重產紀錄會查不到任何東西，於是把一筆真的存在的遠端工時當成誤報。
+        # 三個成因在這一層都分不出來（UPDATE 只回「影響 0 列」，不回為什麼）。
+        "possible_causes": [
+            "同一天另一個送出同時在跑，它先把這一筆寫成 submitted 了",
+            "送出期間草稿被重新產生，這一筆已經不存在",
+            "這一筆被其他路徑改成了別的狀態",
+        ],
     }
 
 
@@ -4249,7 +4388,8 @@ def submit_worklog(
     這是刻意的——用 4xx 表示「有筆失敗」會讓前端顯示成「整批沒送出」，
     使用者就會再按一次送出鈕，而 ZPlanner 那側已經有的那幾筆會變成重複工時，
     月結之後刪不掉。錯誤信封只留給**一筆都沒送**的整批拒絕（沒選專案或沒填
-    時數的 400、這一天沒有草稿的 404、ZPlanner 整個連不上）。
+    時數的 400、這一天沒有草稿的 404、這一天正在送出中的 409、ZPlanner 整個
+    連不上）。
 
     第二點：`summary` 的四個計數描述的是**重讀之後整份草稿**的狀態，不是
     「這一次送了幾筆」。partial 重打時 `submitted_count` 會含上次就已經送成功
@@ -4265,24 +4405,50 @@ def submit_worklog(
          **必須看得見**——這份清單就是它唯一的出口，`state=skipped` 那一筆
          身上刻意不寫遠端 id（認領一筆不是我們建的工時，會讓誤殺變成永久）。
       2. **孤兒**進 `summary.orphans`：工時進了 ZPlanner，但要寫回草稿時那筆
-         已經被重產清掉了。裡面帶著 `zplanner_worklog_id`，那是唯一還找得到
-         它的線索。
+         已經不符合寫回條件了。裡面帶著 `zplanner_worklog_id`，那是唯一還找得
+         到它的線索，另附 `possible_causes`——**成因在這一層分不出來，所以列
+         出來而不是挑一個當定論**（AC-11）。
       3. **`unknown`** 是「不知道送進去沒有」，不是「失敗」。這種筆**不會**被
          自動重試，要先對帳（`export_worklogs` 查那一天）再決定。
+      4. **超時停送的筆**進 `summary.not_attempted_count`（AC-10）。整批有 90
+         秒預算，到點就不再開始新的一筆（**不砍進行中的那一筆**——砍掉會變成
+         要人工對帳的 `unknown`）。停送的筆維持 `pending`，在 DB 裡與「從未送
+         過」長得一樣，所以這個數字是它唯一的訊號。
+
+    最後：同一天同時只准有一個送出在跑，第二個**立刻**回 409
+    （`WORKLOG_SUBMIT_IN_PROGRESS`，不排隊等）。兩個重疊的送出會各自拿到一份
+    在對方寫入前拍的去重底稿，於是同一筆被送兩次——見 `_claim_worklog_submit`
+    的實測數字，以及它寫明的「多 worker 部署時這道防護不存在」。
     """
     viewer_id = viewer["id"]
     date = worklog_evidence.parse_work_date(work_date).strftime("%Y-%m-%d")
 
+    # AC-9：整段送出（去重底稿的查詢、逐筆送出、重讀與 status 寫回）都在同一個
+    # claim 底下——鎖要蓋住的不只是迴圈，還有那份底稿（查完到用完之間被別人寫了
+    # 東西，底稿就過期了）。claim 擺在讀草稿**之前**，讓兩個送出重疊的窗口小到
+    # 塞不進東西；搶不到就立刻 409、一筆都不送（為什麼不排隊等見該函式）。
+    with _claim_worklog_submit(viewer_id, date):
+        return _submit_worklog_batch(viewer_id, date, req.entry_ids)
+
+
+def _submit_worklog_batch(
+    viewer_id: int, date: str, entry_ids: Optional[List[int]]
+) -> Dict[str, Any]:
+    """送出一天份草稿的編排本體。🔴 **呼叫端必須先拿到 `_claim_worklog_submit`。**
+
+    單獨抽出來不是為了讓函式短一點，是為了讓「整段都在鎖裡面」這件事在路由那
+    一層一眼看得出來。回應的形狀與各欄位語意見 `submit_worklog` 的 docstring。
+    """
     draft = repo.get_worklog_draft(viewer_id, date)
     if draft is None:
         raise WorklogDraftNotFound(
             f"{date} 還沒有工時草稿，沒有東西可以送出。先產一份草稿再送。"
         )
 
-    targets = _worklog_submit_targets(draft["entries"], req.entry_ids)
+    targets = _worklog_submit_targets(draft["entries"], entry_ids)
 
     # AC-1／D-3：有任何一筆送不出去（沒選專案、或沒有時數）就擋下整批。
-    _refuse_incomplete_worklog_entries(date, draft["entries"], req.entry_ids)
+    _refuse_incomplete_worklog_entries(date, draft["entries"], entry_ids)
 
     # 已經結束的筆不再送。`submitted`／有 worklog id ＝ 送過了（AC-2，重打就是
     # 製造重複工時）；`skipped` ＝ 人或去重已經判過「不要送」，重新算進來等於
@@ -4294,9 +4460,15 @@ def submit_worklog(
 
     skipped_duplicates: List[Dict[str, Any]] = []
     orphans: List[Dict[str, Any]] = []
+    not_attempted: List[Dict[str, Any]] = []
 
     if pending:
         client = _worklog_submit_client()
+
+        # AC-10：整批的碼表從這裡開始跑，**含下面那支 export**。它一樣是網路
+        # 往返、一樣吃 `(5, 20)` 的 read timeout、一樣可能被慢速回應拖住，
+        # 把它排除在預算外等於預算漏了一個口。
+        deadline = time.monotonic() + WORKLOG_SUBMIT_BUDGET_SECONDS
 
         # 去重的底稿：這一天在 ZPlanner 那側已經有哪些工時。
         #
@@ -4310,11 +4482,32 @@ def submit_worklog(
         duplicates = {
             match.entry_id: match
             for match in worklog_submit.find_duplicates(
-                draft["entries"], existing, entry_ids=req.entry_ids
+                draft["entries"], existing, entry_ids=entry_ids
             )
         }
 
-        for entry in pending:
+        for index, entry in enumerate(pending):
+            # AC-10 的檢查點。
+            #
+            # 🔴 **判斷在每一筆開始之前，不是中斷進行中的 HTTP。** 砍掉一個已經
+            # 發出去的寫入只會得到 `unknown`——「不知道寫進去沒有、不准自動重試、
+            # 要人工去 ZPlanner 對帳」，那比乾脆沒送更糟。停在這裡的筆維持
+            # `pending`，重打一次就好。
+            #
+            # ⚠️ 停送的筆與「從未送過」在 DB 裡分不出來（都是 `pending`），
+            # 所以 `not_attempted_count` 是使用者唯一看得出來的訊號——它一定要
+            # 出現在 summary 裡，而不是只寫進 log。
+            if time.monotonic() >= deadline:
+                not_attempted = list(pending[index:])
+                log.warning(
+                    # %g 不是 %.0f：測試會把預算調成 0.4 之類的小數，%.0f 會把它
+                    # 印成「0 秒」，查 log 的人會以為預算被設成 0 了。
+                    "送出工時超出整批時間預算 %g 秒，停送剩下的 %d 筆"
+                    "（draft=%s date=%s）；那幾筆維持 pending，可以重打。",
+                    WORKLOG_SUBMIT_BUDGET_SECONDS, len(not_attempted), draft["id"], date,
+                )
+                break
+
             match = duplicates.get(entry["id"])
             if match is not None:
                 # D-9(b)：標 skipped，但**不**把比對到的遠端工時認領到
@@ -4378,9 +4571,14 @@ def submit_worklog(
             "skipped_count": _count_state(entries, worklog_submit.STATE_SKIPPED),
             "failed_count": _count_state(entries, worklog_submit.STATE_FAILED),
             "unknown_count": _count_state(entries, worklog_submit.STATE_UNKNOWN),
-            # 以下兩個是**這一次**才有的資訊，DB 裡沒有對應欄位可以重算。
+            # 以下三個是**這一次**才有的資訊，DB 裡沒有對應欄位可以重算。
             "skipped_duplicates": skipped_duplicates,
             "orphans": orphans,
+            # AC-10：超出時間預算而沒有嘗試的筆數。⚠️ **一律都在，即使是 0**
+            # ——形狀穩定比少幾個位元組重要（同 `_refuse_incomplete_worklog_entries`
+            # 的 detail）。這些筆維持 `pending`，與「從未送過」在 DB 裡長得一樣，
+            # 這個數字是使用者唯一看得出「這批沒跑完」的地方。
+            "not_attempted_count": len(not_attempted),
         },
     }
 

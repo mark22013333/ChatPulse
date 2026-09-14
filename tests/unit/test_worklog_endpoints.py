@@ -26,6 +26,8 @@ import logging
 import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from datetime import date, timedelta
 from typing import Any, Dict, List
@@ -41,6 +43,7 @@ from core.errors import (  # noqa: E402
     WorkRepoNotFound,
     WorklogAlreadySubmitted,
     WorklogDraftNotFound,
+    WorklogSubmitInProgress,
     ZPlannerForbidden,
     ZPlannerUnavailable,
     ZPlannerWriteIndeterminate,
@@ -1687,6 +1690,362 @@ class TestSubmitResponseShape(SubmitCase):
             "skipped_duplicates",
         ):
             self.assertIn(key, summary, f"summary 少了 {key}，前端就畫不出來")
+
+
+# --------------------------------------------------------------------------
+# 並行與時間預算（AC-9／AC-10／AC-11）
+#
+# 🔴 這三條是 2026-09-14 的 review 才補上的，而前兩條**都被實測重現過**：
+# 兩條執行緒相隔 20ms 打同一天的 submit，草稿只有 2 筆，`create_worklog` 卻被
+# 呼叫了 4 次；先回的那個請求回報 `submitted=2 failed=0 unknown=0 orphans=0`
+# ——ZPlanner 那邊多出來的 2 筆重複工時在它身上**完全隱形**。
+#
+# 所以這一區的斷言重點一律是「**打出去幾次**」，不是「回了什麼碼」：
+# 只驗「第二個請求回 409」的話，一個「先送出去再回 409」的實作照樣是綠的，
+# 而那正是要防的那件事。
+# --------------------------------------------------------------------------
+
+
+class FakeZPlannerBlockingSubmit(FakeZPlannerSubmit):
+    """第一筆 `create_worklog` 會卡住，直到測試放行。
+
+    用兩個 `threading.Event` 而不是 `time.sleep(固定秒數)`：睡固定秒數的版本
+    會在機器忙的時候偶爾先跑完，於是「第二個請求來的時候第一批還在飛」這個
+    前提沒成立，測試什麼都沒驗到卻還是綠的——而它驗的正是不可逆的重複工時。
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        #: 第一筆送出真的開始了。等到它才代表「這一批確實還在飛」。
+        self.first_create_started = threading.Event()
+        #: 測試放行，第一筆才會回來。
+        self.release = threading.Event()
+
+    def create_worklog(self, issue_id, date, hours, *, note=None, start_time=None):
+        blocking = not self.first_create_started.is_set()
+        self.first_create_started.set()
+        if blocking:
+            # timeout 是保險絲：測試若忘了放行，寧可自己失敗也不要掛住整個套件。
+            self.release.wait(timeout=10)
+        return super().create_worklog(
+            issue_id, date, hours, note=note, start_time=start_time
+        )
+
+
+class FakeZPlannerSlowSubmit(FakeZPlannerSubmit):
+    """每一筆 `create_worklog` 都慢 `delay` 秒，用來把整批時間預算逼到上限。"""
+
+    def __init__(self, *, delay: float = 0.0, **kwargs):
+        super().__init__(**kwargs)
+        self.delay = delay
+
+    def create_worklog(self, issue_id, date, hours, *, note=None, start_time=None):
+        time.sleep(self.delay)
+        return super().create_worklog(
+            issue_id, date, hours, note=note, start_time=start_time
+        )
+
+
+class TestSubmitConcurrencyGuard(SubmitCase):
+    """AC-9／D-10：同一天同時只准有一個送出在跑，第二個立刻回 409。"""
+
+    def submit_unpatched(self, *, work_date: str = DATE, **body) -> Dict[str, Any]:
+        """不自己 patch 的送出，給並行測試用。
+
+        ⚠️ `SubmitCase.submit` 內建 `mock.patch.object(server, "zplanner_client", …)`，
+        而 `mock.patch` 換掉的是**模組屬性**、不是執行緒區域的東西：兩條執行緒
+        各自 start／stop 會互相踩到對方存下來的還原值，留下一個被 patch 過的
+        模組給後面的測試。並行測試改成在主執行緒 patch 一次，兩邊都用這支。
+        """
+        request = server.WorklogSubmitRequest(**body)
+        return server.submit_worklog(work_date, request, self.viewer)
+
+    def _run_in_thread(self, outcome: Dict[str, Any], **body):
+        """在另一條執行緒跑一次送出，把結果或例外收進 `outcome`。"""
+
+        def runner():
+            try:
+                outcome["result"] = self.submit_unpatched(**body)
+            except BaseException as exc:  # noqa: BLE001 - 要把例外帶回主執行緒斷言
+                outcome["error"] = exc
+
+        thread = threading.Thread(target=runner, name="submit-worklog")
+        thread.start()
+        return thread
+
+    def test_兩條執行緒同時送同一天只會打出一批(self):
+        """🔴 **這條是整個修復的核心。**
+
+        斷言的是 `create_worklog` 的**總呼叫次數等於草稿筆數**，不是「第二個
+        請求拿到 409」。只驗回應碼的話，一個「先把整批送出去、最後才回 409」
+        的實作一樣會是綠的——而 ZPlanner 那邊已經多出一整批重複工時，月結後
+        刪不掉（只能走 correction-request）。
+
+        兩個重疊的送出為什麼會重複送：它們**各自**查一次「這天 ZPlanner 已經
+        有哪些工時」當去重底稿，而兩份底稿都是在對方寫入之前拍的，於是去重對
+        兩邊都說「沒有重複」。
+        """
+        self.seed(entry(), entry(issue_id=502, issue_key="PEI-140", hours="1.50"))
+        client = FakeZPlannerBlockingSubmit()
+        outcome: Dict[str, Any] = {}
+
+        with mock.patch.object(server, "zplanner_client", lambda: client):
+            first = self._run_in_thread(outcome)
+            try:
+                self.assertTrue(
+                    client.first_create_started.wait(timeout=10),
+                    "第一批根本沒開始送，那「第二個請求來的時候還在飛」就沒成立，"
+                    "這條測試什麼都沒驗到",
+                )
+                with self.assertRaises(WorklogSubmitInProgress) as ctx:
+                    self.submit_unpatched()
+            finally:
+                client.release.set()
+                first.join(timeout=10)
+
+        self.assertFalse(first.is_alive(), "第一批沒有跑完")
+        self.assertIsNone(outcome.get("error"), f"第一批不該失敗：{outcome.get('error')!r}")
+        self.assertEqual(409, ctx.exception.http_status)
+        self.assertEqual(
+            2,
+            len(client.create_calls),
+            "打出去的次數要等於草稿筆數。變成兩倍就是 ZPlanner 那邊多了一整批"
+            "重複工時，而重複工時月結後刪不掉",
+        )
+        self.assertEqual(["submitted", "submitted"], self.states())
+
+    def test_被擋下的那個請求一筆都沒送(self):
+        """409 的語意是「一筆都沒送」，不是「送了一半」。
+
+        與上一條分開寫是因為它們會用不同的方式壞掉：上一條防的是「送兩批」，
+        這一條防的是「先送再擋」——那樣第二個請求的使用者會看到一個錯誤，卻
+        不知道自己其實已經製造了重複工時。
+        """
+        self.seed(entry(), entry(issue_id=502, issue_key="PEI-140", hours="1.50"))
+        client = FakeZPlannerBlockingSubmit()
+        outcome: Dict[str, Any] = {}
+
+        with mock.patch.object(server, "zplanner_client", lambda: client):
+            first = self._run_in_thread(outcome)
+            try:
+                self.assertTrue(client.first_create_started.wait(timeout=10))
+                # 第二個請求進來的當下，第一批只送出了 0 筆（還卡在第一筆裡）。
+                before = len(client.create_calls)
+                with self.assertRaises(WorklogSubmitInProgress):
+                    self.submit_unpatched()
+                self.assertEqual(
+                    before, len(client.create_calls), "被擋下的請求不准打出任何一筆"
+                )
+            finally:
+                client.release.set()
+                first.join(timeout=10)
+
+    def test_不同的日期互不相干(self):
+        """正對照：鎖的粒度是 `(viewer, 日期)`，不是「整個 viewer 一把」。
+
+        少了這條，一個「永遠拒絕併發」的實作也會讓上面兩條變綠——但那會讓
+        禮拜一還在送的時候送不了禮拜二，而那兩天在 ZPlanner 那邊根本碰不到
+        彼此，沒有任何重複工時的風險。
+        """
+        self.seed(entry(), work_date=DATE)
+        self.seed(
+            entry(issue_id=502, issue_key="PEI-140", hours="1.50"), work_date=DATE2
+        )
+        client = FakeZPlannerBlockingSubmit()
+        outcome: Dict[str, Any] = {}
+
+        with mock.patch.object(server, "zplanner_client", lambda: client):
+            first = self._run_in_thread(outcome, work_date=DATE)
+            try:
+                self.assertTrue(client.first_create_started.wait(timeout=10))
+                other = self.submit_unpatched(work_date=DATE2)
+            finally:
+                client.release.set()
+                first.join(timeout=10)
+
+        self.assertEqual(1, other["summary"]["submitted_count"])
+        self.assertEqual(["submitted"], self.states(DATE2))
+
+    def test_跑完之後鎖要放掉(self):
+        """`finally` 漏掉一次，那一天就**永遠**送不出去，只能重啟行程。
+
+        ⚠️ 兩次送出**必須共用同一個假 client**。每個 `FakeZPlannerSubmit` 的
+        id 計數器都從 116800 重新起算，所以換一個實例等於讓 ZPlanner 把同一個
+        worklog id 發兩次——`idx_worklog_entry_remote`（partial unique index，
+        重複送出的最後一道防線）會擋下第二筆，於是它變成孤兒而不是送出成功。
+        真的 ZPlanner 不會重發 id，這是 fixture 的限制，不是被測行為。
+        """
+        draft = self.seed(
+            entry(), entry(issue_id=502, issue_key="PEI-140", hours="1.50")
+        )
+        client = FakeZPlannerSubmit()
+        self.submit(zplanner=client, entry_ids=[draft["entries"][0]["id"]])
+        result = self.submit(zplanner=client, entry_ids=[draft["entries"][1]["id"]])
+        self.assertEqual(2, result["summary"]["submitted_count"])
+
+    def test_整批被擋下之後鎖也要放掉(self):
+        """擋下整批是**拋例外**離開的——這條路徑沒還鎖的話，那一天從此送不出去。
+
+        而且症狀會很難查：使用者按了送出、看到「請先選專案」，補好之後再按，
+        得到的卻是「正在送出中」，而根本沒有任何東西在送。
+        """
+        draft = self.seed(entry(), entry(issue_id=None, issue_key=None, hours="1.50"))
+        with self.assertRaises(ChatPulseError) as ctx:
+            self.submit()
+        self.assertEqual(400, ctx.exception.http_status)
+        result = self.submit(entry_ids=[draft["entries"][0]["id"]])
+        self.assertEqual(1, result["summary"]["submitted_count"])
+
+    def test_正在送出中不是已經送出(self):
+        """🔴 兩個都是 409，但使用者的下一步完全不同。
+
+        `WORKLOG_ALREADY_SUBMITTED` ＝ 這份草稿已經送過了（終局狀態，去看結果
+        或走 correction-request）；這個 ＝ 正在送、還沒結束（暫時狀態，等一下
+        再試）。共用一個碼的話前端只能猜一個，猜錯的那一半會把人導去錯的地方。
+        """
+        self.seed(entry())
+        client = FakeZPlannerBlockingSubmit()
+        outcome: Dict[str, Any] = {}
+
+        with mock.patch.object(server, "zplanner_client", lambda: client):
+            first = self._run_in_thread(outcome)
+            try:
+                self.assertTrue(client.first_create_started.wait(timeout=10))
+                with self.assertRaises(WorklogSubmitInProgress) as ctx:
+                    self.submit_unpatched()
+            finally:
+                client.release.set()
+                first.join(timeout=10)
+
+        self.assertNotIsInstance(ctx.exception, WorklogAlreadySubmitted)
+        self.assertEqual("WORKLOG_SUBMIT_IN_PROGRESS", ctx.exception.code)
+
+
+class TestSubmitTimeBudget(SubmitCase):
+    """AC-10／D-11：整批有時間預算，到點停送剩下的、**仍然回 200**。
+
+    為什麼需要預算：client 的 `(5, 20)` 是 connect 與**每次 read** 的上限，
+    不是單次請求的總長，更不是整批的總長——對方慢速吐 chunk 時單次請求可以
+    無上限地拖，N=10 的一批最壞約 275 秒。
+    """
+
+    def test_到點就停送剩下的而且仍然回二百(self):
+        """🔴 到點是**不再開始新的一筆**，不是砍掉進行中的那一筆。
+
+        砍掉一個已經發出去的寫入只會得到 `unknown`——「不知道寫進去沒有、不准
+        自動重試、要人工去 ZPlanner 對帳」，那比乾脆沒送更糟。所以第一筆（它
+        跑完的時間點已經超過預算）必須是 `submitted`，不是 `unknown`。
+        """
+        self.seed(
+            entry(),
+            entry(issue_id=502, issue_key="PEI-140", hours="1.50"),
+            entry(issue_id=503, issue_key="PEI-150", hours="1.00"),
+        )
+        # 預算 0.4 秒、每筆 0.5 秒：第一筆開始時還在預算內（去重查詢是假的，
+        # 只花幾微秒），跑完就超過了，所以第二筆連開始都不會開始。
+        client = FakeZPlannerSlowSubmit(delay=0.5)
+        with mock.patch.object(server, "WORKLOG_SUBMIT_BUDGET_SECONDS", 0.4):
+            result = self.submit(zplanner=client)
+
+        self.assertEqual(
+            1, len(client.create_calls), "預算用完之後不准再開始新的一筆"
+        )
+        self.assertEqual(2, result["summary"]["not_attempted_count"])
+        self.assertEqual(
+            ["submitted", "pending", "pending"],
+            self.states(),
+            "進行中的那一筆要讓它跑完（submitted），停送的維持 pending 可重打",
+        )
+        self.assertEqual("partial", result["status"])
+
+    def test_停送的筆維持_pending_所以重打得回來(self):
+        """停送不是失敗，那些筆一筆都沒動過，再送一次就補得回來。"""
+        self.seed(
+            entry(),
+            entry(issue_id=502, issue_key="PEI-140", hours="1.50"),
+        )
+        client = FakeZPlannerSlowSubmit(delay=0.5)
+        with mock.patch.object(server, "WORKLOG_SUBMIT_BUDGET_SECONDS", 0.4):
+            self.submit(zplanner=client)
+        self.assertEqual(["submitted", "pending"], self.states())
+
+        # 預算恢復正常，第二次把剩下的補完。⚠️ 這裡順便驗到「停送的筆沒有被
+        # 寫進 zplanner_worklog_id」——有的話它會被當成送過了而永遠跳過。
+        #
+        # ⚠️ 共用同一個 client：換一個實例的話 id 計數器會從 116800 重新起算，
+        # 等於 ZPlanner 重發同一個 worklog id，被 `idx_worklog_entry_remote`
+        # 擋成孤兒（fixture 的限制，不是被測行為）。
+        result = self.submit(zplanner=client)
+        self.assertEqual(["submitted", "submitted"], self.states())
+        self.assertEqual(0, result["summary"]["not_attempted_count"])
+        self.assertEqual("submitted", result["status"])
+
+    def test_預算夠的時候全部送完(self):
+        """正對照：預算不是恆真的閘。
+
+        少了這條，一個「永遠停送」或「預算算成負的」的實作也會讓上面兩條變綠
+        ——而它的症狀是每次送出都只送一筆，得按十次才填得完一天。
+        """
+        self.seed(
+            entry(),
+            entry(issue_id=502, issue_key="PEI-140", hours="1.50"),
+            entry(issue_id=503, issue_key="PEI-150", hours="1.00"),
+        )
+        result = self.submit()
+        self.assertEqual(3, result["summary"]["submitted_count"])
+        self.assertEqual(0, result["summary"]["not_attempted_count"])
+
+    def test_沒有超時的時候計數也要在(self):
+        """形狀穩定：`not_attempted_count` 一律都在，即使是 0。
+
+        它是使用者唯一看得出「這批沒跑完」的訊號——停送的筆在 DB 裡是
+        `pending`，與「從未送過」長得一模一樣。欄位時有時無的話，前端只能
+        用 `undefined` 去猜，而猜錯的方向是「以為全部送完了」。
+        """
+        self.seed(entry())
+        summary = self.submit()["summary"]
+        self.assertIn("not_attempted_count", summary)
+        self.assertEqual(0, summary["not_attempted_count"])
+
+
+class TestSubmitOrphanCause(SubmitCase):
+    """AC-11：孤兒回報**不預設成因**。"""
+
+    def _orphans(self) -> List[Dict[str, Any]]:
+        self.seed(entry())
+        with mock.patch.object(
+            server.repo, "update_worklog_entry_state", lambda *a, **k: False
+        ):
+            return self.submit()["summary"]["orphans"]
+
+    def test_列出多個可能成因而不是挑一個當定論(self):
+        """🔴 這裡原本寫死成「送出期間草稿被重新產生」。
+
+        而 2026-09-14 實測跑出孤兒的其實是**並行送出**（先跑完的那個把 id 寫
+        上去，後到的那個守門條件就不成立了）。寫死一個成因的代價不是話講得不
+        夠準，是**人照那句去查重產紀錄，永遠查不到東西**——然後把一筆真實存在
+        的遠端工時當成誤報放掉，而它每個月都會出現在報表上。
+
+        這一層分不出是哪一種（UPDATE 只回「影響 0 列」，不回為什麼），所以只能
+        全部列出來。斷言的是「有不只一個」而不是措辭——文案會隨著理解修正而
+        改寫，把 prose 釘進測試會讓「更正一個錯誤的說明」看起來像弄壞了功能。
+        """
+        orphans = self._orphans()
+        self.assertEqual(1, len(orphans))
+        self.assertGreaterEqual(
+            len(orphans[0]["possible_causes"]),
+            2,
+            "只列一個成因等於預設成因——人照著去查另一種成因就永遠查不到",
+        )
+
+    def test_孤兒一定帶著遠端的_worklog_id(self):
+        """🔴 那是唯一還找得到那筆遠端工時的線索。
+
+        本地一列都沒寫進去，所以除了這個編號之外沒有任何東西指向它；吞掉的話
+        只剩人去 ZPlanner 網頁一頁一頁翻。
+        """
+        orphans = self._orphans()
+        self.assertEqual(116801, orphans[0]["zplanner_worklog_id"])
 
 
 if __name__ == "__main__":  # pragma: no cover

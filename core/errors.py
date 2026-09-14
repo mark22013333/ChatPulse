@@ -201,6 +201,32 @@ class WorklogAlreadySubmitted(ChatPulseError):
     default_message = "這份工時草稿已經送出，不能再修改"
 
 
+class WorklogSubmitInProgress(ChatPulseError):
+    """這一天的送出**正在進行中**，現在又來了第二個送出請求。
+
+    🔴 **刻意不與 WORKLOG_ALREADY_SUBMITTED 合併**，雖然兩個都是 409。那個是
+    「這份草稿已經送過了」（終局狀態，重來幾次都一樣）；這個是「正在送，還沒
+    結束」（暫時狀態，等幾秒就沒事了）。使用者的下一步完全不同——一個是去看
+    結果／走 correction-request，另一個是等一下再按一次。共用一個碼的話，前端
+    只能在「已送出」與「請稍候」之間猜一個，而猜錯的那半數情況會把人導去錯的
+    地方。
+
+    為什麼需要它：兩個重疊的送出會**各自**查一次「ZPlanner 這天已經有什麼」，
+    兩份底稿都是在對方寫入之前拍的，於是同一筆草稿被送出兩次。2026-09-14 實測
+    （兩條執行緒相隔 20ms 打同一天、草稿 2 筆）：`create_worklog` 被呼叫 4 次，
+    ZPlanner 多出 2 筆重複工時，而先回的那個請求回報 `failed=0 orphans=0`——
+    **重複工時在它身上完全隱形**。而重複工時月結後刪不掉，只能走
+    correction-request（要人審核）。
+
+    ⚠️ **這是「立刻拒絕」不是「排隊等」。** 排隊等會讓第二個請求最長卡 90 秒，
+    而使用者等不到回應時最常做的事就是再按一次——那正是要防的動作被原地放大。
+    """
+
+    code = "WORKLOG_SUBMIT_IN_PROGRESS"
+    http_status = 409
+    default_message = "這一天的工時正在送出中，請等它跑完再試"
+
+
 class WorklogLocked(ChatPulseError):
     """這筆工時已經月結鎖定，PATCH 與 DELETE 都不會生效。
 
