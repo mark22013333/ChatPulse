@@ -415,9 +415,16 @@ def find_duplicates(
 
         hours = _hours_key(entry.get("hours"))
         if hours is None:
-            # 本地時數壞掉或還沒填。這裡不擋——它送到 ZPlanner 之前會先被
-            # `_require_hours` 擋下（那一筆會變成 failed，訊息也講得清楚），
-            # 在這裡多攔一次只會讓同一個錯誤有兩種說法。
+            # 本地時數壞掉或還沒填。這裡**不擋**，理由是同一個錯誤不要有兩種
+            # 說法：`find_missing_hours` 已經是第一道網（送出流程一定先過它），
+            # 而真的漏過去的也會在發出 HTTP 之前被 `_require_hours` 擋下，
+            # 不會造成重複工時。
+            #
+            # ⚠️ 取捨要講明：這樣做的代價是那一筆最後**呈現成「送出失敗」而不是
+            # 「資料有問題」**——回報裡它跟權限不足、issue 不存在混在一起。
+            # 接受這個代價，是因為 `find_duplicates` 是公開函式、不保證每個呼叫端
+            # 都先過閘，在這裡改拋例外會讓「沒過閘的呼叫端」整批 400，比訊息不夠
+            # 精準嚴重。
             continue
 
         for row in candidates:

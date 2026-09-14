@@ -451,6 +451,21 @@ class DuplicateMatchTest(unittest.TestCase):
         with self.assertRaises(ZPlannerApiError):
             find_duplicates([entry()], [exported("PEI-133", "兩小時")])
 
+    def test_遠端時數是_NaN_或無限大時也要擋下整批(self):
+        """⚠️ 這幾個值**不會**被 `Decimal()` 拒絕——它們是合法的 Decimal。
+
+        少了 `is_finite()` 那道，`Decimal("NaN")` 會一路走進比對，而 NaN 連
+        「等於自己」都不成立，於是那一列變成**無聲的假陰性**：不是拋錯、也不是
+        判成重複，是安靜地「沒對上」，然後那筆工時被重送一次。
+
+        這與 `test_遠端時數讀不懂時擋下整批` 是同一條規則的兩半，但失敗模式
+        完全不同——「兩小時」會在 `Decimal()` 就被擋，這幾個不會。
+        """
+        for raw in ("nan", "NaN", "Infinity", "-inf"):
+            with self.subTest(raw=raw):
+                with self.assertRaises(ZPlannerApiError):
+                    find_duplicates([entry()], [exported("PEI-133", raw)])
+
     def test_無關_issue_的壞資料不該拖垮整批(self):
         """正對照：遠端那一天可能有幾十列與這份草稿完全無關的工時。
 
