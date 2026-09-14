@@ -1,0 +1,169 @@
+{
+  "schema_version": 1,
+  "slug": "submit-worklog-to-zplanner",
+  "name": "工時草稿送出到 ZPlanner",
+  "type": "feature",
+  "inferred": false,
+  "phase": "review",
+  "next": {
+    "command": "/plan-security",
+    "reason": "安全掃描缺"
+  },
+  "steps": {
+    "start": {
+      "status": "done",
+      "at": "2026-09-14T10:19:39+08:00",
+      "commit": "23312ec421f81d14e88bbc317642e15583aba2be",
+      "reason": null
+    },
+    "spec": {
+      "status": "done",
+      "at": "2026-09-14T10:28:16+08:00",
+      "commit": null,
+      "reason": null
+    },
+    "db": {
+      "status": "skipped",
+      "at": "2026-09-14T10:28:16+08:00",
+      "commit": null,
+      "reason": "DB_REQUIRED=false：worklog_draft_entries 的 state／zplanner_worklog_id／last_error_* 等欄位已齊全，無需 DDL 變更"
+    },
+    "arch": {
+      "status": "done",
+      "at": "2026-09-14T10:33:14+08:00",
+      "commit": null,
+      "reason": null
+    },
+    "build": {
+      "status": "done",
+      "at": "2026-09-14T11:23:10+08:00",
+      "commit": null,
+      "reason": null
+    },
+    "security": {
+      "status": "pending",
+      "at": null,
+      "commit": null,
+      "reason": null
+    },
+    "verify": {
+      "status": "pending",
+      "at": null,
+      "commit": null,
+      "reason": null
+    },
+    "review": {
+      "status": "done",
+      "at": "2026-09-14T11:43:46+08:00",
+      "commit": null,
+      "reason": null
+    },
+    "close": {
+      "status": "pending",
+      "at": null,
+      "commit": null,
+      "reason": null
+    }
+  },
+  "work_unit": {
+    "skill": null,
+    "done": 0,
+    "total": 0,
+    "label": "",
+    "remaining": [],
+    "evidence": [],
+    "ambiguities": []
+  },
+  "resume_hint": {
+    "branch": "feature/worklog-scaffold",
+    "services": [],
+    "read_first": []
+  },
+  "results": {
+    "verify": {},
+    "review": {
+      "critical": 0,
+      "warning": 0,
+      "files": 12,
+      "mode": "full",
+      "status": "PASS",
+      "reproduced": true,
+      "fixed_in": "bb00e8f"
+    },
+    "security": {}
+  },
+  "git": {
+    "branch": "feature/worklog-scaffold",
+    "base": "main",
+    "last_commit": "9332a96f13a8e045522252a1e639cb436f56c599"
+  },
+  "notion": {
+    "page_id": null,
+    "mirrored_status": null,
+    "last_synced_at": null
+  },
+  "deploy": {
+    "steps_total": 0,
+    "steps_confirmed": 0
+  },
+  "parked": null,
+  "history": [
+    {
+      "at": "2026-09-14T10:19:39+08:00",
+      "event": "init",
+      "detail": "type=feature"
+    },
+    {
+      "at": "2026-09-14T10:19:45+08:00",
+      "event": "set",
+      "detail": "git.branch=feature/worklog-scaffold；git.base=main"
+    },
+    {
+      "at": "2026-09-14T10:28:16+08:00",
+      "event": "set",
+      "detail": "steps.spec=done；phase=spec"
+    },
+    {
+      "at": "2026-09-14T10:28:16+08:00",
+      "event": "set",
+      "detail": "steps.db=skipped"
+    },
+    {
+      "at": "2026-09-14T10:33:14+08:00",
+      "event": "set",
+      "detail": "steps.arch=done；phase=arch"
+    },
+    {
+      "at": "2026-09-14T11:23:10+08:00",
+      "event": "unit",
+      "detail": "清空工作單元"
+    },
+    {
+      "at": "2026-09-14T11:23:10+08:00",
+      "event": "set",
+      "detail": "steps.build=done；phase=build；git.last_commit"
+    },
+    {
+      "at": "2026-09-14T11:43:46+08:00",
+      "event": "result",
+      "detail": "review: {\"critical\": 2, \"warning\": 3, \"files\": 12, \"mode\": \"full\", \"status\": \"FAIL\"}"
+    },
+    {
+      "at": "2026-09-14T11:43:46+08:00",
+      "event": "set",
+      "detail": "steps.review=done；phase=review"
+    },
+    {
+      "at": "2026-09-14T11:45:16+08:00",
+      "event": "result",
+      "detail": "review: {\"critical\": 2, \"warning\": 2, \"files\": 12, \"mode\": \"full\", \"reproduced\": true, \"status\": \"FAIL\"}"
+    },
+    {
+      "at": "2026-09-14T12:29:57+08:00",
+      "event": "result",
+      "detail": "review: {\"critical\": 0, \"warning\": 0, \"files\": 12, \"mode\": \"full\", \"fixed_in\": \"bb00e8f\", \"status\": \"PASS\"}"
+    }
+  ],
+  "created": "2026-09-14T10:19:39+08:00",
+  "updated": "2026-09-14T12:29:57+08:00"
+}
