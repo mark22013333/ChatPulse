@@ -798,11 +798,17 @@ POST／PATCH／verify 都回帶 `verification` 的單筆：
   整個不出現（不是 `null`）。前端據此決定要不要畫「還差多少」那一行。
   ⚠️ **不會補預設值**：編一個 40 小時的目標會讓完成率變成看起來精確的假數字。
   `target_hours` 是字串（與其他時數一致），`completion_pct` 是 float。
-- 🔴 **`zplanner.total_hours` 永遠等於 `days[].zplanner.hours` 的和。** ZPlanner 的
-  週端點會把 `week_start` **正規化到那一週的週一**，所以 `week_start` 不是週一時，
-  它回的七天與這裡顯示的七天不是同一段。落在窗口外的日期一律**不算進總計**，
-  否則表頭與下面的格子會對不起來（實測：請求週日起的 `2026-09-06`，格子合計
-  40.0 小時、表頭卻寫 44.00 小時、完成率 110%——那是 ZPlanner 週一那一週的和）。
+- 🔴 **非本週一律看不到 ZPlanner 的工時。** ZPlanner 的 `GET /api/worklogs/weekly/`
+  **只回本週**，`week_start` 送了沒有作用（2026-09-14 實測五種輸入皆回同一週，
+  OpenAPI schema 也沒宣告這個參數）。所以切到上週時，`days[].zplanner` 全是 `null`、
+  `zplanner.total_hours` 是 `"0.00"`，並帶 `week_mismatch`——**那不代表那幾天沒填**。
+  要讀非本週的工時得走 ZPlanner 的匯出端點（`date_from`／`date_to`），見
+  `core/zplanner_client.export_worklogs`；本端點尚未接上它。
+- 🔴 **`zplanner.total_hours` 永遠等於 `days[].zplanner.hours` 的和。** 除了上面那個
+  成因，`week_start` 不強制是星期一也會讓兩邊錯開（本端點的七天由前端決定起點，
+  ZPlanner 那側固定週一起算）。落在窗口外的日期一律**不算進總計**，否則表頭與
+  下面的格子會對不起來（實測：請求週日起的 `2026-09-06`，格子合計 40.0 小時、
+  表頭卻寫 44.00 小時、完成率 110%——那是 ZPlanner 那一週的和）。
 - 錯開時多一個 `zplanner.week_mismatch`，且 **`target_hours` 與 `completion_pct`
   整個不出現**（它們描述的是 ZPlanner 那一週，套到這七天上就是算錯的數字）：
   ```json

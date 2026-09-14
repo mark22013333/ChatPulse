@@ -54,3 +54,6 @@ tests/e2e/reports/
 .idea/
 .vscode/
 *.swp
+
+# Local spec files (managed by plan-* skills)
+.spec/
