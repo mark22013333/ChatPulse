@@ -113,6 +113,137 @@ class CodeBranchNotFound(ChatPulseError):
     default_message = "環境對應的分支不存在"
 
 
+class WorkRepoNotFound(ChatPulseError):
+    """找不到這個「我的工作 repo」登錄（ADR-0008）。
+
+    刻意與 CODE_PROJECT_NOT_FOUND 分開，雖然兩者都是「找不到你登錄的
+    git repo」：那是**參考專案**（查程式碼用，ADR-0006），這是**我的工作
+    repo**（產工時草稿用）。兩份登錄各有自己的表、各有自己的 id 序號、
+    各有自己的設定頁，合成同一個錯誤碼會讓訊息把人送去錯的那一頁，
+    而他在那裡會看到一份「東西明明還在」的清單。
+    """
+
+    code = "WORK_REPO_NOT_FOUND"
+    http_status = 404
+    default_message = "找不到指定的工作 repo"
+
+
+class WorkRepoUnavailable(ChatPulseError):
+    """登錄還在，但本機路徑已經不是一個可讀的 git repo。
+
+    與 WORK_REPO_NOT_FOUND 分開的判準和 CODE_PROJECT_UNAVAILABLE 一樣：
+    下一步動作不同。那個是「這筆登錄不存在」（要重新登錄，或根本是打錯 id）；
+    這個是「登錄好好的，是磁碟沒掛上／專案被搬走／資料夾被砍了」，
+    要去改路徑，不必重新登錄。合成同一個碼會讓前端只能說一句「設定有問題」。
+
+    與 CODE_PROJECT_UNAVAILABLE 也分開：兩者指向不同的設定頁，而且後果不同
+    ——那邊是查到錯環境的程式碼（答案是錯的），這邊是**靜默漏掉**那天某個
+    repo 的 commit（草稿看起來正常，只是少了幾筆工時）。
+    """
+
+    code = "WORK_REPO_UNAVAILABLE"
+    http_status = 409
+    default_message = "工作 repo 的路徑不存在或不是 git repo"
+
+
+class WorklogAllocationError(ChatPulseError):
+    """這組數字算不出一份工時分配（`core/worklog_allocation.py`）。
+
+    刻意與 INVALID_PARAMETER 分開，雖然兩者都是 400：那個是「HTTP 請求沒照
+    api-contract 帶參數」——呼叫端的程式錯了，訊息要給前端工程師看；這個是
+    「參數形狀都對，但這組輸入分不出時數」：總時數湊不到半小時、這天一筆
+    證據都沒有、或權重是負數。
+
+    分開的理由是**下一步不同**。前者要改程式；後者多半要 Viewer 自己改輸入
+    的總時數（前端該把游標送回那個欄位），只有「權重是負數／NaN」那一種
+    是上游證據蒐集的 bug——而那一種借用 INVALID_PARAMETER 的話會混進一堆
+    前端傳錯參數的紀錄裡，是查工時算錯時最不想遇到的事。
+
+    ⚠️ 它永遠不是「分配失敗所以填 0」的降級訊號。工時算錯會進月結，月結後
+    要走 correction-request 才改得動，所以這裡寧可整份草稿失敗。
+    """
+
+    code = "WORKLOG_ALLOCATION_ERROR"
+    http_status = 400
+    default_message = "這組數字無法分配成工時"
+
+
+class WorklogDraftNotFound(ChatPulseError):
+    """這一天還沒有存下來的工時草稿。
+
+    **這是完全正常的狀態，不是錯誤**——多數日子本來就還沒產過草稿。性質與
+    DRAFT_NOT_FOUND 相同：前端拿到它只要顯示「這天還沒產草稿」的空狀態，
+    不該當成失敗跳出來。
+
+    刻意與 DRAFT_NOT_FOUND 分開，雖然兩者都是「草稿不存在」：那個是某一則
+    Mention 的回話草稿，這個是某一天的工時草稿。下一步動作（產一份回話
+    vs 產一天的工時）與畫面都不一樣，共用一個碼會讓前端分不出該畫哪個。
+    """
+
+    code = "WORKLOG_DRAFT_NOT_FOUND"
+    http_status = 404
+    default_message = "這一天還沒有工時草稿"
+
+
+class WorklogAlreadySubmitted(ChatPulseError):
+    """這份草稿已經送進 ZPlanner 了，不能再當草稿改。
+
+    擋的是「重新產生」與「整組取代」：已經送出的那幾筆在 ZPlanner 那側有
+    worklog id，本地把它們蓋掉**不會讓遠端跟著變**，只會讓兩邊對不起來——
+    而對不起來的後果是下一次送出製造出重複的工時。
+
+    要改已經送出的內容得走 PATCH／DELETE（月結後則是 correction-request），
+    不是改草稿。
+    """
+
+    code = "WORKLOG_ALREADY_SUBMITTED"
+    http_status = 409
+    default_message = "這份工時草稿已經送出，不能再修改"
+
+
+class WorklogSubmitInProgress(ChatPulseError):
+    """這一天的送出**正在進行中**，現在又來了第二個送出請求。
+
+    🔴 **刻意不與 WORKLOG_ALREADY_SUBMITTED 合併**，雖然兩個都是 409。那個是
+    「這份草稿已經送過了」（終局狀態，重來幾次都一樣）；這個是「正在送，還沒
+    結束」（暫時狀態，等幾秒就沒事了）。使用者的下一步完全不同——一個是去看
+    結果／走 correction-request，另一個是等一下再按一次。共用一個碼的話，前端
+    只能在「已送出」與「請稍候」之間猜一個，而猜錯的那半數情況會把人導去錯的
+    地方。
+
+    為什麼需要它：兩個重疊的送出會**各自**查一次「ZPlanner 這天已經有什麼」，
+    兩份底稿都是在對方寫入之前拍的，於是同一筆草稿被送出兩次。2026-09-14 實測
+    （兩條執行緒相隔 20ms 打同一天、草稿 2 筆）：`create_worklog` 被呼叫 4 次，
+    ZPlanner 多出 2 筆重複工時，而先回的那個請求回報 `failed=0 orphans=0`——
+    **重複工時在它身上完全隱形**。而重複工時月結後刪不掉，只能走
+    correction-request（要人審核）。
+
+    ⚠️ **這是「立刻拒絕」不是「排隊等」。** 排隊等會讓第二個請求最長卡 90 秒，
+    而使用者等不到回應時最常做的事就是再按一次——那正是要防的動作被原地放大。
+    """
+
+    code = "WORKLOG_SUBMIT_IN_PROGRESS"
+    http_status = 409
+    default_message = "這一天的工時正在送出中，請等它跑完再試"
+
+
+class WorklogLocked(ChatPulseError):
+    """這筆工時已經月結鎖定，PATCH 與 DELETE 都不會生效。
+
+    ZPlanner 的 `is_locked` 為真時，唯一的更正途徑是
+    `POST /api/worklogs/{id}/correction-requests/`——那是要人審核的流程，
+    不是一次 API 呼叫就結束的事。
+
+    刻意與 ZPLANNER_FORBIDDEN 分開：那個是「你在這個專案沒有這項權限」
+    （要找該專案 PM），這個是「時間已經過了」（權限再大也改不動）。
+    對使用者說的話完全不同，共用一個碼會讓人去找錯的人。
+    """
+
+    code = "WORKLOG_LOCKED"
+    http_status = 409
+    default_message = "這筆工時已經月結鎖定，要更正得走 correction-request"
+
+
 class RouteNotFound(ChatPulseError):
     """API 路徑不存在。
 
@@ -293,6 +424,33 @@ class ZPlannerUnavailable(ChatPulseError):
     code = "ZPLANNER_UNAVAILABLE"
     http_status = 502
     default_message = "無法連線到 ZPlanner"
+
+
+class ZPlannerWriteIndeterminate(ChatPulseError):
+    """寫入請求在傳輸層就失敗了——**不知道 ZPlanner 那邊有沒有寫進去**。
+
+    刻意與 ZPLANNER_UNAVAILABLE 分開，雖然兩者的成因看起來是同一類。差別在
+    **下一步能不能自動做**：
+
+    * ZPLANNER_UNAVAILABLE 用在唯讀查詢，重試無害，前端可以直接重試。
+    * 這個用在 POST／PATCH／DELETE，**一律不准自動重試**。重試可能在 ZPlanner
+      那邊變成兩筆，而月結之後多出來的那筆刪不掉，只能走 correction-request。
+
+    ⚠️ **連「連線被拒」也算進來，不只逾時。** 直覺會想把 ConnectionError 當成
+    「確定沒送達所以可以安全重送」，但 requests 的 ConnectionError 也涵蓋「送
+    出去了、對方處理完了、回應讀到一半連線斷掉」。我們分不出這兩種，而分不出
+    的時候唯一安全的假設是「可能已經寫進去了」。**只有拿到 code != 200 的回應
+    信封才證明沒有寫進去**——那是 ZPlanner 應用層親口說的。
+
+    對應到 `worklog_draft_entries.state` 的 `unknown`（見 `core/db.py`）：
+    這種筆不自動重試，改請人對帳。對帳現在很便宜——用
+    `ZPlannerClient.export_worklogs(date_from, date_to)` 查那一天，
+    看得到就是寫進去了。
+    """
+
+    code = "ZPLANNER_WRITE_INDETERMINATE"
+    http_status = 502
+    default_message = "工時可能已經送出，但無法確認——請先對帳再決定要不要重送"
 
 
 class ZPlannerApiError(ChatPulseError):

@@ -7,6 +7,7 @@ import { PersonasPage } from '@/components/settings/PersonasPage'
 import { ReplyDefaultsPage } from '@/components/settings/ReplyDefaultsPage'
 import { ReplyPromptsPage } from '@/components/settings/ReplyPromptsPage'
 import { SpacePrefsPage } from '@/components/settings/SpacePrefsPage'
+import { WorkRepoPage } from '@/components/settings/WorkRepoPage'
 import { hashForSettings, type SettingsTab } from '@/lib/route'
 import { cn } from '@/lib/utils'
 import { useRouter } from '@/router/useRouter'
@@ -18,6 +19,7 @@ const TABS: { id: SettingsTab; label: string; hint: string }[] = [
   { id: 'personas', label: 'Persona', hint: '匯入、更新、看淨化掉了什麼' },
   { id: 'prompts', label: '常用提示詞', hint: '存起來重複使用的提示' },
   { id: 'code-projects', label: '參考專案', hint: '程式碼佐證的分支對應' },
+  { id: 'work-repos', label: '我的工作 repo', hint: '工時草稿要撈誰的 commit' },
   { id: 'spaces', label: 'Space', hint: '釘選常用的、給私訊取名' },
   { id: 'data', label: '資料', hint: '用量與歷史 Summary' },
 ]
@@ -30,6 +32,8 @@ function PageFor({ tab }: { tab: SettingsTab }) {
       return <ReplyPromptsPage />
     case 'code-projects':
       return <CodeProjectsPage />
+    case 'work-repos':
+      return <WorkRepoPage />
     case 'spaces':
       return <SpacePrefsPage />
     case 'data':

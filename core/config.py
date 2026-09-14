@@ -251,6 +251,114 @@ ZPLANNER_PAGE_SIZE_MAX = 200
 # 安全閥，用途同上面的 MAX_PAGES：分頁欄位異常時避免無限迴圈
 ZPLANNER_MAX_PAGES = 50
 
+# --- Draft Worklog 的證據蒐集（ADR-0008，core/worklog_evidence.py）---
+# 這一組全部是**啟發式的上限與權重**，不是量測出來的常數。放在這裡而不是散在
+# 模組裡，是為了「調一個數字不必改邏輯」；改動它們只會讓草稿的證據多一點或
+# 少一點，不會改變任何人看得到的判斷——專案歸屬永遠由 Viewer 自己選。
+
+# 一個 repo 在一天之內**保留幾筆** commit 證據。同一個人一天 commit 超過這個
+# 數量，多半是批次匯入或 rebase 重寫，再多留也只是把權重稀釋掉。
+# ⚠️ 這不是 `git log -n` 的值（那是下面的 WORKLOG_GIT_SCAN_LIMIT）：兩者混用
+# 正是 2026-09-13 那個漏證據缺陷的一半成因。超過這個數量會標 `truncated`。
+WORKLOG_MAX_COMMITS_PER_REPO = int(
+    os.environ.get("CHATPULSE_WORKLOG_MAX_COMMITS", "200")
+)
+
+# ⚠️ `--since`／`--until` 濾的是 **committer date**，不是 `%aI`（author date）。
+# rebase／amend／cherry-pick 過的 commit 兩者可以差好幾天，只靠 git 篩會**靜默
+# 漏掉**那天真正寫的東西。所以 git 這一層只當粗篩，真正的日界一律在 Python 用
+# author date ＋ Viewer 的 tz_offset 再切一次。
+#
+# 這個數字現在只放寬**下界**（`--since`）。上界已經整個拿掉——理由見
+# `worklog_evidence._log_args`：放寬固定時數只能覆蓋「N 小時內完成的 rebase」，
+# 把功能分支擺兩週再 rebase 是日常，不是邊緣情況。下界仍要放寬是因為機器時鐘
+# 有可能讓 committer date 比 author date 早一點。
+WORKLOG_GIT_WINDOW_PADDING_HOURS = int(
+    os.environ.get("CHATPULSE_WORKLOG_GIT_PADDING_HOURS", "72")
+)
+
+# `git log -n` 的值：從「日界起算」往後**掃過幾筆**候選紀錄。
+#
+# 拿掉 `--until` 上界之後，視窗變成 `[日界 − padding, ∞)`，而 git log 是
+# **committer date 由新到舊**輸出——`-n` 砍掉的正好是最舊的那一端，也就是我們
+# 要的那一天。所以這個數字要大得足以涵蓋「從目標日到今天，這位作者的全部
+# commit」；以一天 20 個 commit 估，2000 筆約等於一百天的回補範圍。
+#
+# 碰到這個上限**一定會標 `truncated`**：那代表最舊的一端（目標日）有可能被砍掉，
+# 使用者唯一能察覺的方式就是那個旗標。調小它會讓回補舊日期變得不可靠。
+WORKLOG_GIT_SCAN_LIMIT = int(
+    os.environ.get("CHATPULSE_WORKLOG_GIT_SCAN_LIMIT", "2000")
+)
+
+# git 指令逾時。預設沿用參考專案那組（同一個 _git，同一種等待成本）。
+WORKLOG_GIT_TIMEOUT = int(
+    os.environ.get("CHATPULSE_WORKLOG_GIT_TIMEOUT", str(CODE_GIT_TIMEOUT))
+)
+
+# 設定頁「重新檢查」時掃幾筆 commit 來列 detected_emails。夠多到涵蓋一個人
+# 常用的幾個信箱，又不至於在大 repo 上讓按鈕轉太久。
+WORKLOG_EMAIL_SCAN_COMMITS = int(
+    os.environ.get("CHATPULSE_WORKLOG_EMAIL_SCAN", "200")
+)
+
+# 🔴 Chat 證據的母體上限。整個帳號有四百多個 Space，**絕不是全部都掃**：
+# 母體是「釘選的 Space ∪ 當天有 Mention 命中的 Space」，這個數字是那之上的
+# 硬上限，避免有人把幾百個 Space 全部釘起來之後把產草稿變成一次全帳號掃描。
+WORKLOG_MAX_SPACES = int(os.environ.get("CHATPULSE_WORKLOG_MAX_SPACES", "20"))
+
+# 一個 Space 在一天之內**保留幾則自己的發言**。與上面的 commit 上限同義，
+# 超過會標 `truncated`。
+# ⚠️ 這不是「翻幾則訊息」（那是下面的 WORKLOG_CHAT_SCAN_PER_SPACE）。
+# `list_messages_since` 的 filter 只有 `createTime >`、排序是 ASC，撈回來的是
+# **整個 Space 的**訊息；把這個數字當成翻頁額度的話，額度會被別人的閒聊吃光，
+# 當天下午之後自己的發言整批消失，而且 `message_count` 看起來完全正常。
+WORKLOG_MAX_CHAT_MESSAGES_PER_SPACE = int(
+    os.environ.get("CHATPULSE_WORKLOG_MAX_CHAT_MESSAGES", "200")
+)
+
+# 一個 Space 最多**翻過幾則訊息**（含別人的）才放棄。
+#
+# 正常的停止條件是「翻到訊息時間越過日界」，不是「額度用完」；這個數字只是
+# 熱門聊天室的安全閥，用完而且還沒翻到日界才會標 `truncated`。
+# 以每 2 分鐘一則的熱門聊天室估，一整天約 700 則，1000 則留了餘裕。
+WORKLOG_CHAT_SCAN_PER_SPACE = int(
+    os.environ.get("CHATPULSE_WORKLOG_CHAT_SCAN", "1000")
+)
+
+# 短到沒有資訊量的發言（「好」「收到」「ok」）不當證據。設 2 是**刻意保守**：
+# 寧可多留幾則沒用的，也不要把一句「已修好，改用 utf8mb4」丟掉。
+WORKLOG_MIN_CHAT_CHARS = int(os.environ.get("CHATPULSE_WORKLOG_MIN_CHAT_CHARS", "2"))
+
+# @ 了人的發言權重加成。理由是它多半是在交辦或回報，而不是閒聊；
+# 倍率刻意壓在 2 以下——它只該讓同一天的排序稍微動一下，不該決定時數。
+WORKLOG_CHAT_MENTION_BONUS = float(
+    os.environ.get("CHATPULSE_WORKLOG_MENTION_BONUS", "1.5")
+)
+
+# 每則證據抽幾個關鍵字（拿去配 ZPlanner issue 候選）。與 CODE_MAX_TERMS 同量級。
+WORKLOG_MAX_TERMS = int(os.environ.get("CHATPULSE_WORKLOG_MAX_TERMS", "8"))
+
+# 長得像 issue key、但其實是**標準文件編號**的前綴（`ADR-0008`、`UTF-8`、
+# `RFC-3339`）。技術團隊的 commit message 裡遍地都是，而它們完全符合
+# 「大寫前綴 ＋ 連字號 ＋ 數字」這個形狀。
+#
+# ⚠️ **這是啟發式，而且一定會誤殺**：哪天真的有一個代號叫 `SQL` 或 `HTTP` 的
+# 專案，`SQL-1234` 就會被當成標準編號而失去最強訊號（退回用 repo 分群、換一個
+# 關鍵字去查候選，不會有人被填錯工時）。誤殺的出口就是這個環境變數：逗號分隔，
+# 設成空字串代表不擋任何前綴。
+#
+# 為什麼不改用「ZPlanner 查得到才算數」這個更準的判準：那需要在分群時打
+# ZPlanner，而 `worklog_clustering` 是純資料轉換、連 HTTP 都不碰（它的測試才
+# 跑得起來）；候選查詢發生在 API 層，等查完才知道真假已經來不及分群了。
+WORKLOG_NON_ISSUE_PREFIXES = frozenset(
+    part.strip().upper()
+    for part in os.environ.get(
+        "CHATPULSE_WORKLOG_NON_ISSUE_PREFIXES",
+        "ADR,RFC,ISO,UTF,SHA,AES,RSA,UTC,CVE,PEP,HTTP,SQL",
+    ).split(",")
+    if part.strip()
+)
+
 # --- 儲存 ---
 DB_PATH = os.environ.get("CHATPULSE_DB", os.path.join(DATA_DIR, "chatpulse.db"))
 # 加密金鑰刻意不與資料庫同檔存放（SPECIFICATION.md 九節設計要點）

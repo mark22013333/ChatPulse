@@ -1,4 +1,5 @@
 import { formatDateTime } from '@/lib/format'
+import type { Section } from '@/lib/modules'
 import type { DraftPolishMeta, SseMeta } from '@/lib/types'
 
 /**
@@ -10,6 +11,46 @@ import type { DraftPolishMeta, SseMeta } from '@/lib/types'
  * 鍵盤與觸控使用者完全拿不到。把它們抽成有型別的資料，可測性與可及性
  * 一次解決。
  */
+
+/**
+ * 這份證據是哪個工作台產生的。
+ *
+ * 與 `Section` 不是一對一：設定是覆蓋層、沒有自己的證據，會落回底下那個
+ * 工作台。用 `evidenceOriginOf()` 換算，不要自己比對字串。
+ */
+export type EvidenceOrigin = 'summary' | 'draft' | 'worklog'
+
+/**
+ * `Section` → 證據來源。
+ *
+ * ### 為什麼要有這個函式
+ *
+ * 這個映射原本以 `section === 'mentions' ? 'draft' : 'summary'` 的形式
+ * **散在三個地方**：`AppShell` 的證據抽屜、`TopBar` 的證據鈕、
+ * `EvidenceColumn` 的 `isDraft`。二元的時候三份各寫各的沒有問題，
+ * 加第三個工作台的那一刻，三處會一起安靜地把它判成 summary——
+ * 證據欄於是理直氣壯地顯示**別的工作台**的證據，而且不會編譯失敗。
+ *
+ * 換成 switch 之後，少寫一個 section 會在 `never` 那行編譯失敗。
+ */
+export function evidenceOriginOf(section: Section): EvidenceOrigin {
+  switch (section) {
+    case 'mentions':
+      return 'draft'
+    case 'worklog':
+      return 'worklog'
+    case 'summary':
+      return 'summary'
+    // 設定是覆蓋層，證據欄仍屬於底下那個工作台（既有行為）
+    case 'settings':
+      return 'summary'
+    default: {
+      const exhaustive: never = section
+      void exhaustive
+      return 'summary'
+    }
+  }
+}
 
 export type EvidenceKind =
   | 'context'
@@ -64,7 +105,7 @@ export interface EvidenceItem {
 
 export interface EvidenceBundle {
   runId: string
-  origin: 'summary' | 'draft'
+  origin: EvidenceOrigin
   items: EvidenceItem[]
   /** 非 ok 的項數；抽屜關著時頂列亮點看這個 */
   attentionCount: number
@@ -77,7 +118,7 @@ const CONTEXT_MODE_LABEL: Record<string, string> = {
 }
 
 interface ToEvidenceInput {
-  origin: 'summary' | 'draft'
+  origin: EvidenceOrigin
   meta: SseMeta | null
   polish: DraftPolishMeta | null
   streaming: boolean

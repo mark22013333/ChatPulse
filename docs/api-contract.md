@@ -12,6 +12,9 @@
   ```json
   { "error": { "code": "SPACE_NOT_FOUND", "message": "找不到指定的聊天室" } }
   ```
+  少數錯誤會多一個 `error.detail`（**物件**），放前端需要照數字處理的結構化補充，
+  例如「重產會清掉幾筆已選的專案」。**沒有這個欄位是常態**，前端要當它可能不在；
+  它出現時才是權威，不要從 `message` 那句中文裡用正則挖數字。
 - `limit` 的**範圍**一律 1~1000，超出回 `400 INVALID_PARAMETER`。**預設值多為 50，但依端點而異**（`/mentions` 是 200——那是「列幾筆 Mention」，與「一個 Space 抓幾則對話」不是同一件事），各端點的預設值見下方各節
 - `style` 只接受 `general` / `technical` / `action_only`
 - `provider` 選填，決定用哪個 AI 供應商。可用值：`claude_cli`／`gemini`
@@ -30,6 +33,8 @@
 | 404 | `SPACE_NOT_FOUND` / `MENTION_NOT_FOUND` / `ROUTE_NOT_FOUND` | 目標不存在；`ROUTE_NOT_FOUND` 專指 API 路徑打錯（刻意與 SPACE_NOT_FOUND 分開，否則前端會把「端點打錯」顯示成「聊天室不見了」） |
 | 404 | `PERSONA_NOT_FOUND` | 找不到指定的 Persona（**只在「這一次明確指定」時拋**；偏好裡的 id 失效是降級成不使用，不是錯誤） |
 | 404 | `REPLY_PROMPT_NOT_FOUND` | 找不到指定的 Reply Prompt Preset。同上，偏好失效不拋 |
+| 404 | `WORK_REPO_NOT_FOUND` | 找不到指定的「我的工作 repo」登錄（ADR-0008）。**刻意與 `CODE_PROJECT_NOT_FOUND` 分開**：那是參考專案（查程式碼用），這是工作 repo（產工時草稿用），兩份登錄各有自己的表、id 序號與設定頁，合碼會把人送去錯的那一頁 |
+| 409 | `WORK_REPO_UNAVAILABLE` | 登錄還在，但本機路徑已經不是可讀的 git repo（磁碟沒掛上／專案被搬走）。與 `WORK_REPO_NOT_FOUND` 分開的判準是下一步不同：這個要去改路徑，不必重新登錄。與 `CODE_PROJECT_UNAVAILABLE` 同族但不同碼——後果不同，那邊是查到錯環境的程式碼，這邊是靜默漏掉那天某個 repo 的 commit |
 | 409 | `PERSONA_INVALID` | 這份 Persona 淨化後沒有可用的風格資訊，或已被停用。**東西存在但不能用**，與 `CODE_PROJECT_UNAVAILABLE` 同族。淨化後為空是**可預期的正常結果**，不是 bug |
 | 409 | `SEPIA_UNAVAILABLE` | 要求潤稿但 vendored 規則檔不可用。**在 SSE 開始之前就回**。這與「潤稿跑了但完整性檢查沒過」不同——後者退回未潤稿版本並在 `polish.fallback_reason` 說明，不拋錯 |
 | 429 | `CHAT_RATE_LIMITED` / `GEMINI_QUOTA_EXCEEDED` / `CLAUDE_QUOTA_EXCEEDED` | 上游限流，帶 `Retry-After`。兩個 AI 的配額分開列，前端可據此建議「換一個供應商試試」 |
@@ -43,6 +48,7 @@
 | code | 情境 |
 | :--- | :--- |
 | `NO_MESSAGES` | 該聊天室在指定範圍內沒有可摘要的對話。串流已開始，只能以事件告知 |
+| `NO_EVIDENCE` | 那一天沒有任何 commit 或發言可以產工時草稿（ADR-0008）。比照 `NO_MESSAGES`：**這不是錯誤狀態，是「那天沒有留下痕跡」**，所以不落地任何草稿 |
 | `INTERNAL_ERROR` | 串流開始之後才發生的未預期錯誤 |
 
 ## SSE 事件格式（8.3）
@@ -658,6 +664,458 @@ GitHub 未認證每小時只有 60 次呼叫，前端不要拿它做輸入即時
 
 ---
 
+## Draft Worklog（工時草稿，ADR-0008）
+
+從 Viewer 的 git commit 與 Chat 發言產生每日工時草稿。
+
+目前完成：「我的工作 repo」登錄、**週檢視**（`GET /worklogs/week`）、**草稿產生**
+（`POST /worklogs/{date}/draft/stream`）、**送出**（`POST /worklogs/{date}/submit`）。
+**尚未實作**：`GET`／`PUT /worklogs/{date}`、`GET /zplanner/issues/search`、
+`GET /zplanner/permissions`（候選與權限目前只在草稿的 SSE `meta` 裡一次帶回，
+沒有獨立的搜尋端點）。
+
+### 我的工作 repo
+
+全部需登入，且一律限於自己的登錄（`viewer_id` 是 repository 層的必填查詢條件，
+沒有「查全部」的入口；別人的登錄連 id 猜對了也讀不到，回 404 不是 403）。
+
+> **與「參考專案」是兩份不同的登錄，不要共用。** 那邊（`/code-projects`，ADR-0006）
+> 是為了**查程式碼回答問題**而登的，必須釘死是哪個環境的哪一版；這邊是為了
+> **回想這天做了什麼**。兩者的分支語意正好相反，見下方 `branch_filter`。
+
+| 端點 | 說明 |
+| :--- | :--- |
+| `GET /api/v1/work-repos` | 列出，回 `{"repos":[...]}` |
+| `POST /api/v1/work-repos` | 登錄，同步驗證路徑 |
+| `PATCH /api/v1/work-repos/{id}` | 部分更新，同步驗證路徑 |
+| `DELETE /api/v1/work-repos/{id}` | 刪除，回 `{"deleted": true}` |
+| `POST /api/v1/work-repos/{id}/verify` | 重新確認路徑還是可讀的 git repo |
+
+登錄 body：
+```json
+{ "name": "智慧客服後端", "repo_path": "/Users/me/repos/cs-backend",
+  "author_emails": ["me@corp.com", "me@personal.dev"],
+  "branch_filter": [],
+  "default_zplanner_project_id": 42, "default_zplanner_project_key": "PEI" }
+```
+
+- `repo_path` 必須是**絕對路徑**（相對路徑會相對於伺服器的工作目錄去解，
+  那跟使用者心裡想的不是同一個地方）。
+- `author_emails` 是**陣列，不是單值**：同一個人在不同 repo 常常設不同的
+  `user.email`（公司信箱、個人信箱、GitHub 的 noreply）。只填一個會讓另一個
+  信箱的 commit **靜默漏掉**——草稿照樣產得出來，只是少了那幾筆工時。
+  不確定自己在這個 repo 用哪個信箱時，先建立、再按「重新檢查」，
+  `verification.detected_emails` 會列出來。
+- `branch_filter` **空陣列＝掃 `--all`（全部分支）**，不是「不掃」。有值才當白名單。
+  ⚠️ 這與 `/code-projects` 的「環境→釘死一個分支」**相反**，不是疏忽：那邊拿錯
+  環境等於給出錯的答案，這邊漏掉一個還沒合併的 feature 分支就等於漏掉那天的工作。
+- `default_zplanner_project_id` / `_key` **只用來把該專案的 issue 排進候選清單並
+  標示來源，絕不自動填**（ADR-0008 的唯一硬規則：專案歸屬一律由 Viewer 在確認
+  畫面選）。猜錯的那次長得跟猜對的一模一樣，而 ZPlanner 的工時會進月結，
+  月結後不能直接改、要走 correction-request。
+
+**兩條唯一性限制**，違反時回 `400 INVALID_PARAMETER`（先查一次才回得出看得懂的
+訊息，否則會是 `UNIQUE` 撞出來的 500）：
+- `(viewer_id, name)` — 同名只是難看。
+- `(viewer_id, repo_path)` — **同一個 repo 登錄兩次會讓同一批 commit 被算兩遍，
+  時數會分錯。** 這條是為了算對工時，不是為了美觀。
+
+`PATCH` 的語意：
+- `author_emails`／`branch_filter` 是**整組取代**，不是逐項合併（比照 code-projects
+  的 `branches`）——否則「把某個舊信箱拿掉」這個動作沒有辦法表達。
+- `default_zplanner_project_id`／`_key` 送 **`null` 代表「清除」**，欄位**沒出現**
+  才是「不改」（比照 `PATCH /preferences` 的回覆設定欄位）。「這個 repo 沒有預設
+  專案」是使用者會主動選的狀態，必須存得下去。
+- 其餘欄位沒帶就是不改。
+
+POST／PATCH／verify 都回帶 `verification` 的單筆：
+```json
+{ "id": 3, "name": "智慧客服後端", "repo_path": "/Users/me/repos/cs-backend",
+  "author_emails": ["me@corp.com"], "branch_filter": [],
+  "default_zplanner_project_id": 42, "default_zplanner_project_key": "PEI",
+  "enabled": true, "last_verified_at": "2026-09-13T03:12:07+00:00",
+  "last_verify_error": null, "created_at": "…", "updated_at": "…",
+  "verification": { "ok": true, "error": null, "head_sha": "a3f91c2",
+                    "detected_emails": ["me@corp.com", "someone-else@corp.com"] } }
+```
+
+- `ok: false` 時 `error` 是可直接顯示的繁中句子（`路徑不存在或不是資料夾`／
+  `這個路徑不是 git repo`），同一份字串也會寫進 `last_verify_error`。
+- **路徑當下不可讀仍然建立成功**（外接磁碟可能還沒掛上、專案可能待會才 clone），
+  但 `last_verify_error` 會被記下來讓設定頁標警告。理由同參考專案的
+  「分支不存在仍然建立成功」——登錄時大聲提醒，遠比產草稿時才發現便宜。
+- `head_sha` 在剛 `git init`、還沒有任何 commit 的 repo 是 `null`。那**不是**錯誤，
+  `ok` 仍然是 `true`。
+- `detected_emails` 掃最近 200 筆 commit 的作者信箱，去重後**最近用過的排前面**
+  （只差大小寫的視為同一個）。它是**給人看的參考**，後端不會自動寫進
+  `author_emails`——同一條哲學：由人指定，系統不自動發現。
+- 讀 git 一律**不碰工作區**（ADR-0006 鐵律）：只跑 `rev-parse` 與 `log`，
+  不 checkout、不動 index，使用者未提交的修改不受影響。
+
+`verification` 的形狀**刻意與 code-projects 的不同**（那邊是
+`{repo_ok, branches, working_tree_dirty, error}`）：這裡沒有釘死的分支可以驗，
+硬套同一個形狀只會多出永遠空著的 `branches` 欄位。
+
+### `GET /api/v1/worklogs/week`
+
+需登入。query：`week_start`（`YYYY-MM-DD`，必填）。合併**本地草稿狀態**與
+**ZPlanner 既有工時**，給週欄用。
+
+```json
+{ "week_start": "2026-09-07", "week_end": "2026-09-13",
+  "days": [
+    { "work_date": "2026-09-07", "weekday": 1,
+      "draft": { "id": 12, "work_date": "2026-09-07", "status": "draft",
+                 "total_hours": "8.00", "tz_offset": "+08:00",
+                 "generation_meta": { "...": "..." },
+                 "generated_at": "…", "created_at": "…", "updated_at": "…",
+                 "entry_count": 3, "hours": "8.00", "allocated_hours": "8.00",
+                 "submitted_count": 0, "failed_count": 0, "unknown_count": 0,
+                 "unassigned_count": 3 },
+      "zplanner": { "hours": "8.00", "worklog_count": 2 } },
+    { "work_date": "2026-09-08", "weekday": 2, "draft": null, "zplanner": null } ],
+  "totals": { "draft_hours": "8.00", "days_with_draft": 1, "days_submitted": 0,
+              "entries_unassigned": 3 },
+  "zplanner": { "available": true, "total_hours": "16.00", "worklog_count": 5,
+                "target_hours": "40.00", "completion_pct": 38.8 } }
+```
+
+- **七天一律回滿**，沒有草稿的那天 `draft` 是 `null`。前端不必自己補空格——
+  「這天還沒產草稿」與「這天不在回應裡」必須是同一件事，否則週欄會少一列。
+- `week_start` 照傳進來的那天往後算七天，**不強制是星期一**（週的起點是前端的
+  顯示決定）。回應一定同時帶 `week_start` 與 `week_end`，讓兩邊對得起來。
+  `weekday` 是 ISO 星期（1＝一），給「週六/日 休」那兩列用。
+- `draft.total_hours` 是 Viewer 輸入的總時數，`draft.hours` 是**各筆之和**——
+  兩者不保證相等（湊 0.5 倍數必然有餘數），真正會送出的是後者。
+- `unassigned_count` 是還沒選專案的筆數。**未選擋住送出**（ADR-0008），
+  週欄要看得出「這天還差幾筆沒決定」。
+- 🔴 **ZPlanner 不可用時不會讓這支端點失敗**：`zplanner` 變成
+  `{"available": false, "reason": "…"}`，`days[].zplanner` 全部是 `null`，
+  **本地草稿照常回**。沒設 ZPlanner 的人仍然看得到自己的草稿。
+  `reason` 是可直接顯示的繁中句子（未設定／連線逾時／回應形狀不認得）。
+- `zplanner.worklog_count` 數的是**工時筆數**，不是有填工時的天數。ZPlanner 的
+  `days[]` 沒有筆數欄位，實際筆數在 `entries` 陣列的長度（2026-09-13 實測）。
+- `target_hours` 與 `completion_pct` **由 ZPlanner 算**，取不到時這兩個欄位
+  整個不出現（不是 `null`）。前端據此決定要不要畫「還差多少」那一行。
+  ⚠️ **不會補預設值**：編一個 40 小時的目標會讓完成率變成看起來精確的假數字。
+  `target_hours` 是字串（與其他時數一致），`completion_pct` 是 float。
+- 🔴 **非本週一律看不到 ZPlanner 的工時。** ZPlanner 的 `GET /api/worklogs/weekly/`
+  **只回本週**，`week_start` 送了沒有作用（2026-09-14 實測五種輸入皆回同一週，
+  OpenAPI schema 也沒宣告這個參數）。所以切到上週時，`days[].zplanner` 全是 `null`、
+  `zplanner.total_hours` 是 `"0.00"`，並帶 `week_mismatch`——**那不代表那幾天沒填**。
+  要讀非本週的工時得走 ZPlanner 的匯出端點（`date_from`／`date_to`），見
+  `core/zplanner_client.export_worklogs`；本端點尚未接上它。
+- 🔴 **`zplanner.total_hours` 永遠等於 `days[].zplanner.hours` 的和。** 除了上面那個
+  成因，`week_start` 不強制是星期一也會讓兩邊錯開（本端點的七天由前端決定起點，
+  ZPlanner 那側固定週一起算）。落在窗口外的日期一律**不算進總計**，否則表頭與
+  下面的格子會對不起來（實測：請求週日起的 `2026-09-06`，格子合計 40.0 小時、
+  表頭卻寫 44.00 小時、完成率 110%——那是 ZPlanner 那一週的和）。
+- 錯開時多一個 `zplanner.week_mismatch`，且 **`target_hours` 與 `completion_pct`
+  整個不出現**（它們描述的是 ZPlanner 那一週，套到這七天上就是算錯的數字）：
+  ```json
+  { "available": true, "total_hours": "40.00", "worklog_count": 5,
+    "week_mismatch": { "requested_week_start": "2026-09-06",
+                       "requested_week_end": "2026-09-12",
+                       "zplanner_week_start": "2026-09-07",
+                       "zplanner_week_end": "2026-09-13",
+                       "reason": "…可直接顯示的繁中句子…" } }
+  ```
+  `available` 仍然是 `true`：逐日資料照樣對得起來，整段報廢反而少給了能用的東西。
+  ZPlanner 回應沒有 `week_start`／`week_end`（舊版或裸清單）時不判定錯開——
+  沒有東西可以比對，就只靠逐日資料的日期自然過濾。
+
+### `POST /api/v1/worklogs/{date}/draft/stream`
+
+需登入。**SSE**。`{date}` 是 `YYYY-MM-DD`。body：
+```json
+{ "tz_offset": "+08:00", "repo_ids": [3], "space_ids": ["spaces/AAA"],
+  "total_hours": 8, "provider": null, "force": false }
+```
+
+| 欄位 | 語意 |
+| :--- | :--- |
+| `tz_offset` | **必填**，`+08:00`／`+0800`／`Z`。日界由它決定——「半夜一點的 commit 算哪一天」必須有寫得出來的依據，不是伺服器剛好設成什麼。非法值 `400` |
+| `repo_ids` | 省略／空 ＝ 全部**啟用中**的工作 repo。指定了但那筆不存在或已停用 → `404 WORK_REPO_NOT_FOUND` |
+| `space_ids` | 省略 ＝ 釘選的 Space ∪ 當天有 Mention 命中的 Space。**絕不掃全部 436 個**；非 `spaces/` 開頭 → `400` |
+| `total_hours` | **省略就不分配**，`entries[].hours` 一律 `null` |
+| `provider` | 這一階段**不接 AI**，只回進 `meta.provider` 備查 |
+| `force` | 預設 `false`。明示「我知道重產會清掉已經選好的專案，還是要重來」。**蓋不過「已送進 ZPlanner」那條線**（見下方重產規則） |
+
+事件序：`meta` → 每群一個 `chunk` → `done`。**事件型別不新增**，仍只有
+`meta`／`chunk`／`done`／`error`。以上參數錯誤全部**在 SSE 開始之前**回 4xx。
+
+`meta` ＝ `DayEvidence.to_meta()`（`work_date`／`tz_offset`／`since`／`until`／
+`repos[]`／`repos_skipped[]`／`spaces[]`／`spaces_skipped[]`／`commits[]`／`chat[]`）
+再加上 `clusters[]`、`zplanner`、`provider`／`model`／`note_source`。
+
+```json
+{ "type": "meta", "work_date": "2026-09-13", "tz_offset": "+08:00",
+  "commits": [ { "ref": "commit:a3f…", "kind": "commit", "sha": "a3f…", "short_sha": "a3f91c2",
+                 "subject": "fix: PEI-133 匯出逾時", "authored_at": "2026-09-13T10:00:00+08:00",
+                 "author_email": "me@corp.com", "insertions": 42, "deletions": 3,
+                 "files_changed": 2, "branches": ["main"], "terms": ["PEI-133"],
+                 "weight_input": 3.8067, "source_label": "cs-backend" } ],
+  "chat": [ { "ref": "chat:spaces/AAA/messages/m1", "kind": "chat",
+              "message_name": "spaces/AAA/messages/m1", "space_id": "spaces/AAA",
+              "space_name": "客服專案群", "is_mention": false, "char_count": 24,
+              "occurred_at": "2026-09-13T11:00:00+08:00" } ],
+  "clusters": [ { "key": "issue:PEI-133", "kind": "issue", "label": "PEI-133",
+                  "reason": "2 個 commit 都提到 PEI-133（跨 cs-backend、cs-frontend）",
+                  "weight": 7.61, "evidence_refs": ["commit:a3f…", "commit:b7c…"],
+                  "terms": ["PEI-133", "export"], "occurred_at": "2026-09-13T10:00:00+08:00",
+                  "issue_key": "PEI-133", "commit_count": 2, "chat_count": 0,
+                  "source_labels": ["cs-backend", "cs-frontend"],
+                  "candidates": [ { "issue_id": 9, "issue_key": "PEI-133", "title": "訂單匯出效能",
+                                    "project_id": 42, "project_key": "PEI",
+                                    "source": "issue_key", "confidence": "strong",
+                                    "reason": "你在 commit 訊息裡直接寫了 PEI-133",
+                                    "can_worklog": true, "permission_checked": true,
+                                    "permission_reason": "" } ] } ],
+  "zplanner": { "available": true, "reason": "", "queried_terms": ["PEI-133"],
+                "worklogable_count": 4, "permission_checked": false,
+                "permission_email": "me@corp.com", "permission_email_source": "viewer_email",
+                "permission_note": "…", "projects_checked": [ { "project_id": 42,
+                "role": "developer", "can_worklog": true, "checked": true, "reason": "" } ],
+                "errors": [] },
+  "provider": null, "model": null, "note_source": "commit_subject" }
+```
+
+**證據欄只能顯示 `meta` 裡有的東西**（設計紅線：任何無法回溯到 `meta` 某個欄位的
+東西不准進證據欄），所以這裡漏掉什麼，前端就永遠顯示不出來。
+`clusters[].evidence_refs` 用字串指回 `commits[]`／`chat[]` 的 `ref`，
+**前端拿到指不到的 ref 直接丟棄**。
+
+`repos[].truncated`／`spaces[].truncated` 的語意是「**有東西沒進來**」，不是
+「掃到了上限」。它是使用者唯一能察覺「那天可能漏了證據」的訊號，所以只有
+真的可能漏掉時才是 `true`：
+
+- **repo**：掃描預算（`WORKLOG_GIT_SCAN_LIMIT`）用完，或那天的 commit 超過
+  單日保留上限。
+  ⚠️ **`git log` 刻意沒有 `--until` 上界**——`--since`／`--until` 濾的是
+  committer date，而 rebase 可以發生在寫程式之後的**任何時候**（把功能分支
+  擺兩週再 rebase 是日常）。固定的上界只覆蓋得了「N 小時內完成的 rebase」，
+  超過的會被 git 直接濾掉，而且 `truncated` 還是 `false`、`skipped` 還是空的
+  ——使用者完全看不出那天少了東西。代價是視窗變成 `[日界−72h, ∞)`，而 git log
+  是 committer date 由新到舊輸出，`-n` 砍掉的正好是最舊的那一端（＝目標日）。
+- **space**：翻頁預算用完卻還沒翻到日界，或自己的發言超過保留上限。
+  ⚠️ Google Chat 的 `list_messages_since` 只支援 `createTime >`、預設 ASC，
+  所以額度**會被別人的閒聊吃光**。翻頁的停止條件因此是「訊息時間越過日界」，
+  不是「拿到 N 則」——後者會讓當天下午之後自己的發言整批消失。
+
+分群規則（由強到弱，先命中先歸群，實作在 `core/worklog_clustering.py`）：
+
+| 序 | 規則 | `label` | `kind` |
+| :--- | :--- | :--- | :--- |
+| 1 | commit message／發言裡的 **issue key**（`PEI-133`） | 那個 key | `issue` |
+| 2 | 其餘 commit 按 **repo** | repo 名 | `repo` |
+| 3 | Chat 按 **Space** | Space 名 | `space` |
+
+規則 1 最強而且**會跨 repo**（同一張單在前後端各改一半是常態）。
+`ADR-0008`／`UTF-8`／`RFC-3339` 這類「長得像單號」的前綴**會被濾掉**，不自成一群。
+每群的 `weight` 是成員 `weight_input` 的總和，**每筆證據只進一群**（進兩群等於那天
+的時數憑空多出一塊）。`reason` 是**可直接顯示的中文句子**——分群是啟發式，猜錯時
+使用者唯一能察覺的方式就是讀那句話。
+
+`chunk` 每群一個，帶 `index`／`cluster_key`／`text`：
+```json
+{ "type": "chunk", "index": 0, "cluster_key": "issue:PEI-133", "text": "fix: PEI-133 匯出逾時；PEI-133 加上重試" }
+```
+⚠️ **這一階段的 `text` 不是 AI 寫的**，是該群前兩筆 commit subject 以「；」相接
+（超長截斷），`meta.note_source` 會標 `commit_subject`。AI 潤飾是後續的事。
+
+`done`：
+```json
+{ "type": "done", "draft_id": 12,
+  "entries": [ { "id": 31, "seq": 1, "cluster_key": "issue:PEI-133", "label": "PEI-133",
+                 "reason": "2 個 commit 都提到 PEI-133（跨 cs-backend、cs-frontend）",
+                 "issue_id": null, "issue_key": null,
+                 "hours": "3.50", "allocated_hours": "3.50", "rounded_up": true,
+                 "weight": 7.61, "note": "fix: PEI-133 匯出逾時；PEI-133 加上重試",
+                 "evidence_refs": ["commit:a3f…"], "candidates": [ "…同 meta" ],
+                 "state": "pending" } ],
+  "allocation": { "total_hours": "8.00", "entries": [ { "index": 0, "issue_key": "PEI-133",
+                  "allocated_hours": "3.50", "rounded_up": true, "merged_into": null } ],
+                  "adjustments": [] } }
+```
+
+- 🔴 **`entries[].issue_id`／`issue_key` 一律是 `null`**——系統只給候選，選擇權在
+  Viewer（ADR-0008 的唯一硬規則）。一份看起來合理的自動歸屬，代價由一個月後發現
+  填錯的人支付（月結後不能直接改，要走 correction-request）。落地的那一份也是空的。
+  （`allocation.entries[].issue_key` 是**分配演算法的 tie-break 依據**，不是歸屬，
+  前端不可拿它去預選。）
+- `total_hours` 省略時 `hours`／`allocated_hours`／`allocation` 全部是 `null`——
+  使用者還沒決定總時數之前，不該看到憑空冒出來的數字。
+- 草稿**一天一份**（`UNIQUE(viewer_id, work_date)`），同一天再產一次是覆蓋——
+  覆蓋是**整組 DELETE 再 INSERT**，所以重產前有兩道守門，兩道都會把「會影響
+  幾筆」放進 `error.detail`，讓前端說得出具體數字而不必從中文句子裡挖：
+
+  | 情況 | 回應 | `force` 蓋得過嗎 |
+  | :--- | :--- | :--- |
+  | 有任何一筆送進 ZPlanner（`zplanner_worklog_id` 有值） | `409 WORKLOG_ALREADY_SUBMITTED`，`detail: { submitted_count, force_allowed: false }` | ❌ **不行**。worklog id 弄丟就永遠對不回來，之後只剩 correction-request |
+  | 沒送出、但有任何一筆已經選好 issue（`issue_id`／`issue_key` 有值） | `400 INVALID_PARAMETER`，`detail: { assigned_count, assigned_issue_keys, force_allowed: true }` | ✅ 帶 `force: true` 放行 |
+
+  🔴 選專案是這個功能裡最花心力的一步（ADR-0008：系統只給候選，一律由 Viewer 選），
+  所以**不准安靜覆蓋**——擋下來、說清楚會清掉幾筆，由人決定。`force: true` 之後重產
+  出來的 `issue_id`／`issue_key` 一樣全是 `null`，要重選一次。
+  ⚠️ 已送出的那道守門在串流開始前檢查一次，**並且在真正寫入的那個 transaction 裡
+  再檢查一次**：中間隔著 git 掃描與 ZPlanner 呼叫（可達數十秒），這段時間內若有另一
+  條路徑把工時送出去，只靠前面那次檢查會把剛拿到的 worklog id 靜默抹掉。串流已經
+  開始時，這道守門會變成 `error` 事件（`code: "WORKLOG_ALREADY_SUBMITTED"`），**草稿
+  一筆都不會被改到**。
+- 錯誤主體的 `error.detail` **只有拋的人刻意給結構化補充時才出現**，型別是物件。
+  其餘情況（大多數錯誤）沒有這個欄位——字串型的 detail 是內部訊息，只進 log。
+- 候選 issue 用 `list_worklogable_issues(q=群的關鍵字)` 撈，**`q` 必填**
+  （ZPlanner 對空字串回 0 筆而不是全部）。`confidence` 只有三級並**一律附一句可見
+  的理由**：不做排名徽章、不做百分比、不做進度條——要讓人讀理由而不是讀名次。
+- 權限預檢用 `list_project_role_permissions` ＋ `list_project_members`。
+  查不到就 `can_worklog: null` ＋ `permission_checked: false`，**不假裝有權限**。
+  ⚠️ `meta.zplanner.permission_checked` 現階段**一律是 `false`**：比對用的是登入的
+  Google 信箱，而 `members[].user_email` 未必是同一個帳號；要確定得先有
+  `preferences.zplanner_email`（該欄位尚未存在）。
+- 一次最多預檢 5 個專案、每群最多 3 個候選（清單永不封閉，其餘靠搜尋框）。
+- **ZPlanner 不可用時照樣產得出草稿**：`meta.zplanner.available` 為 `false`、
+  候選是空陣列，其餘一切照常。
+
+`error`：沒有任何 commit／發言時發 **`NO_EVIDENCE`**（SSE-only code，比照
+`NO_MESSAGES`），**且不落地任何草稿**——硬產一份空草稿會讓使用者把時數分給不存在
+的證據。其餘串流中的錯誤照 8.3 轉成 `error` 事件。
+
+### `POST /api/v1/worklogs/{date}/submit`
+
+需登入。`{date}` 是 `YYYY-MM-DD`。把那一天的草稿**逐筆**寫進 ZPlanner。body：
+```json
+{ "entry_ids": [12, 13] }
+```
+
+| 欄位 | 語意 |
+| :--- | :--- |
+| `entry_ids` | **省略 ＝ 送整天**。給了就只處理那幾筆——`failed`／`unknown` 的單筆重打走的是這同一支端點，不另開路徑。⚠️ 帶了它的時候，「有筆沒選專案就擋下整批」那道閘**只檢查選中的那幾筆**（否則當天別處只要有一筆沒選專案，`failed` 的那筆就永遠重打不了）。空陣列 `[]` 回 `400`：送 0 筆卻回成功，分不出是前端漏帶 id 還是真的沒東西要送 |
+
+```json
+{ "work_date": "2026-09-13", "status": "partial",
+  "entries": [ { "id": 12, "seq": 1, "issue_id": 4821, "issue_key": "PEI-133",
+                 "hours": "3.50", "note": "…", "state": "submitted",
+                 "zplanner_worklog_id": 116847, "zplanner_issue_key": "PEI-133",
+                 "is_locked": false, "submitted_at": "…",
+                 "last_error_code": null, "last_error_message": null,
+                 "...": "（其餘欄位同草稿的 entries[]）" } ],
+  "summary": { "submitted_count": 3, "skipped_count": 1,
+               "failed_count": 1, "unknown_count": 0,
+               "skipped_duplicates": [
+                 { "entry_id": 15, "seq": 4, "issue_key": "PEI-140", "hours": "1.00",
+                   "existing": { "hours": "1.0", "note": "…", "issue_title": "…" },
+                   "reason": "…可直接顯示的繁中句子…" } ],
+               "orphans": [], "not_attempted_count": 0 } }
+```
+
+- 🔴 **HTTP 200 不代表每一筆都送成功。** 只要這一批開始送了，回的就是 200，
+  逐筆成敗看 `entries[].state` 與 `summary`。用 4xx 表達「有筆失敗」會讓前端
+  顯示成「整批沒送出」，使用者於是再按一次送出鈕——ZPlanner 那側已經成功的
+  那幾筆就變成重複工時，而**重複工時在月結之後刪不掉**（只能走
+  correction-request）。**也刻意不用 207 Multi-Status**：既有錯誤契約沒有這一類。
+  錯誤信封只留給**一筆都沒送**的整批拒絕（見下方錯誤表）。
+- `entries[]` 是**寫完之後重讀**的完整草稿明細，形狀與草稿的 `entries[]` 相同
+  （多出來的欄位本來就在：`state`／`zplanner_worklog_id`／`zplanner_issue_key`／
+  `is_locked`／`submitted_at`／`last_error_code`／`last_error_message`）。
+  前端拿它直接重畫那一天，不必自己合併。
+- 🔴 **`summary` 的四個計數描述的是「重讀之後整份草稿」，不是「這一次送了幾筆」。**
+  單筆重打時 `submitted_count` 會包含上次就已經成功的那幾筆——它與 `entries[]`
+  是同一份帳，也與週檢視的 `submitted_count`／`failed_count`／`unknown_count`
+  是同一套鍵名，兩個畫面才講同一套話。
+- `status` 是重算後的草稿狀態，同時會寫回 DB：**每一筆都 `submitted` 或
+  `skipped`** 才變成 `submitted`，完全沒有任何一筆送成功維持 `draft`，其餘是
+  `partial`。少了這一步，週檢視的 `totals.days_submitted` 會永遠是 0。
+- **逐筆一交易，每成功一筆立刻落 DB**，不等整批跑完。所以跑到一半的草稿是
+  混合狀態（同一份草稿裡 `submitted`／`failed`／`unknown` 並存），前端必須畫得
+  出來。不這樣做的話，第 N 筆失敗時前面幾筆的 `zplanner_worklog_id` 就沒落地，
+  ZPlanner 那側的工時變成沒有人認領的孤兒，下次重送會再建一次。
+- 🔴 **有任何一筆送不出去就一筆都不送**（沒選專案、或沒有時數），回 `400`。
+  兩種筆送到 ZPlanner 之前都會先被 client 的參數檢查擋下，所以**不會**造成重複
+  工時——擋在前面是為了不要**部分送出**：那天的工時會變成不完整，而畫面上沒有
+  任何訊號說明少了什麼。
+  ⚠️ 沒有時數不是罕見的邊界情況：產草稿時省略 `total_hours` 就不分配，那時候
+  **整份草稿的 `hours` 一律是 `null`**——那是正常流程的中間狀態，不是壞掉的資料。
+- **已經有 `zplanner_worklog_id` 的筆直接跳過，不重打。** 那是「這筆送過了」的
+  唯一憑據。
+- **送出前先查 ZPlanner 這一天已經有哪些工時**（`GET /api/worklogs/export/`，
+  `date_from` ＝ `date_to` ＝ 這一天，**整天只查一次、不逐筆查**）。同一個 issue
+  ＋ 同樣時數已經存在 → 這筆標 `state: "skipped"`，並列進
+  `summary.skipped_duplicates`。
+  - 比對 **issue ＋ 時數，不比對 note**：note 會被使用者編輯過，比對它會漏判而
+    造出重複工時。時數兩側正規化到同一刻度後再比（`"2"` 與 `"2.0"` 算同一個）。
+  - ⚠️ 代價是會誤殺「同一天、同一 issue、同樣時數」的第二筆合法工時（罕見但
+    存在）。取捨是寧可漏送也不要重複——**所以被跳過的筆一定看得見**，
+    `skipped_duplicates` 是它唯一的出口。`existing` 是比對到的那一列遠端工時原文。
+  - 🔴 `state: "skipped"` 的筆**不會**把比對到的遠端 id 寫進 `zplanner_worklog_id`：
+    那筆不是我們建的，認領它會讓上面說的誤殺變成永久而且再也看不見。
+  - 🔴 **這支查詢失敗 ＝ 整批中止**（回錯誤信封，一筆都不送）。不准「查不到就
+    當作沒有重複、照送」——那等於放棄唯一的去重依據，而重送的代價不可逆。
+- **`unknown` 不是「失敗」，是「不知道送進去沒有」**（`ZPLANNER_WRITE_INDETERMINATE`：
+  請求在傳輸層就斷了，連「連線被拒」也算，因為分不出是送達前還是送達後斷的）。
+  這種筆**不會被自動重試**，要先用 ZPlanner 的匯出查那一天對帳再決定。
+  ⚠️ ZPlanner 回了成功、但回應主體裡沒有 worklog id 時**也算 `unknown`**（不是
+  `failed`）：那筆工時很可能已經建好了，標成 `failed` 會讓重打再建一次。
+- `summary.orphans` 是「工時已經寫進 ZPlanner，但要寫回草稿時，本地那一筆已經
+  不符合寫回條件了」。裡面帶著 `zplanner_worklog_id`——那是唯一還找得到那筆遠端
+  工時的線索，要改要刪都只能直接去 ZPlanner。正常情況這個陣列是空的。
+  - 🔴 **`reason` 不預設成因**，另附 `possible_causes` 陣列把所有可能列出來：
+    同一天另一個送出同時在跑、送出期間草稿被重新產生、那一筆
+    被其他路徑改成別的狀態。這一層分不出是哪一種（寫回用的 `UPDATE` 只回「影響
+    0 列」，不回為什麼）。**寫死一個成因的代價不是話講得不夠準**——人照那句去查
+    重產紀錄卻查不到東西，就會把一筆真實存在的遠端工時當成誤報放掉，而它每個月
+    都會出現在報表上。
+- `is_locked` 直接抄 `POST /api/worklogs/` 回應的欄位。「送出時沒鎖、之後月結才
+  鎖」這支端點看不到，那要靠對帳補。
+- 🔴 **同一天同時只准有一個送出在跑**，第二個**立刻**回 `409`
+  （`WORKLOG_SUBMIT_IN_PROGRESS`，**不排隊等**），一筆都不送。兩個重疊的送出會
+  各自查一次「這天 ZPlanner 已經有哪些工時」當去重底稿，而兩份底稿都是在對方
+  寫入之前拍的，於是去重對兩邊都說「沒有重複」——同一筆被送兩次。
+  2026-09-14 實測（兩條執行緒相隔 20ms、草稿 2 筆）：`create_worklog` 被呼叫
+  **4 次**，而先回的那個請求回報 `submitted=2 failed=0 unknown=0 orphans=0`，
+  **重複工時在它身上完全隱形**。
+  - 不排隊等是刻意的：排隊會讓第二個請求最長卡一整個時間預算（90 秒），而使用者
+    等不到回應時最常做的事就是再按一次——要防的動作被原地放大。前端收到 409 應該
+    顯示「正在送出中，等它跑完」，**不要自動重試**。
+  - ⚠️ **已知邊界：這道防護是行程內的鎖，只在單 worker 部署下有效。** 部署模型是
+    一人一部署、單 worker uvicorn，所以涵蓋得住；**多 worker／多行程時兩個請求會
+    各自拿到自己行程的鎖，防護等於不存在**，那時必須改成 DB 認領。這是刻意的取捨
+    （DB 認領會新增「行程崩潰讓那些筆永久卡在認領中」這個失敗模式，需要另做回收
+    機制），不是疏漏。啟動時若偵測到 `--workers`／`WEB_CONCURRENCY` 大於 1，log
+    會留一行 warning——**那只是提醒不是防護**，偵測不到不代表安全。
+- 🔴 **整批有 90 秒的時間預算**（`WORKLOG_SUBMIT_BUDGET_SECONDS`）。到點就**不再
+  開始新的一筆**，停送的筆維持 `pending`、**仍然回 200**，筆數放在
+  `summary.not_attempted_count`（整數，**一律都在，即使是 0**）。
+  - 到點是「不開始下一筆」，**不是砍掉進行中的那一筆**：砍掉一個已經發出去的寫入
+    只會得到 `unknown`（不知道寫進去沒有、不准自動重試、要人工對帳），比乾脆沒送
+    更糟。
+  - ⚠️ **所以整支端點的實際上限不是 90 秒。** 最後一筆可以在 t=89.9s 才起跑，再吃
+    一次 client 的 `(5, 20)`——正常情況約兩分鐘封頂，對方慢速吐 chunk 時更久。
+    前端設 HTTP timeout 與「請稍候」文案時用這個數字，不要用 90。
+  - ⚠️ 停送的筆在 DB 裡與「從未送過」長得一樣（都是 `pending`），
+    `not_attempted_count` 是使用者唯一看得出「這批沒跑完」的訊號。前端要提示他
+    再按一次把剩下的送完。
+  - 為什麼不靠 client 的 timeout：`(5, 20)` 是 connect 與**每一次 read** 的上限，
+    不是單次請求的總長，更不是整批的總長——對方慢速吐 chunk 時單次請求可以無上限
+    地拖，N=10 的一批最壞約 275 秒。**也不准改用縮短 read timeout 來達成**：那會
+    讓首 byte 比較慢的正常請求變成 `unknown`。
+
+整批拒絕（**一筆都沒送**，回 8.4 的錯誤信封）：
+
+| 情況 | 回應 |
+| :--- | :--- |
+| 這一天沒有草稿 | `404 WORKLOG_DRAFT_NOT_FOUND` |
+| **這一天的送出正在進行中** | `409 WORKLOG_SUBMIT_IN_PROGRESS`，`detail: { work_date }`。**立刻回，不排隊等。** 🔴 刻意與 `WORKLOG_ALREADY_SUBMITTED` 分開，雖然都是 409：那個是「這份草稿已經送過了」（終局狀態，去看結果或走 correction-request），這個是「正在送、還沒結束」（暫時狀態，等一下再試）。使用者的下一步不同，共用一個碼前端只能猜一個 |
+| **有筆送不出去**：沒選 ZPlanner 專案、或沒有時數（帶 `entry_ids` 時只看選中的那幾筆） | `400 INVALID_PARAMETER`，`detail: { unassigned_count, unassigned_entries: [{ entry_id, seq }], missing_hours_count, missing_hours_entries: [{ entry_id, seq }] }`。**四個鍵一律都在，即使是 0**。兩種分開數、分開講——使用者的下一步不同（一個去選專案，一個去輸入總時數）。未指派的判準是 `issue_id`（`create_worklog` 吃的是它），不是給人看的 `issue_key`；`seq` 帶著，人才找得到該去補畫面上的第幾張卡 |
+| `entry_ids` 指到不屬於這份草稿的 id | `400 INVALID_PARAMETER`，`detail: { unknown_entry_ids, draft_entry_ids }`。**是 400 不是 404**——404 的語意是「這天還沒有草稿」，前端收到它會去畫空狀態，但草稿明明在，錯的是送過來的 id |
+| `entry_ids` 是空陣列 | `400 INVALID_PARAMETER` |
+| `{date}` 格式不對 | `400 INVALID_PARAMETER` |
+| 沒設定 ZPlanner（`ZPLANNER_BASE_URL`／`APIKEY`） | `500 CONFIGURATION_ERROR`。⚠️ 與週檢視不同：那支沒有 ZPlanner 照樣回本地草稿，這支整個目的就是對 ZPlanner 寫入，降級之後一件事都做不成 |
+| 查「這一天已有哪些工時」失敗 | 照 client 的錯誤原樣往上（`502 ZPLANNER_UNAVAILABLE`／`ZPLANNER_AUTH_ERROR`／`ZPLANNER_API_ERROR`…） |
+| 某筆選了 `issue_id` 卻沒有 `issue_key` | `400 INVALID_PARAMETER`。少了 key 就沒有東西可以跟遠端對，等於完全沒有去重 |
+| 遠端某列的 issue 正是要送的那個，但它的時數解析不出來 | `502 ZPLANNER_API_ERROR`。判不出時數就判不出是不是重複，而「判不出就當沒有」正是要防的不可逆錯誤 |
+
+---
+
 ## 維運
 
 ### `GET /api/v1/health`
@@ -686,7 +1144,15 @@ GitHub 未認證每小時只有 60 次呼叫，前端不要拿它做輸入即時
 2. **任何送出動作都要二次確認對話框**（5.4、7.2 步驟 6）。
 3. **v1 的 ZPlanner 匯出按鈕已於 v2.0 移除**，不要在 Action Items 那裡保留任何
    剪貼簿 handler。（**Draft Worklog 是另一件事**，見 ADR-0008 與規格 5.3——它走真正的
-   API 串接、有自己的畫面，目前只完成 client 層，前端尚未實作。）
+   API 串接、有自己的畫面。目前完成到：ZPlanner client 層、「我的工作 repo」
+   登錄端點與設定頁、工時工作台的導航與路由骨架、週檢視、草稿產生（SSE）與
+   送出（`POST /worklogs/{date}/submit`）。單日的讀取／整組取代（`GET`／`PUT`）
+   尚未實作。
+   ⚠️ 送出那支的畫面要記得：**HTTP 200 不代表每一筆都成功**，逐筆狀態在
+   `entries[].state`；跑到一半的草稿是混合狀態，前端必須畫得出來。另外兩個：
+   收到 `409 WORKLOG_SUBMIT_IN_PROGRESS` 要顯示「正在送出中」並**停止自動重試**；
+   `summary.not_attempted_count > 0` 代表整批超時停送，要提示使用者再按一次把
+   剩下的送完。）
 4. Action Items 萃取：從摘要 Markdown 中抓 `• [負責人] 任務` 這種行，轉為可勾選項目，
    支援「複製為 Markdown」。
 5. 空間清單有 436 個，列表需要虛擬滾動或分頁，並提供名稱搜尋。

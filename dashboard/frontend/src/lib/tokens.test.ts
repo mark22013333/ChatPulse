@@ -49,29 +49,36 @@ function scan(files: string[], pattern: RegExp): string[] {
 }
 
 /**
- * ⚠ 這裡是**唯一**允許的 `title=`：ConfirmDialog 的 `title` 是「對話框標題」
- * 這個 React prop，不是 DOM 的 tooltip 屬性。
+ * `title=` 的預算＝該檔案裡 `<ConfirmDialog` 的出現次數。
  *
- * 用「檔案 → 允許次數」而不是行號，是因為行號會隨每次編輯漂移、維護不了；
- * 用次數則擋得住「偷偷多加一個」。新增任何一筆都要在 review 說明為什麼
- * 不能改成可見文字。
+ * ⚠ `ConfirmDialog` 的 `title` 是「對話框標題」這個 **React prop**，不是 DOM
+ * 的 tooltip 屬性。它渲染成 `DialogTitle` 的文字節點，DOM 上不會出現 `title`
+ * 屬性——`DraftReplyWorkspace.test.tsx` 與 `EvidenceList.test.tsx` 各有一條
+ * 「渲染結果裡 `[title]` 選得到 0 個」在守著這件事。
  *
- * **2026-09-10：§10.3 的 29 處已經清完了**，這張表現在只剩 ConfirmDialog 的
- * 兩個呼叫端。29 → 2 的過程中，每一處的處置都照 §10.3 的規則走：
- * 決策必需 → 可見文字；補充細節 → `<details>`；與可見文字重複 → 刪。
- * 圖示按鈕改成把說明寫進 `aria-label`（鍵盤與觸控使用者拿得到）。
+ * ### 為什麼不再用手工白名單
  *
- * 這張表**只能再減、不能增**。要加任何一筆，先問「為什麼這句話不能是
- * 畫面上讀得到的字」——29 處清下來，沒有一處的答案是「不能」。
+ * 在此之前這裡是一張 `檔案 → 允許次數` 的表，註明「**只能再減、不能增**」，
+ * 理由是「先問為什麼這句話不能是畫面上讀得到的字」。那條理由對 tooltip
+ * 完全成立（§10.3 的 29 處清下來，沒有一處的答案是「不能」），**但對
+ * `ConfirmDialog` 不成立**——它的 title 本來就是畫面上讀得到的標題。
+ *
+ * 於是這條規則誤傷了它唯一允許的用途：2026-09-13 做工時草稿的設定頁時，
+ * 刪除確認因為加不進白名單，只好繞開 `ConfirmDialog`、拿它底下那組 Dialog
+ * 元件自己重組一份。DOM 一模一樣，代價是多一份會漂移的重複程式碼——
+ * 而且 `ConfirmDialog` 日後改進時，那一份不會跟著改。
+ *
+ * 改成用 `<ConfirmDialog` 的出現次數當預算之後：合法用途自動有額度，
+ * tooltip 仍然一個都不准（沒有 ConfirmDialog 的檔案預算就是 0），
+ * 而且不必每加一個確認框就回來改這個檔。
+ *
+ * ### 這個近似的限度
+ *
+ * 它**不驗證** `title=` 真的寫在 `<ConfirmDialog` 標籤裡。一個檔案若同時有
+ * 一個 ConfirmDialog 與一個 tooltip，數量剛好相等時會漏掉。要精確就得解析
+ * JSX，代價遠高於它擋住的風險——真正的防線是上面說的那兩條 DOM 斷言。
  */
-const TITLE_BUDGET: Record<string, number> = {
-  // 兩處都是 ConfirmDialog 的 title prop（對話框標題，不是 tooltip）。
-  // 它渲染成 DialogTitle 的文字節點，DOM 上不會出現 title 屬性——
-  // DraftReplyWorkspace.test.tsx 與 EvidenceList.test.tsx 各有一條
-  // 「渲染結果裡 [title] 選得到 0 個」在守著這件事。
-  'components/summary/PublishConfirm.tsx': 1,
-  'components/draft/SendReplyConfirm.tsx': 1,
-}
+const CONFIRM_DIALOG = /<ConfirmDialog\b/g
 
 describe('設計 token 守門', () => {
   it('① 沒有繞過 token 的具名色', () => {
@@ -89,21 +96,20 @@ describe('設計 token 守門', () => {
     expect(hits).toEqual([])
   })
 
-  it('③ title= 只出現在白名單，且數量不得增加', () => {
-    const counts: Record<string, number> = {}
+  it('③ title= 只用在 ConfirmDialog 的 title prop 上', () => {
     for (const file of TSX) {
       // 要先洗掉註解，與 ①②⑤ 一致（那正是 stripComments 存在的理由）。
       // 少了這一步，元件測試裡「解釋為什麼不准用 title」的註解本身會被
       // 算成違規——2026-09-10 實際踩到，EvidenceList.test.tsx 被判 2 個。
       // 註解裡的寫法不會被瀏覽器套用，所以洗掉不會放過任何真的違規。
-      const n = (stripComments(readFileSync(file, 'utf8')).match(/\stitle=/g) ?? []).length
-      if (n > 0) counts[relative(SRC, file)] = n
-    }
-    for (const [file, n] of Object.entries(counts)) {
-      const budget = TITLE_BUDGET[file] ?? 0
+      const source = stripComments(readFileSync(file, 'utf8'))
+      const used = (source.match(/\stitle=/g) ?? []).length
+      if (used === 0) continue
+      const budget = (source.match(CONFIRM_DIALOG) ?? []).length
       expect(
-        n,
-        `${file} 有 ${n} 個 title=，預算是 ${budget}。決策必需的資訊要改成畫面上讀得到的文字，不要放進 title。`,
+        used,
+        `${relative(SRC, file)} 有 ${used} 個 title=，但只有 ${budget} 個 ConfirmDialog。` +
+          `決策必需的資訊要改成畫面上讀得到的文字，不要放進 title。`,
       ).toBeLessThanOrEqual(budget)
     }
   })

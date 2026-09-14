@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { toEvidence, type EvidenceItem } from '@/lib/evidence'
+import { evidenceOriginOf, toEvidence, type EvidenceItem } from '@/lib/evidence'
 import type { DraftPolishMeta, SseMeta } from '@/lib/types'
 
 const providerLabel = (name: string) => (name === 'claude_cli' ? 'Claude Code' : name)
@@ -298,5 +298,25 @@ describe('toEvidence — 還原的草稿（restored）', () => {
     expect(byKind(items, 'model')[0].summary).toBeTruthy()
     const reply = byKind(items, 'reply-setting')[0]
     expect(reply.detail.some((d) => d.value === '羅振宇（羅胖）')).toBe(true)
+  })
+})
+
+describe('evidenceOriginOf', () => {
+  it('每個工作台對到自己的證據來源', () => {
+    expect(evidenceOriginOf('summary')).toBe('summary')
+    expect(evidenceOriginOf('mentions')).toBe('draft')
+    expect(evidenceOriginOf('worklog')).toBe('worklog')
+  })
+
+  it('設定是覆蓋層，證據仍屬於底下那個工作台', () => {
+    expect(evidenceOriginOf('settings')).toBe('summary')
+  })
+
+  it('工時**不會**對到 summary', () => {
+    // 這條看起來多餘，但它守的是一個真實的退化：這個映射原本以
+    // `section === 'mentions' ? 'draft' : 'summary'` 的形式散在 AppShell、
+    // TopBar、EvidenceColumn 三處。任何一處改回三元式，工時模組的證據欄
+    // 就會理直氣壯地顯示**摘要工作台**的證據——畫面完全正常，內容是別人的。
+    expect(evidenceOriginOf('worklog')).not.toBe('summary')
   })
 })

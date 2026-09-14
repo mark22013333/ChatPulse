@@ -2,10 +2,13 @@ import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_ROUTE,
   fromSpaceKey,
+  hasDetail,
   hashForMentions,
   hashForSettings,
   hashForSummary,
+  hashForWorklog,
   parseHash,
+  parseWorkDate,
   sameRoute,
   toSpaceKey,
 } from '@/lib/route'
@@ -141,5 +144,99 @@ describe('sameRoute', () => {
 
   it('不同 section', () => {
     expect(sameRoute(parseHash('#/summary'), parseHash('#/mentions'))).toBe(false)
+  })
+})
+
+describe('parseWorkDate', () => {
+  it('接受合法的 YYYY-MM-DD', () => {
+    expect(parseWorkDate('2026-09-11')).toBe('2026-09-11')
+  })
+
+  it('擋掉「形狀對但那天不存在」的日期', () => {
+    // 這是這個函式存在的唯一理由：`new Date('2026-02-30')` 不會報錯，
+    // 它會自己進位成 3/2。網址上一個錯字就變成另一天的工時，而工時會進
+    // 月結、事後要走 correction-request 才改得動。
+    expect(parseWorkDate('2026-02-30')).toBeNull()
+    expect(parseWorkDate('2026-13-01')).toBeNull()
+    expect(parseWorkDate('2026-00-10')).toBeNull()
+    expect(parseWorkDate('2026-09-00')).toBeNull()
+    expect(parseWorkDate('2026-09-31')).toBeNull()
+  })
+
+  it('閏年的 2/29 放行，平年的擋掉', () => {
+    expect(parseWorkDate('2024-02-29')).toBe('2024-02-29')
+    expect(parseWorkDate('2026-02-29')).toBeNull()
+  })
+
+  it('形狀不對一律 null', () => {
+    for (const bad of ['', '2026-9-11', '20260911', '2026/09/11', 'today', null, undefined]) {
+      expect(parseWorkDate(bad)).toBeNull()
+    }
+  })
+})
+
+describe('hashForWorklog', () => {
+  it('沒給日期就是週檢視', () => {
+    expect(hashForWorklog()).toBe('#/worklog')
+    expect(hashForWorklog(null)).toBe('#/worklog')
+  })
+
+  it('給了日期就帶上', () => {
+    expect(hashForWorklog('2026-09-11')).toBe('#/worklog/2026-09-11')
+  })
+
+  it('不合法的日期退回週檢視，不產生指向不存在日期的連結', () => {
+    expect(hashForWorklog('2026-02-30')).toBe('#/worklog')
+  })
+})
+
+describe('parseHash：工時', () => {
+  it('#/worklog 是週檢視，沒有指定哪一天', () => {
+    const route = parseHash('#/worklog')
+    expect(route.section).toBe('worklog')
+    expect(route.worklogDate).toBeNull()
+  })
+
+  it('#/worklog/:date 選中那一天', () => {
+    expect(parseHash('#/worklog/2026-09-11').worklogDate).toBe('2026-09-11')
+  })
+
+  it('日期不合法時留在工時模組但不選日期——**不猜成今天**', () => {
+    const route = parseHash('#/worklog/2026-02-30')
+    expect(route.section).toBe('worklog')
+    expect(route.worklogDate).toBeNull()
+  })
+
+  it('與 hashForWorklog 來回轉換', () => {
+    expect(parseHash(hashForWorklog('2026-09-11')).worklogDate).toBe('2026-09-11')
+  })
+})
+
+describe('hasDetail', () => {
+  it('每個工作台看的是自己的欄位', () => {
+    expect(hasDetail({ ...DEFAULT_ROUTE, section: 'summary', spaceId: 'spaces/A' })).toBe(true)
+    expect(hasDetail({ ...DEFAULT_ROUTE, section: 'mentions', mentionId: 7 })).toBe(true)
+    expect(hasDetail({ ...DEFAULT_ROUTE, section: 'worklog', worklogDate: '2026-09-11' })).toBe(
+      true,
+    )
+  })
+
+  it('工時模組不會去看 spaceId', () => {
+    // 這條守的正是「三元式落到 summary 那一支」的退化：`route.spaceId` 在
+    // 工時模組永遠是 null，一旦退化，768–1024 的主從切換就永遠回不到工作區
+    expect(hasDetail({ ...DEFAULT_ROUTE, section: 'worklog', spaceId: 'spaces/A' })).toBe(false)
+  })
+
+  it('設定是覆蓋層，沒有主從之分', () => {
+    expect(hasDetail({ ...DEFAULT_ROUTE, section: 'settings', settingsTab: 'reply' })).toBe(false)
+  })
+})
+
+describe('sameRoute：工時', () => {
+  it('日期不同就是不同位置', () => {
+    const a = { ...DEFAULT_ROUTE, section: 'worklog' as const, worklogDate: '2026-09-11' }
+    const b = { ...DEFAULT_ROUTE, section: 'worklog' as const, worklogDate: '2026-09-12' }
+    expect(sameRoute(a, b)).toBe(false)
+    expect(sameRoute(a, { ...a })).toBe(true)
   })
 })

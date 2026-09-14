@@ -456,6 +456,70 @@ export interface CodeProject {
 }
 
 /**
+ * 「我的工作 repo」的驗證結果（ADR-0008、api-contract「Draft Worklog」節）。
+ *
+ * **形狀刻意與 `CodeProjectVerification` 不同**：那邊要驗「每個環境釘死的分支
+ * 還在不在」，這邊沒有釘死的分支可以驗，硬套同一個形狀只會多出一個永遠空著
+ * 的 `branches` 欄位。
+ */
+export interface WorkRepoVerification {
+  ok: boolean
+  /** `ok: false` 時是可以直接顯示的繁中句子，同一份字串也會寫進 `last_verify_error`。 */
+  error?: string | null
+  /** 剛 `git init`、還沒有任何 commit 的 repo 是 `null`。那**不是**錯誤，`ok` 仍然是 `true`。 */
+  head_sha?: string | null
+  /**
+   * 最近 200 筆 commit 的作者信箱，去重後最近用過的排前面。
+   *
+   * **它是給人看的參考，後端不會自動寫進 `author_emails`**——裡面本來就會混進
+   * 同事的信箱。要由人挑，系統不自動發現。
+   */
+  detected_emails?: string[]
+}
+
+/**
+ * 「我的工作 repo」：工時草稿要從哪些本機 git repo 撈 commit 當證據。
+ *
+ * **與 `CodeProject`（參考專案）是兩份不同的登錄，不要共用。** 那邊是為了
+ * 「查程式碼回答問題」而登的，必須釘死是哪個環境的哪一版；這邊是為了
+ * 「回想這天做了什麼」。兩者的分支語意正好相反，見 `branch_filter`。
+ */
+export interface WorkRepo {
+  id: number
+  name: string
+  /** 絕對路徑。相對路徑會相對於伺服器的工作目錄去解，那跟使用者心裡想的不是同一個地方。 */
+  repo_path: string
+  /**
+   * 要撈誰的 commit。**陣列不是單值**：同一個人在不同 repo 常常設不同的
+   * `user.email`，只填一個會讓另一個信箱的 commit 靜默漏掉。
+   *
+   * ⚠️ **空陣列＝不限作者**，會撈到這個 repo 裡所有人的 commit。後端不擋。
+   */
+  author_emails: string[]
+  /**
+   * 分支白名單。⚠️ **空陣列＝掃全部分支（`--all`）**，不是「不掃」。
+   *
+   * 這與 `CodeProject.branches`「環境 → 釘死一個分支」**相反**，不是疏忽：
+   * 那邊拿錯環境等於給出錯的答案，這邊漏掉一個還沒合併的 feature 分支
+   * 就等於漏掉那天的工作。
+   */
+  branch_filter: string[]
+  /**
+   * ⚠️ **只用來把該專案的 issue 排進候選清單並標示來源，絕不自動填工時**
+   * （ADR-0008 的唯一硬規則：專案歸屬一律由 Viewer 在確認畫面選）。
+   */
+  default_zplanner_project_id?: number | null
+  default_zplanner_project_key?: string | null
+  enabled: boolean
+  last_verified_at?: string | null
+  last_verify_error?: string | null
+  created_at?: string
+  updated_at?: string
+  /** POST／PATCH／verify 會回帶；GET 清單不會。 */
+  verification?: WorkRepoVerification
+}
+
+/**
  * `meta` 事件裡的檢索結果：模型開口**之前**就送到前端。
  * 讓 Viewer 一眼判斷依據對不對（搜錯環境、搜錯關鍵字），
  * 不必先讀完一整段生成文字。
@@ -594,4 +658,133 @@ export interface HealthResponse {
   /** 採集器實作（ADR-0004 目前是 `polling`） */
   collector_implementation: string
   viewer_count: number
+}
+
+/**
+ * 一份工時草稿的狀態。**只有這三個**（`core/db.py` 的 `worklog_drafts.status`）。
+ *
+ * `partial` 必須是獨立狀態，不可以併進 `draft`：它是「有幾筆送成功、有幾筆
+ * 沒有」，當成 `draft` 會讓人以為整天都還沒送，再按一次就把已經成功的那幾筆
+ * 重複填進 ZPlanner。
+ */
+export type WorklogDraftStatus = 'draft' | 'partial' | 'submitted'
+
+/**
+ * `GET /api/v1/worklogs/week` 裡某一天的**本地草稿**摘要（不含 entries 本體）。
+ *
+ * ⚠️ **時數欄位一律是字串**（`"8.00"`），不是 number：DB 存 TEXT、ZPlanner 的
+ * 寫入端點吃的也是字串，後端一路沒有轉成數字（`core/repository.py` 的
+ * `_hours_sum()` 回 `f"{total:.2f}"`）。要算術就自己 `Number.parseFloat()`，
+ * 而且要處理算不動的情況——`_hours_sum()` 對壞值的策略是**跳過但不失敗**，
+ * 所以壞值不會讓端點噴錯，只會讓某個數字安靜地變小。
+ *
+ * ⚠️ **不要照 ZPlanner 原生的形狀寫型別。** ZPlanner 自己的
+ * `GET /api/worklogs/weekly/` 是 `days[].hours` float、`weekday` 英文縮寫
+ * （見 `core/zplanner_client.py` 的 `list_weekly_worklogs` docstring）；
+ * ChatPulse 這一層**已經全部正規化過**，兩者不是同一個形狀。
+ */
+export interface WorklogWeekDraft {
+  id: number
+  work_date: string
+  status: WorklogDraftStatus
+  /**
+   * Viewer 輸入的「這天總共幾小時」。**與 `hours` 不保證相等**——湊成 0.5
+   * 倍數必然有餘數，真正會送進 ZPlanner 的是 `hours`（各筆之和）。
+   */
+  total_hours: string | null
+  /** 切日界用的時區偏移（`+08:00`）。「半夜一點的 commit 算哪天」由它決定。 */
+  tz_offset: string | null
+  /** 產生當下的 SSE meta 快照＝證據欄的唯一來源。週欄用不到，留著讓型別完整。 */
+  generation_meta?: Record<string, unknown> | null
+  generated_at?: string | null
+  created_at?: string
+  updated_at?: string
+  entry_count: number
+  /** 各筆之和。**真正會送出的是這個數字。** */
+  hours: string
+  /** 系統原始分配的總和。與 `hours` 分開存才看得出人改過什麼。 */
+  allocated_hours: string
+  submitted_count: number
+  failed_count: number
+  /**
+   * 送出時逾時的筆數。**`unknown` 不是 `failed`**：逾時不保證沒寫進去，
+   * 這種筆一律不自動重試（計畫 §5）。
+   */
+  unknown_count: number
+  /** 還沒選專案的筆數。**未選擋住送出**（ADR-0008），週欄要看得出還差幾筆。 */
+  unassigned_count: number
+}
+
+/** 某一天**已經填進 ZPlanner** 的工時（不是本地草稿）。ZPlanner 不可用時是 `null`。 */
+export interface WorklogWeekZplannerDay {
+  /** 字串，理由同 `WorklogWeekDraft.hours`。 */
+  hours: string
+  worklog_count: number
+}
+
+export interface WorklogWeekDay {
+  work_date: string
+  /**
+   * **ISO 星期（1＝週一、7＝週日）的數字**，不是英文縮寫。
+   *
+   * 後端刻意回這個而不是讓前端從日期字串反推——反推會在跨時區時錯一天。
+   * 轉成中文要用**明確的對照表**查這個值，不可以拿它當陣列索引：後端哪天
+   * 改了起算基準，索引會安靜地整排錯位，而對照表查不到就是查不到。
+   */
+  weekday: number
+  draft: WorklogWeekDraft | null
+  zplanner: WorklogWeekZplannerDay | null
+}
+
+export interface WorklogWeekTotals {
+  /** 本週所有草稿的 `hours` 之和（字串）。 */
+  draft_hours: string
+  days_with_draft: number
+  days_submitted: number
+  entries_unassigned: number
+}
+
+/**
+ * 週檢視裡 ZPlanner 那一段。
+ *
+ * 🔴 **`available: false` 不是錯誤，本地草稿照常回。** 沒設 ZPlanner 的人仍然
+ * 看得到自己的草稿，所以前端**不可以**把它當成載入失敗、也不可以靜默隱藏
+ * ——`reason` 是可直接顯示的繁中句子，要寫在畫面上。
+ */
+export type WorklogWeekZplanner =
+  | {
+      available: true
+      /** 本週已填進 ZPlanner 的總時數（字串）。 */
+      total_hours: string
+      /** **工時筆數**，不是有填工時的天數。 */
+      worklog_count: number
+      /**
+       * 本週的目標時數（字串）與完成率（float），**由 ZPlanner 算**。
+       *
+       * ⚠️ **取不到時這兩個欄位整個不存在**（不是 `null`）——後端刻意不補
+       * 預設值，因為編一個 40 小時的目標會讓完成率變成看起來精確的假數字。
+       * 所以前端要用「有沒有這個欄位」決定畫不畫，不要寫 `?? 40`。
+       *
+       * 目標會因人、因請假而不同，所以**不要自己算完成率**；「還差幾小時」
+       * 是單純的減法（兩個數都是 ZPlanner 給的），那個可以自己算。
+       */
+      target_hours?: string
+      completion_pct?: number
+    }
+  | { available: false; reason: string }
+
+/** `GET /api/v1/worklogs/week` 的回應。 */
+export interface WorklogWeekResponse {
+  /**
+   * ⚠️ **要顯示「這是哪一週」一律讀這兩個欄位，不要拿自己送出去的參數當答案。**
+   *
+   * ZPlanner 會把日期正規化到那一週的週一（2026-09-13 實測：傳週二回的是
+   * 週一），而週的起點是顯示決定、不是後端決定。讀回應永遠對得起來。
+   */
+  week_start: string
+  week_end: string
+  /** **七天一律回滿**，沒有草稿的那天 `draft` 是 `null`。前端不必自己補空格。 */
+  days: WorklogWeekDay[]
+  totals: WorklogWeekTotals
+  zplanner: WorklogWeekZplanner
 }

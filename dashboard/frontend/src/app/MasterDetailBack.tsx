@@ -1,5 +1,6 @@
 import { ChevronLeftIcon } from 'lucide-react'
-import { hashForMentions, hashForSummary } from '@/lib/route'
+import type { WorkbenchView } from '@/lib/modules'
+import { hashForMentions, hashForSummary, hashForWorklog } from '@/lib/route'
 import { useRouter } from '@/router/useRouter'
 
 /**
@@ -19,18 +20,32 @@ import { useRouter } from '@/router/useRouter'
  * store 的選取。不然在收件匣按返回會連摘要工作台建立的草稿目標一起清掉，
  * 而那一則不在收件匣清單裡、找不回來。
  */
-export function MasterDetailBack({ view }: { view: 'summary' | 'mentions' }) {
+/**
+ * 每個工作台「回去」是回到哪裡、按鈕上要寫什麼。
+ *
+ * 用查表而不是 `view === 'mentions' ? A : B`：那種寫法在加第三個工作台時
+ * 不會編譯失敗，只會讓新工作台的返回鍵**默默把人送回 Space 清單**。
+ * `Record<WorkbenchView, …>` 漏掉任何一個都是編譯錯誤。
+ */
+const BACK: Record<WorkbenchView, { hash: () => string; label: string }> = {
+  summary: { hash: () => hashForSummary(), label: '返回 Space 清單' },
+  mentions: { hash: () => hashForMentions(), label: '返回 Mention 收件匣' },
+  worklog: { hash: () => hashForWorklog(), label: '返回週檢視' },
+}
+
+export function MasterDetailBack({ view }: { view: WorkbenchView }) {
   const { navigate } = useRouter()
+  const back = BACK[view]
 
   return (
     <nav aria-label="麵包屑" className="border-border shrink-0 border-b px-4 py-1.5 lg:hidden">
       <button
         type="button"
-        onClick={() => navigate(view === 'mentions' ? hashForMentions() : hashForSummary())}
+        onClick={() => navigate(back.hash())}
         className="text-fg-subtle hover:text-foreground -ml-1.5 flex items-center gap-1 rounded px-1.5 py-1 text-xs"
       >
         <ChevronLeftIcon className="size-3.5" aria-hidden />
-        {view === 'mentions' ? '返回 Mention 收件匣' : '返回 Space 清單'}
+        {back.label}
       </button>
     </nav>
   )

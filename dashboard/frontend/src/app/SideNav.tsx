@@ -3,6 +3,7 @@ import {
   CalendarRangeIcon,
   ChevronsLeftIcon,
   ChevronsRightIcon,
+  ClockIcon,
   InboxIcon,
   LogOutIcon,
   SettingsIcon,
@@ -48,6 +49,9 @@ import { useUiStore } from '@/store/ui'
 const ICONS: Record<ModuleId, LucideIcon> = {
   summary: SparklesIcon,
   mentions: InboxIcon,
+  // 時鐘而不是日曆：日曆已經被「週報」用掉了，而那兩個模組在導航上相鄰，
+  // 圖示再撞的話收合成 56px 的 icon rail 時就分不出來了
+  worklog: ClockIcon,
   stats: BarChart3Icon,
   weekly: CalendarRangeIcon,
   settings: SettingsIcon,

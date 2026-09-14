@@ -28,6 +28,7 @@ export const SETTINGS_TABS = [
   'personas',
   'prompts',
   'code-projects',
+  'work-repos',
   'spaces',
   'data',
   'diagnostics',
@@ -43,6 +44,13 @@ export interface Route {
   mentionId: number | null
   /** `?merge=47,48`——順序有意義，第一個是主要那則 */
   mergeIds: number[]
+  /**
+   * `#/worklog/2026-09-11` 的日期，`YYYY-MM-DD`。
+   *
+   * `null` 是「沒有指定哪一天」（週檢視），**不是**「今天」——今天要由呼叫端
+   * 自己決定，因為它涉及時區，而這個檔的契約是零相依的純函式。
+   */
+  worklogDate: string | null
   settingsTab: SettingsTab | null
   /** `#/settings/personas/:id` 的 id，保持字串（有些是數字有些不是） */
   settingsId: string | null
@@ -80,6 +88,28 @@ function safeDecode(value: string): string {
   }
 }
 
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
+
+/**
+ * 驗 `YYYY-MM-DD`，不合法回 `null`。
+ *
+ * **光靠 regex 不夠**：`2026-02-30`、`2026-13-01` 都符合形狀但不存在。而
+ * `new Date('2026-02-30')` 會自己進位成 3/2，不會報錯——網址上的一個錯字
+ * 就這樣變成另一天的工時，而且畫面上完全看不出來。
+ *
+ * 逐欄檢查，全程用 UTC 算月底：`Date.UTC(y, m, 0)` 的 month 是 0-based，
+ * 傳 1-based 的 m 就是下個月、day 給 0 就退回這個月的最後一天。用 UTC 是
+ * 為了不讓執行環境的時區影響「這個月有幾天」這種與時區無關的事實。
+ */
+export function parseWorkDate(value: string | undefined | null): string | null {
+  if (!value || !ISO_DATE.test(value)) return null
+  const [y, m, d] = value.split('-').map(Number)
+  if (m < 1 || m > 12) return null
+  const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate()
+  if (d < 1 || d > lastDay) return null
+  return value
+}
+
 function parseIds(raw: string | undefined): number[] {
   if (!raw) return []
   const seen = new Set<number>()
@@ -99,6 +129,7 @@ export const DEFAULT_ROUTE: Route = {
   spaceId: null,
   mentionId: null,
   mergeIds: [],
+  worklogDate: null,
   settingsTab: null,
   settingsId: null,
   query: {},
@@ -126,6 +157,17 @@ export function parseHash(hash: string): Route {
       section: 'mentions',
       mentionId: Number.isInteger(id) && id > 0 ? id : null,
       mergeIds: parseIds(query.merge),
+      query,
+    }
+  }
+
+  if (head === 'worklog') {
+    return {
+      ...DEFAULT_ROUTE,
+      section: 'worklog',
+      // 日期不合法時退回週檢視（null），**不要**猜成今天：使用者手打錯一個
+      // 數字就被帶到另一天，而工時是會寫進外部系統的東西
+      worklogDate: parseWorkDate(second),
       query,
     }
   }
@@ -174,10 +216,49 @@ export function hashForMentions(mentionId?: number | null, mergeIds: number[] = 
   return withQuery(path, mergeIds.length > 1 ? { merge: mergeIds.join(',') } : undefined)
 }
 
+/**
+ * `#/worklog` 或 `#/worklog/2026-09-11`。
+ *
+ * 不合法的日期一律退成週檢視的網址，不會產生一個指向不存在日期的連結。
+ */
+export function hashForWorklog(date?: string | null): string {
+  const valid = parseWorkDate(date)
+  return valid ? `#/worklog/${valid}` : '#/worklog'
+}
+
 export function hashForSettings(tab: SettingsTab = 'reply', id?: string | number | null): string {
   return id === undefined || id === null || id === ''
     ? `#/settings/${tab}`
     : `#/settings/${tab}/${encodeURIComponent(String(id))}`
+}
+
+/**
+ * 這個位置有沒有「選中某個東西」。
+ *
+ * 768–1024 的主從切換靠它決定顯示清單還是工作區（設計規格 §12）。
+ *
+ * 每個工作台的 detail 是不同欄位（Space／Mention／日期），所以這裡必須逐一
+ * 列出。原本寫在 `AppShell` 裡是一行二元三元式，加第三個工作台時它會安靜地
+ * 落到 summary 那一支——`route.spaceId` 在工時模組永遠是 null，於是那個寬度
+ * 下**永遠回不到工作區**。
+ */
+export function hasDetail(route: Route): boolean {
+  switch (route.section) {
+    case 'mentions':
+      return route.mentionId !== null
+    case 'worklog':
+      return route.worklogDate !== null
+    case 'summary':
+      return route.spaceId !== null
+    // 設定是覆蓋層，本身沒有主從之分
+    case 'settings':
+      return false
+    default: {
+      const exhaustive: never = route.section
+      void exhaustive
+      return false
+    }
+  }
 }
 
 /** 兩個 route 是不是同一個位置（用來決定 push 還是 replace、要不要重跑同步）。 */
@@ -186,6 +267,7 @@ export function sameRoute(a: Route, b: Route): boolean {
     a.section === b.section &&
     a.spaceId === b.spaceId &&
     a.mentionId === b.mentionId &&
+    a.worklogDate === b.worklogDate &&
     a.settingsTab === b.settingsTab &&
     a.settingsId === b.settingsId &&
     a.mergeIds.length === b.mergeIds.length &&

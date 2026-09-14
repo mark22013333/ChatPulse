@@ -35,6 +35,8 @@ ChatPulseError 的子類別**。呼叫端不需要、也不應該自己檢查任
 小時、算在哪個 issue，全部是上層的事。
 """
 
+import csv
+import io
 import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
@@ -47,6 +49,7 @@ from .errors import (
     InvalidParameter,
     ZPlannerApiError,
     ZPlannerUnavailable,
+    ZPlannerWriteIndeterminate,
     classify_zplanner_error,
 )
 
@@ -55,13 +58,46 @@ log = logging.getLogger("chatpulse.zplanner")
 #: schema 的 securitySchemes 宣告 bearerFormat 為 zp_ 加 64 個十六進位字元。
 _TOKEN_PATTERN = re.compile(r"zp_[0-9a-fA-F]{64}")
 
-#: 分頁容器裡「那一頁的資料」可能叫這些名字。**順序有意義**：先找專案 issue
-#: 用的 items，再找跨專案 issue 用的 results。兩個端點各用一種，不是筆誤。
-_PAGE_ITEM_KEYS = ("items", "results")
+#: 容器裡「那一批資料」可能叫這些名字。**順序有意義**：先找專案 issue 用的
+#: items，再找跨專案 issue 用的 results，最後是某 issue 的工時用的 worklogs。
+#: 三個端點各用一種，不是筆誤。
+#:
+#: ⚠️ `worklogs` 是 2026-09-14 才補上的，補之前 `GET /api/issues/{id}/worklogs/`
+#: 會讓 `_unwrap_page` 直接拋「找不到資料欄位」。那支回的是
+#: `{actual_hours, worklogs}`——**沒有任何分頁欄位**，所以 total_pages 會是
+#: None（一次回完），這是正確的結果，不是漏讀了分頁。
+_PAGE_ITEM_KEYS = ("items", "results", "worklogs")
 
 #: 總頁數的欄位。`total`（專案 issue）與 `count`（跨專案 issue）是總**筆數**
 #: 不是頁數，所以不能拿來當迴圈終止條件——這裡只認 total_pages。
 _TOTAL_PAGES_KEY = "total_pages"
+
+#: `hours` 的合法形狀：最多三位整數、兩位小數，允許負數（ZPlanner 用負數做沖銷）。
+#:
+#: ⚠️ **比 schema 嚴格一點，而且是故意的。** OpenAPI 原文是
+#: `^-?\d{0,3}(?:\.\d{0,2})?$`——`{0,3}` 與 `{0,2}` 的下界都是 0，所以
+#: **空字串、`"-"`、`"."` 全都符合那個 pattern**。照抄的話 `hours=""` 會被
+#: 放行送出去，換回一句分不出欄位的「格式錯誤」。前面的 `(?=.*\d)` 要求至少
+#: 有一個數字，把這三種擋在送出之前。
+_HOURS_PATTERN = re.compile(r"-?(?=.*\d)\d{0,3}(?:\.\d{0,2})?")
+
+#: `date` 的形狀。只驗長相，真實性交給 ZPlanner。
+_DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+#: 工時匯出 CSV 的中文欄名 → 我們用的鍵（2026-09-14 實測的欄位順序）。
+#:
+#: 正規化的理由：`工時(h)` 這種 key 會漏進每一個呼叫端，而中文欄名是 ZPlanner
+#: 的顯示字串、隨時可能為了報表好看而改。但**對不上一律拋**（見
+#: `_parse_export_csv`）——這裡換名字，不代表可以容忍欄位消失。
+_EXPORT_COLUMNS = {
+    "日期": "date",
+    "人員": "user_name",
+    "專案代碼": "project_code",
+    "Issue 編號": "issue_key",
+    "Issue 標題": "issue_title",
+    "工時(h)": "hours",
+    "備註": "note",
+}
 
 
 class ZPlannerClient:
@@ -97,7 +133,14 @@ class ZPlannerClient:
         # 這種常見寫法會帶進尾端換行，而帶換行的標頭值會讓 requests 拋
         # InvalidHeader，**並把整個標頭值（含 token）寫進例外訊息**。
         self._token = (raw_token or "").strip()
-        self._base_url = (base_url or cfg.ZPLANNER_BASE_URL or "").strip().rstrip("/")
+        # 與 token 一樣用 `is not None` 判斷，**不可以用 `or`**：`or` 會把明確傳進來
+        # 的空字串當成「沒有傳」而掉回環境變數，於是「給我一個沒有網址的 client」
+        # 這個意圖被安靜地推翻。後果不只在測試裡——它讓 available() 在該回
+        # 「未設定」的時候回「可以用」，而那正是這個方法存在的理由。
+        # 2026-09-14 實測：開發機上有設 ZPLANNER_BASE_URL 時，
+        # test_沒設_base_url_時不送出請求 必然紅燈，CI 上卻是綠的。
+        raw_base = base_url if base_url is not None else cfg.ZPLANNER_BASE_URL
+        self._base_url = (raw_base or "").strip().rstrip("/")
         self._timeout = timeout or cfg.ZPLANNER_TIMEOUT
         # 允許注入 session 純粹是為了測試時掛 mock；正常情況自己建一個以重用連線
         self._session = session or requests.Session()
@@ -158,23 +201,32 @@ class ZPlannerClient:
             return text.replace(self._token, "zp_***已遮蔽***")
         return text
 
-    def _request(
+    def _send(
         self,
         method: str,
         path: str,
         *,
         params: Optional[Dict[str, Any]] = None,
-    ) -> Any:
-        """送一次請求，回傳成功時的 `data` 欄位；任何失敗都拋例外。
+        json_body: Optional[Dict[str, Any]] = None,
+    ):
+        """送一次請求，回傳 requests 的 response；只處理設定與傳輸層的失敗。
 
-        這個方法是整個模組唯一碰 HTTP 的地方，那條「狀態碼恆 200」的規則也
-        只在這裡處理一次，公開方法不必各自記得。
+        這個方法是整個模組唯一碰 HTTP 的地方。**它刻意不看回應內容**——因為
+        不是每支端點都回 `{code, message, data}` 信封（`export` 成功時回的是
+        CSV），信封的解讀屬於 `_request`，CSV 的解讀屬於 `_request_csv`。
+
+        **傳輸層失敗的錯誤型別依「這是不是寫入」而不同**，見下面的註解。
+        判準是 HTTP method，不是呼叫端自己說——公開方法不可能忘記標記。
         """
         ok, reason = self.available()
         if not ok:
             # 沒設或格式明顯不對，兩種都是部署設定的問題，不是呼叫端的錯，
             # 也不值得為它送一次必定失敗的請求。
             raise ConfigurationError(reason)
+
+        # 「會改變 ZPlanner 狀態的請求」。用 method 判定而不是多一個參數：
+        # 參數會被忘記帶，method 不會。
+        is_write = method.upper() not in ("GET", "HEAD", "OPTIONS")
 
         url = f"{self._base_url}{path}"
         try:
@@ -183,19 +235,39 @@ class ZPlannerClient:
                 url,
                 headers={"Authorization": f"Bearer {self._token}"},
                 params=params,
+                json=json_body,
                 timeout=self._timeout,
             )
-        except requests.Timeout as exc:
-            # 逾時**不保證請求沒有送達**。這一層全是唯讀 GET 所以重試無害，
-            # 但錯誤型別要留住這個區別，等寫入端點接上來時才不會被誤判成
-            # 「沒送出去，重送一次就好」。
-            raise ZPlannerUnavailable(
-                "ZPlanner 連線逾時", detail=self._scrub(f"{method} {path}: {exc}")
-            ) from exc
         except requests.RequestException as exc:
-            raise ZPlannerUnavailable(
-                detail=self._scrub(f"{method} {path}: {exc}")
-            ) from exc
+            # 🔴 **寫入的傳輸層失敗一律是「不知道有沒有寫進去」。**
+            #
+            # 逾時顯然如此；但連 ConnectionError 也算——它涵蓋「送出去了、
+            # 對方處理完了、回應讀到一半斷線」。我們分不出那和「根本沒送到」，
+            # 而分不出的時候唯一安全的假設是「可能已經寫進去了」。自動重送
+            # 會在 ZPlanner 那邊多一筆，月結後刪不掉（要走 correction-request）。
+            #
+            # 唯讀查詢沒有這個問題，重試無害，維持 ZPLANNER_UNAVAILABLE。
+            detail = self._scrub(f"{method} {path}: {exc}")
+            if is_write:
+                raise ZPlannerWriteIndeterminate(detail=detail) from exc
+            if isinstance(exc, requests.Timeout):
+                raise ZPlannerUnavailable("ZPlanner 連線逾時", detail=detail) from exc
+            raise ZPlannerUnavailable(detail=detail) from exc
+        return resp
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Optional[Dict[str, Any]] = None,
+        json_body: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        """送一次請求，回傳成功時的 `data` 欄位；任何失敗都拋例外。
+
+        那條「狀態碼恆 200」的規則只在這裡處理一次，公開方法不必各自記得。
+        """
+        resp = self._send(method, path, params=params, json_body=json_body)
 
         # **先看 body，不先看 HTTP 狀態碼。**
         #
@@ -393,6 +465,269 @@ class ZPlannerClient:
         data = self._request("GET", f"/api/projects/{pid}/members/")
         return _as_list(data, f"/api/projects/{pid}/members/")
 
+    # ------------------------------------------------------------------
+    # 工時
+    # ------------------------------------------------------------------
+
+    def list_weekly_worklogs(self, week_start: Optional[str] = None) -> Dict[str, Any]:
+        """某一週**已經填進 ZPlanner** 的工時（不是本地草稿）。
+
+        `week_start` 給 `YYYY-MM-DD`（省略就不送這個參數）。
+
+        🔴 **但 `week_start` 完全無效——這支端點永遠只回「本週」。**
+
+        參數照送（將來 ZPlanner 真的實作了就會自動開始生效，而且下游早就有
+        防線，見下面），但呼叫端**絕對不可以假設自己拿得到指定的那一週**。
+
+        2026-09-14（週一）實測，五種輸入回同一週：
+
+            傳 2026-09-07 -> week_start=2026-09-14  week=38
+            傳 2026-08-03 -> week_start=2026-09-14  week=38
+            傳 2026-07-06 -> week_start=2026-09-14  week=38
+            傳 2026-09-14 -> week_start=2026-09-14  week=38
+            不傳          -> week_start=2026-09-14  week=38
+
+        OpenAPI schema 對這支**沒有宣告任何 query 參數**，與實測一致。
+
+        ⚠️ 這裡原本寫的是「它會把日期正規化到那一週的週一」，證據是 2026-09-13
+        傳 `2026-09-08`（週二）回 `2026-09-07`（週一）。那是個**假陽性**：09-13
+        當下的本週正好就是 09-07～09-13，所以「正規化到週一」與「參數被忽略、
+        一律回本週」兩種解釋會產生一模一樣的輸出，單一樣本分不出來。要否證它
+        只需要傳一個**不在本週內**的日期——這正是 rules/20 §7「這個觀察證明得了
+        你要的結論嗎」的形態，別再用落在本週內的日期去驗這件事。
+
+        **要讀非本週的工時，改用 `export_worklogs(date_from, date_to)`**，那是
+        目前唯一能指定任意區間的管道。
+
+        回傳的那一週仍然要讀回應裡的 `week_start`／`week_end`，不要拿自己送出去
+        的值當答案——這一點在參數無效的前提下只會更重要。
+
+        ⚠️ **`hours` 這個欄位名在兩個層級是不同型別**（同日實測）：
+        `days[].hours` 是 float（`2.0`），而 `entries[].hours` 是**字串**
+        （`"1.50"`）。混著用會在其中一邊安靜地算錯——而 ZPlanner 的寫入端點
+        吃的是字串，所以字串那一邊才是權威。
+
+        回應形狀（2026-09-13 實測）：
+
+            {year, week, week_start, week_end,
+             total_hours: float, target_hours: float, completion_pct: float,
+             days: [{date, weekday: "Mon", hours: float, entries: [...]}]}
+
+        `days` **固定七筆**（沒填工時的那天 `hours` 是 0、`entries` 是空陣列），
+        `weekday` 是英文縮寫，要中文得自己轉。每筆 entry 有 `id`、`issue_id`、
+        `issue_key`、`user_id`、`user_name`、`date`、`start_time`（可為 null）、
+        `hours`、`note`、`is_correction`、`is_locked`、`created_at`。
+
+        **`entries[].id` 就是修改與刪除要用的 worklog id**，也是本地草稿
+        `worklog_draft_entries.zplanner_worklog_id` 要對上的那個值。
+        """
+        params: Dict[str, Any] = {}
+        if week_start:
+            params["week_start"] = week_start
+        data = self._request("GET", "/api/worklogs/weekly/", params=params or None)
+        if not isinstance(data, dict):
+            # 這支回的是一個週報表物件，不是清單。形狀不對就拋，不要猜——
+            # 猜錯的代價是週檢視顯示一週零工時，而使用者會以為自己真的沒填
+            raise ZPlannerApiError(
+                "ZPlanner /api/worklogs/weekly/ 回傳了預期外的資料形狀",
+                detail=repr(data)[:400],
+            )
+        return data
+
+    def export_worklogs(self, date_from: str, date_to: str) -> List[Dict[str, str]]:
+        """**任意日期區間**內我自己的工時。這是讀非本週工時的唯一管道。
+
+        `list_weekly_worklogs` 的 `week_start` 是無效的（見該方法），所以「上週
+        我到底填了什麼」只能靠這支回答。用途有兩個，兩個都很關鍵：
+
+        1. **送出前去重**：同一天同一個 issue 已經有工時了就不要再送一次。
+           重複的工時在月結後刪不掉，只能走 correction-request。
+        2. **對帳**：`ZPlannerWriteIndeterminate` 之後查一下，就知道那筆到底
+           有沒有寫進去。
+
+        ⚠️ **兩個參數都必填，而且名字是 `date_from`／`date_to`。** 寫成
+        `start_date`／`end_date` 不會得到「參數名不對」，而是
+        `code 400「日期格式錯誤，需為 YYYY-MM-DD」`——訊息會把人推去檢查日期
+        格式，但日期格式明明是對的（2026-09-14 實測）。所以這裡在送出之前先擋。
+
+        ⚠️ **成功時回的是 CSV，不是 JSON 信封**（`text/csv; charset=utf-8-sig`，
+        有 BOM）。失敗時才回信封。所以這支不能走 `_request`。
+
+        回傳把 CSV 的中文欄名正規化成穩定的鍵（見 `_EXPORT_COLUMNS`）：
+        `date`、`user_name`、`project_code`、`issue_key`、`issue_title`、
+        `hours`、`note`。值一律是**字串**，沒有轉數字——`hours` 轉 float 會在
+        比對「這筆是不是已經填過」時因為 `2` 與 `2.0` 而錯開，要算數的人自己轉。
+
+        範圍是**本人**的工時，不是全公司（2026-09-14 實測：同一區間該 issue 有
+        其他同事的工時，但這支只回自己的 9 筆）。
+        """
+        for name, value in (("date_from", date_from), ("date_to", date_to)):
+            if not (value or "").strip():
+                raise InvalidParameter(
+                    f"匯出工時必須同時給 date_from 與 date_to，缺了 {name}。"
+                    "（少給或寫錯參數名時 ZPlanner 會回「日期格式錯誤」，"
+                    "那個訊息會誤導人去檢查日期格式。）"
+                )
+        text = self._request_csv(
+            "/api/worklogs/export/",
+            params={"date_from": date_from.strip(), "date_to": date_to.strip()},
+        )
+        return _parse_export_csv(text)
+
+    def list_issue_worklogs(self, issue_id: int) -> Tuple[List[Dict[str, Any]], Any]:
+        """某個 issue 的**所有人**的工時，以及該 issue 的累計時數。
+
+        回 `(worklogs, actual_hours)`。與 `export_worklogs` 的差別很重要：
+        那支只回自己的、可以指定日期區間；這支回全部人的、不能篩日期。
+        要判斷「我自己填過了沒有」用 export，不要用這支去濾——2026-09-14 實測
+        某個共用 issue（03CO 聯繫溝通討論）有 7182 筆，濾自己的成本很高。
+
+        ⚠️ 回應形狀是 `{actual_hours, worklogs}`，**沒有分頁欄位**。`worklogs`
+        這個容器 key 是 2026-09-14 才補進 `_PAGE_ITEM_KEYS` 的，補之前這支會
+        直接拋「找不到資料欄位」。
+        """
+        iid = _require_int(issue_id, "issue_id")
+        data = self._request("GET", f"/api/issues/{iid}/worklogs/")
+        rows = _as_list(data, f"/api/issues/{iid}/worklogs/")
+        actual = data.get("actual_hours") if isinstance(data, dict) else None
+        return rows, actual
+
+    # ------------------------------------------------------------------
+    # 工時：寫入
+    #
+    # 🔴 這一區的每個方法失敗時都可能拋 ZPlannerWriteIndeterminate，意思是
+    # 「不知道有沒有寫進去」。**收到它一律不准自動重試**，要先用
+    # export_worklogs 對帳。理由見 core/errors.py 的該類別說明。
+    # ------------------------------------------------------------------
+
+    def create_worklog(
+        self,
+        issue_id: int,
+        date: str,
+        hours: str,
+        *,
+        note: Optional[str] = None,
+        start_time: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """填一筆工時。回傳 ZPlanner 建好的那筆（含 `id`）。
+
+        `issue_id` 必須來自 `list_worklogable_issues()`——那是「能不能填」的
+        唯一權威。拿 `list_my_issues()` 的 id 硬填會在這裡被 403 擋掉。
+
+        成功時 `data` 含 `id`、`issue_key`、`user_name`、`is_locked`；
+        **`id` 就是 `worklog_draft_entries.zplanner_worklog_id` 要存的值**，
+        存了才有辦法在重送時認出「這筆已經送過了」。
+
+        2026-09-14 用這支實際填了 13 筆（worklog_id 116847–116859）。
+        """
+        body: Dict[str, Any] = {
+            "issue_id": _require_int(issue_id, "issue_id"),
+            "date": _require_date(date, "date"),
+            "hours": _require_hours(hours),
+        }
+        # note 與 start_time 是選填。**None 就整個不送**，不要送 null——
+        # 選填欄位送 null 與不送在很多框架裡不是同一件事，而我們沒有理由賭。
+        if note is not None:
+            body["note"] = note
+        if start_time is not None:
+            body["start_time"] = start_time
+        data = self._request("POST", "/api/worklogs/", json_body=body)
+        if not isinstance(data, dict):
+            raise ZPlannerApiError(
+                "ZPlanner 建立工時後回傳了預期外的資料形狀"
+                "（拿不到 id 就無法把它記回草稿，等同一筆孤兒工時）",
+                detail=repr(data)[:400],
+            )
+        return data
+
+    def update_worklog(
+        self,
+        worklog_id: int,
+        *,
+        hours: Optional[str] = None,
+        note: Optional[str] = None,
+        date: Optional[str] = None,
+        start_time: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """改一筆已經存在的工時（PATCH，只送有給的欄位）。
+
+        ⚠️ 月結鎖定（`is_locked`）的工時改不動，唯一途徑是
+        `POST /api/worklogs/{id}/correction-requests/`（要人審核，不是一次
+        呼叫就結束）。這裡不替呼叫端判斷鎖沒鎖——那是業務判斷，屬於上層。
+
+        **一個欄位都沒給就直接擋下來**：送一個空的 PATCH 會得到 200，看起來
+        像成功了，實際上什麼都沒改。那種「成功」比失敗更難查。
+        """
+        body: Dict[str, Any] = {}
+        if hours is not None:
+            body["hours"] = _require_hours(hours)
+        if date is not None:
+            body["date"] = _require_date(date, "date")
+        if note is not None:
+            body["note"] = note
+        if start_time is not None:
+            body["start_time"] = start_time
+        if not body:
+            raise InvalidParameter(
+                "更新工時至少要給一個欄位（hours／note／date／start_time）。"
+                "空的 PATCH 會回成功但什麼都沒改。"
+            )
+        wid = _require_int(worklog_id, "worklog_id")
+        data = self._request("PATCH", f"/api/worklogs/{wid}/", json_body=body)
+        return data if isinstance(data, dict) else {}
+
+    def delete_worklog(self, worklog_id: int) -> None:
+        """刪一筆工時。
+
+        已經刪過的再刪一次會拿到 `code 404` → `ZPlannerNotFound`。**呼叫端不該
+        把它當成錯誤吞掉**：404 代表「現在確實沒有這筆了」，與想要的結果一致，
+        但也可能代表 id 根本記錯了——這裡不替上層決定，照拋。
+        """
+        wid = _require_int(worklog_id, "worklog_id")
+        self._request("DELETE", f"/api/worklogs/{wid}/")
+
+    # ------------------------------------------------------------------
+    # CSV 端點
+    # ------------------------------------------------------------------
+
+    def _request_csv(self, path: str, *, params: Optional[Dict[str, Any]] = None) -> str:
+        """送一次 GET，回傳 CSV 原文；失敗時照樣拋。
+
+        與 `_request` 的差別只有一個：這支的**成功**回應不是 JSON 信封。
+        但**失敗**時仍然是信封（`{"code":400,…}`），所以順序必須是
+        「先試著解信封，解得出來就代表失敗了」——反過來先當 CSV 解的話，
+        錯誤信封會被當成一份只有一行的 CSV，然後靜默回傳 0 筆。
+        """
+        resp = self._send("GET", path, params=params)
+
+        try:
+            payload = resp.json()
+        except ValueError:
+            payload = None
+        if isinstance(payload, dict) and isinstance(payload.get("code"), int):
+            code = payload["code"]
+            if code != 200:
+                log.info("ZPlanner GET %s 回 code=%s", path, code)
+                raise classify_zplanner_error(code, payload.get("message", ""))
+            # 信封而且 code 200——這支端點不該這樣回。當成格式變更拋出來，
+            # 不要猜 data 裡面是不是 CSV。
+            raise ZPlannerApiError(
+                f"ZPlanner {path} 回了 JSON 信封而不是 CSV，回應格式可能改了",
+                detail=self._scrub(repr(payload)[:400]),
+            )
+
+        if resp.status_code >= 500 or resp.status_code == 429:
+            raise ZPlannerUnavailable(
+                f"ZPlanner 回傳 HTTP {resp.status_code}",
+                detail=self._scrub(resp.text[:400]),
+            )
+        if resp.status_code != 200:
+            raise ZPlannerApiError(
+                f"ZPlanner 回傳 HTTP {resp.status_code}",
+                detail=self._scrub(resp.text[:400]),
+            )
+        return resp.text
+
 
 # ----------------------------------------------------------------------
 # 回應形狀的處理
@@ -400,6 +735,74 @@ class ZPlannerClient:
 # 拆成模組級函式而不是方法，因為它們只依賴傳進來的 payload——測試時不必先
 # 建一個 client、也不必掛任何 mock 就能單獨驗。
 # ----------------------------------------------------------------------
+
+
+def _require_hours(value: Any) -> str:
+    """把 `hours` 驗成 ZPlanner 收得下的字串。
+
+    🔴 **只收字串，不收 float。** 這不是龜毛：`allocate()` 算出來的是
+    0.5 的倍數，但 float 一旦進到格式化就可能變成 `2.0000000001` 或科學記號，
+    而 ZPlanner 對格式不符只回一句「hours/date/start_time 格式錯誤」，
+    看不出是哪個欄位、哪裡不對。DB 的 `worklog_draft_entries.hours` 本來就是
+    TEXT，整條路上維持字串才不會有地方偷偷做浮點運算。
+
+    pattern 直接抄 OpenAPI schema 的 `^-?\\d{0,3}(?:\\.\\d{0,2})?$`（最多三位
+    整數、兩位小數）。**負數是合法的**——ZPlanner 用它做沖銷，所以這裡不擋。
+    """
+    if not isinstance(value, str):
+        raise InvalidParameter(
+            f"hours 必須是字串（例如 \"1.50\"），收到 {type(value).__name__} "
+            f"{value!r}。ZPlanner 的寫入端點吃字串，用 float 會在格式化時"
+            "產生它不收的表示法。"
+        )
+    text = value.strip()
+    if not _HOURS_PATTERN.fullmatch(text):
+        raise InvalidParameter(
+            f"hours 格式不符 ZPlanner 的規則（最多三位整數、兩位小數）：{value!r}"
+        )
+    return text
+
+
+def _require_date(value: Any, name: str) -> str:
+    """把日期驗成 `YYYY-MM-DD`。
+
+    只驗形狀不驗真實性（2026-02-31 這裡過得了，ZPlanner 會擋）。目的是把
+    「傳了 datetime 物件」「傳了 2026/09/07」這種一眼可見的錯擋在送出之前——
+    送出去只會換回一句分不出欄位的「格式錯誤」。
+    """
+    if not isinstance(value, str) or not _DATE_PATTERN.fullmatch(value.strip()):
+        raise InvalidParameter(f"{name} 必須是 YYYY-MM-DD 格式的字串，收到 {value!r}")
+    return value.strip()
+
+
+def _parse_export_csv(text: str) -> List[Dict[str, str]]:
+    """把匯出的 CSV 轉成 list of dict，中文欄名換成穩定的鍵。
+
+    **欄位對不上就拋，不要回半套。** 少一欄而照樣回傳的話，呼叫端拿到的
+    `issue_key` 會是 None，然後「這筆填過了沒有」的比對會全部落空——結果是
+    重複填一整週的工時，而過程中沒有任何錯誤訊息。
+    """
+    # utf-8-sig 的 BOM：requests 依 charset 解碼後有時仍留在字串開頭。
+    # csv 模組不會幫忙處理，留著的話第一個欄名會變成 "﻿日期"。
+    body = (text or "").lstrip("﻿")
+    if not body.strip():
+        raise ZPlannerApiError("ZPlanner 匯出工時回了空白內容，連標題列都沒有")
+
+    reader = csv.DictReader(io.StringIO(body))
+    headers = [h.strip() for h in (reader.fieldnames or [])]
+    missing = [zh for zh in _EXPORT_COLUMNS if zh not in headers]
+    if missing:
+        raise ZPlannerApiError(
+            f"ZPlanner 匯出工時的 CSV 缺少欄位 {missing}，回應格式可能改了",
+            detail=f"實際欄位：{headers}",
+        )
+
+    rows: List[Dict[str, str]] = []
+    for raw in reader:
+        rows.append(
+            {key: (raw.get(zh) or "").strip() for zh, key in _EXPORT_COLUMNS.items()}
+        )
+    return rows
 
 
 def _require_int(value: Any, name: str) -> int:

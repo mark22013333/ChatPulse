@@ -10,7 +10,7 @@ import {
 import { isComposing } from '@/lib/keyboard'
 import { copyText } from '@/lib/clipboard'
 import { stepId } from '@/lib/listNavigation'
-import { hashForMentions, hashForSettings, hashForSummary } from '@/lib/route'
+import { hashForMentions, hashForSettings, hashForSummary, hashForWorklog } from '@/lib/route'
 import { useRouter } from '@/router/useRouter'
 import { useDraftStore } from '@/store/draft'
 import { selectMentionsByState, useMentionsStore } from '@/store/mentions'
@@ -160,6 +160,11 @@ export function useGlobalHotkeys({ onToggleEvidence }: Handlers) {
     const NAV: Partial<Record<NonNullable<HotkeyAction>, string>> = {
       'go-summary': hashForSummary(),
       'go-mentions': hashForMentions(),
+      // ⚠️ 這張表是 `Partial<Record<…>>`，**漏掉一個模組不會編譯失敗**。
+      // `g w` 會被 SEQUENCE_MAP 解析成 'go-worklog'，但在這裡查不到 hash 就
+      // 安靜地什麼都不做——快捷鍵看起來壞掉，卻沒有任何錯誤訊息。
+      // 新增 ready 模組時記得回來補一行。
+      'go-worklog': hashForWorklog(),
       'go-settings': hashForSettings('reply'),
       'go-diagnostics': hashForSettings('diagnostics'),
     }

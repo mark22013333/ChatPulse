@@ -26,6 +26,8 @@ import type {
   SummaryStyleValue,
   HealthResponse,
   UsageResponse,
+  WorkRepo,
+  WorklogWeekResponse,
 } from './types'
 
 export const API_BASE = '/api/v1'
@@ -308,6 +310,67 @@ export const api = {
     request<{ deleted: boolean }>(`/code-projects/${id}`, { method: 'DELETE' }),
   /** 重新確認路徑與分支還在。設定頁的「重新檢查」用。 */
   verifyCodeProject: (id: number) => post<CodeProject>(`/code-projects/${id}/verify`),
+
+  // ── 我的工作 repo（Draft Worklog，ADR-0008）──────────────
+  //
+  // **與上面的參考專案是兩份不同的登錄**，不共用端點也不共用型別：那邊是
+  // 「查程式碼回答問題」（要釘死環境與分支），這邊是「回想這天做了什麼」
+  // （預設掃全部分支）。
+  workRepos: () => request<{ repos: WorkRepo[] }>('/work-repos'),
+  createWorkRepo: (body: {
+    name: string
+    repo_path: string
+    /** ⚠️ 空陣列＝不限作者，會撈到這個 repo 裡所有人的 commit。後端不擋。 */
+    author_emails: string[]
+    /** ⚠️ 空陣列＝掃全部分支（`--all`），不是「不掃」。 */
+    branch_filter: string[]
+    default_zplanner_project_id?: number | null
+    default_zplanner_project_key?: string | null
+  }) => post<WorkRepo>('/work-repos', body as unknown as Json),
+  /**
+   * 部分更新。
+   *
+   * **`author_emails`／`branch_filter` 是整組取代，不是逐項合併**——否則
+   * 「把某個舊信箱拿掉」這個動作沒有辦法表達。
+   *
+   * **`default_zplanner_project_id`／`_key` 送 `null` 代表「清除」，欄位沒出現
+   * 才是「不改」**（同 `PATCH /preferences` 的回覆設定欄位）。所以表單要清掉
+   * 預設專案時一定要**明確送 `null`**，不能省略。
+   */
+  updateWorkRepo: (
+    id: number,
+    body: Partial<{
+      name: string
+      repo_path: string
+      author_emails: string[]
+      branch_filter: string[]
+      default_zplanner_project_id: number | null
+      default_zplanner_project_key: string | null
+      enabled: boolean
+    }>,
+  ) =>
+    request<WorkRepo>(`/work-repos/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  deleteWorkRepo: (id: number) =>
+    request<{ deleted: boolean }>(`/work-repos/${id}`, { method: 'DELETE' }),
+  /** 重新確認路徑還是可讀的 git repo，順便回報偵測到的作者信箱。 */
+  verifyWorkRepo: (id: number) => post<WorkRepo>(`/work-repos/${id}/verify`),
+
+  // ── 工時草稿：週檢視（Draft Worklog，ADR-0008）─────────────
+  /**
+   * 一週的工時概況：本地草稿狀態 ＋ ZPlanner 既有工時。
+   *
+   * `weekStart` 是 `YYYY-MM-DD`，**不強制是星期一**（週的起點是前端的顯示
+   * 決定）。但**顯示「這是哪一週」一律讀回應裡的 `week_start`／`week_end`**，
+   * 不要拿這個參數當答案。
+   *
+   * **ZPlanner 不可用不會讓這支失敗**：`zplanner` 變成
+   * `{available: false, reason}`、`days[].zplanner` 全是 `null`，本地草稿照常回。
+   */
+  worklogWeek: (weekStart: string) =>
+    request<WorklogWeekResponse>(`/worklogs/week${query({ week_start: weekStart })}`),
 
   // ── 維運 ────────────────────────────────────────────────
   usage: (days = 14) => request<UsageResponse>(`/usage${query({ days })}`),

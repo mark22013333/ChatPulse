@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { useRoute } from '@/router/useRouter'
 import { useMentionsStore } from '@/store/mentions'
 import { useSpacesStore } from '@/store/spaces'
+import { useWorklogStore } from '@/store/worklog'
 
 /**
  * URL → store 的單向同步（設計規格 §6.6）。
@@ -47,6 +48,21 @@ export function useRouteSync() {
     if (useMentionsStore.getState().selectedId === target) return
     useMentionsStore.getState().select(target)
   }, [route.section, route.mentionId])
+
+  useEffect(() => {
+    if (route.section !== 'worklog') return
+    const target = route.worklogDate
+    /**
+     * 與上面兩條同一條規則：`#/worklog`（沒有日期）表達的是「不指定哪一天」，
+     * **不是**「忘掉剛才選的那天」。
+     *
+     * 這裡尤其不能自作主張補成「今天」：日期會決定工時寫到哪一天，而那是會
+     * 進月結、事後要走 correction-request 才改得動的東西。網址沒說就是沒說。
+     */
+    if (target === null) return
+    if (useWorklogStore.getState().selectedDate === target) return
+    useWorklogStore.getState().selectDate(target)
+  }, [route.section, route.worklogDate])
 
   // `?merge=` → 勾選狀態。route.mergeIds 每次解析都是新陣列，所以一定要比內容。
   useEffect(() => {
