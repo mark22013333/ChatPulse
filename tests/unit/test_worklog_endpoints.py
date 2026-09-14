@@ -332,12 +332,23 @@ class TestWeekEndpoint(EndpointCase):
         self.assertIn("形狀不認得", result["zplanner"]["reason"])
 
     def test_非週一起算時不拿_zplanner_那一週的總計來用(self):
-        """🔴 ZPlanner 會把 `week_start` 正規化到**那一週的週一**。
+        """🔴 ZPlanner 回的那一週與我們請求的七天錯開時，總計一律不抄。
 
-        我們的端點明說 `week_start` 不強制是星期一，兩件事湊在一起就會錯開。
+        錯開有兩個獨立的成因，這條守的是兩者共用的下游處置：
+
+        1. **ZPlanner 的 `/api/worklogs/weekly/` 只回本週**，`week_start` 送了
+           沒有作用（2026-09-14 實測五種輸入皆回同一週）。所以只要使用者把週
+           檢視切到本週以外，必然錯開。
+        2. 我們的端點明說 `week_start` 不強制是星期一，所以即使在本週，週日
+           起算的七天也會與 ZPlanner 的週一起算錯開——本測試模擬的就是這種。
+
         錯開之後最危險的不是少一格，是總計：實測請求週日起的 `2026-09-06`，
         七個格子加起來 40.0 小時，表頭卻顯示 44.00 小時、完成率 110%——因為
-        那是 ZPlanner 週一那一週的和，跟我們回的七格不是同一個區間。
+        那是 ZPlanner 那一週的和，跟我們回的七格不是同一個區間。
+
+        ⚠️ 這份 docstring 原本寫成因是「ZPlanner 會把日期正規化到那一週的週一」。
+        那是假陽性（見 `core/zplanner_client.list_weekly_worklogs` 的說明），
+        但本測試守的不變式與成因無關，所以斷言本身一條都沒有改。
         """
         client = FakeZPlannerWeekly(weekly=zplanner_week("2026-09-07", [8, 8, 8, 8, 8, 0, 4]))
         result = self.week(zplanner=client, week_start="2026-09-06")
@@ -356,7 +367,12 @@ class TestWeekEndpoint(EndpointCase):
         self.assertNotIn("completion_pct", zp, "不再是修復前的 110%")
         self.assertEqual(zp["week_mismatch"]["zplanner_week_start"], "2026-09-07")
         self.assertEqual(zp["week_mismatch"]["requested_week_start"], "2026-09-06")
-        self.assertIn("週一", zp["week_mismatch"]["reason"])
+        # reason 要講得出「哪一段對不上哪一段」，人才知道發生什麼事。
+        # **不斷言特定措辭**——文案會隨著我們對成因的理解修正而改寫，把 prose
+        # 釘進測試只會讓「更正一個錯誤的說明」看起來像弄壞了功能。
+        reason = zp["week_mismatch"]["reason"]
+        self.assertIn("2026-09-07", reason, "要講出 ZPlanner 給的是哪一段")
+        self.assertIn("2026-09-06", reason, "也要講出使用者請求的是哪一段")
         # 窗口外的 09-13 不准出現在任何地方
         self.assertNotIn("2026-09-13", [d["work_date"] for d in result["days"]])
 

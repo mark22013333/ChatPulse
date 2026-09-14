@@ -55,9 +55,15 @@ log = logging.getLogger("chatpulse.zplanner")
 #: schema 的 securitySchemes 宣告 bearerFormat 為 zp_ 加 64 個十六進位字元。
 _TOKEN_PATTERN = re.compile(r"zp_[0-9a-fA-F]{64}")
 
-#: 分頁容器裡「那一頁的資料」可能叫這些名字。**順序有意義**：先找專案 issue
-#: 用的 items，再找跨專案 issue 用的 results。兩個端點各用一種，不是筆誤。
-_PAGE_ITEM_KEYS = ("items", "results")
+#: 容器裡「那一批資料」可能叫這些名字。**順序有意義**：先找專案 issue 用的
+#: items，再找跨專案 issue 用的 results，最後是某 issue 的工時用的 worklogs。
+#: 三個端點各用一種，不是筆誤。
+#:
+#: ⚠️ `worklogs` 是 2026-09-14 才補上的，補之前 `GET /api/issues/{id}/worklogs/`
+#: 會讓 `_unwrap_page` 直接拋「找不到資料欄位」。那支回的是
+#: `{actual_hours, worklogs}`——**沒有任何分頁欄位**，所以 total_pages 會是
+#: None（一次回完），這是正確的結果，不是漏讀了分頁。
+_PAGE_ITEM_KEYS = ("items", "results", "worklogs")
 
 #: 總頁數的欄位。`total`（專案 issue）與 `count`（跨專案 issue）是總**筆數**
 #: 不是頁數，所以不能拿來當迴圈終止條件——這裡只認 total_pages。
@@ -97,7 +103,14 @@ class ZPlannerClient:
         # 這種常見寫法會帶進尾端換行，而帶換行的標頭值會讓 requests 拋
         # InvalidHeader，**並把整個標頭值（含 token）寫進例外訊息**。
         self._token = (raw_token or "").strip()
-        self._base_url = (base_url or cfg.ZPLANNER_BASE_URL or "").strip().rstrip("/")
+        # 與 token 一樣用 `is not None` 判斷，**不可以用 `or`**：`or` 會把明確傳進來
+        # 的空字串當成「沒有傳」而掉回環境變數，於是「給我一個沒有網址的 client」
+        # 這個意圖被安靜地推翻。後果不只在測試裡——它讓 available() 在該回
+        # 「未設定」的時候回「可以用」，而那正是這個方法存在的理由。
+        # 2026-09-14 實測：開發機上有設 ZPLANNER_BASE_URL 時，
+        # test_沒設_base_url_時不送出請求 必然紅燈，CI 上卻是綠的。
+        raw_base = base_url if base_url is not None else cfg.ZPLANNER_BASE_URL
+        self._base_url = (raw_base or "").strip().rstrip("/")
         self._timeout = timeout or cfg.ZPLANNER_TIMEOUT
         # 允許注入 session 純粹是為了測試時掛 mock；正常情況自己建一個以重用連線
         self._session = session or requests.Session()
@@ -400,13 +413,35 @@ class ZPlannerClient:
     def list_weekly_worklogs(self, week_start: Optional[str] = None) -> Dict[str, Any]:
         """某一週**已經填進 ZPlanner** 的工時（不是本地草稿）。
 
-        `week_start` 給 `YYYY-MM-DD`，省略就是本週。
+        `week_start` 給 `YYYY-MM-DD`（省略就不送這個參數）。
 
-        ⚠️ **它會把日期正規化到那一週的週一。** 2026-09-13 實測：傳
-        `week_start=2026-09-08`（週二），回來的 `week_start` 是 `2026-09-07`。
-        所以呼叫端不必自己算週一，但**也不能假設回傳的那週就是你傳的那天所在
-        的週**——要顯示「這是哪一週」一律讀回應裡的 `week_start`／`week_end`，
-        不要拿自己傳出去的值當答案。
+        🔴 **但 `week_start` 完全無效——這支端點永遠只回「本週」。**
+
+        參數照送（將來 ZPlanner 真的實作了就會自動開始生效，而且下游早就有
+        防線，見下面），但呼叫端**絕對不可以假設自己拿得到指定的那一週**。
+
+        2026-09-14（週一）實測，五種輸入回同一週：
+
+            傳 2026-09-07 -> week_start=2026-09-14  week=38
+            傳 2026-08-03 -> week_start=2026-09-14  week=38
+            傳 2026-07-06 -> week_start=2026-09-14  week=38
+            傳 2026-09-14 -> week_start=2026-09-14  week=38
+            不傳          -> week_start=2026-09-14  week=38
+
+        OpenAPI schema 對這支**沒有宣告任何 query 參數**，與實測一致。
+
+        ⚠️ 這裡原本寫的是「它會把日期正規化到那一週的週一」，證據是 2026-09-13
+        傳 `2026-09-08`（週二）回 `2026-09-07`（週一）。那是個**假陽性**：09-13
+        當下的本週正好就是 09-07～09-13，所以「正規化到週一」與「參數被忽略、
+        一律回本週」兩種解釋會產生一模一樣的輸出，單一樣本分不出來。要否證它
+        只需要傳一個**不在本週內**的日期——這正是 rules/20 §7「這個觀察證明得了
+        你要的結論嗎」的形態，別再用落在本週內的日期去驗這件事。
+
+        **要讀非本週的工時，改用 `export_worklogs(date_from, date_to)`**，那是
+        目前唯一能指定任意區間的管道。
+
+        回傳的那一週仍然要讀回應裡的 `week_start`／`week_end`，不要拿自己送出去
+        的值當答案——這一點在參數無效的前提下只會更重要。
 
         ⚠️ **`hours` 這個欄位名在兩個層級是不同型別**（同日實測）：
         `days[].hours` 是 float（`2.0`），而 `entries[].hours` 是**字串**

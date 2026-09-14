@@ -261,14 +261,30 @@ class AuthHeaderAndAvailability(unittest.TestCase):
         self.assertEqual(session.calls, [])
 
     def test_沒設_base_url_時不送出請求(self):
-        # 網址和 token 一樣沒有預設值（刻意不進版控）
-        c, session = client(base_url="")
-        ok, reason = c.available()
-        self.assertFalse(ok)
-        self.assertIn("ZPLANNER_BASE_URL", reason)
-        with self.assertRaises(ConfigurationError):
-            c.list_my_issues()
-        self.assertEqual(session.calls, [])
+        # 網址和 token 一樣沒有預設值（刻意不進版控）。
+        #
+        # 🔴 **刻意把 cfg.ZPLANNER_BASE_URL 設成非空值再測。** 這條原本直接
+        # 依賴「執行環境沒有設 ZPLANNER_BASE_URL」，於是在 CI 上永遠綠、在有
+        # 設環境變數的開發機上永遠紅（2026-09-14 實測）——而紅的原因是真的有
+        # bug：`base_url or cfg.…` 會把明確傳進來的空字串當成「沒有傳」而掉回
+        # 環境變數。測試自己依賴環境，就守不住這種 bug。
+        with mock.patch.object(cfg, "ZPLANNER_BASE_URL", "https://從環境變數來的.test"):
+            c, session = client(base_url="")
+            ok, reason = c.available()
+            self.assertFalse(ok)
+            self.assertIn("ZPLANNER_BASE_URL", reason)
+            with self.assertRaises(ConfigurationError):
+                c.list_my_issues()
+            self.assertEqual(session.calls, [])
+
+    def test_base_url_傳_None_才會用環境變數(self):
+        # 上一條的另一半：`None` 是「我沒有意見，用設定值」，空字串是「我就是
+        # 要沒有網址」。兩者必須分得開，否則 available() 會在該說「未設定」的
+        # 時候說「可以用」——而那正是這個方法唯一的用途。
+        with mock.patch.object(cfg, "ZPLANNER_BASE_URL", "https://從環境變數來的.test"):
+            c, _ = client(base_url=None)
+            ok, _reason = c.available()
+            self.assertTrue(ok)
 
     def test_截斷的_token_被擋下(self):
         # 只驗 zp_ 前綴的話這個會過關，然後在 ZPlanner 那邊拿到「請先登入」——
@@ -371,9 +387,21 @@ class Pagination(unittest.TestCase):
         self.assertEqual(c.list_project_issues(646), [{"id": 1}])
 
     def test_results_容器(self):
-        # 同一個 client 也要吃得下另一種 key，兩個端點各用一種
+        # 同一個 client 也要吃得下另一種 key，三個端點各用一種
         c, _ = client(FakeResponse(envelope({"results": [{"id": 2}], "count": 1, "total_pages": 1})))
         self.assertEqual(c.list_project_issues(646), [{"id": 2}])
+
+    def test_worklogs_容器(self):
+        # `GET /api/issues/{id}/worklogs/` 回的是 `{actual_hours, worklogs}`，
+        # 第三種 key。2026-09-14 之前 `worklogs` 不在 _PAGE_ITEM_KEYS 裡，這種
+        # 回應會直接拋「找不到資料欄位」。
+        #
+        # ⚠️ 這個形狀**沒有任何分頁欄位**，所以 total_pages 是 None、一次回完，
+        # 不是「只讀到第一頁」——`_as_list` 的分頁守門不該對它開火。
+        c, _ = client(
+            FakeResponse(envelope({"actual_hours": "5.50", "worklogs": [{"id": 116412}]}))
+        )
+        self.assertEqual(c.list_project_issues(646), [{"id": 116412}])
 
     def test_翻完所有頁(self):
         c, session = client(
@@ -611,7 +639,12 @@ class WeeklyWorklogs(unittest.TestCase):
         c.list_weekly_worklogs()
         self.assertIsNone(session.calls[0]["params"])
 
-    def test_帶_week_start(self):
+    def test_帶_week_start_參數照送但伺服器不理會(self):
+        # ⚠️ 這條只驗「我們確實把參數送出去了」，**不代表它有用**。
+        # 2026-09-14 對正式站實測：傳 09-07、08-03、07-06、09-14、不傳，
+        # 五種輸入全部回同一週（本週），OpenAPI schema 也沒宣告這個參數。
+        # 照送是為了「將來 ZPlanner 真的實作了就自動生效」，不是因為它現在有效。
+        # 要讀非本週的工時得走 export（date_from／date_to）。
         c, session = client(FakeResponse(envelope(weekly_payload())))
         c.list_weekly_worklogs("2026-09-08")
         self.assertEqual(session.calls[0]["params"], {"week_start": "2026-09-08"})
@@ -624,8 +657,13 @@ class WeeklyWorklogs(unittest.TestCase):
         self.assertEqual(data["target_hours"], 40.0)
 
     def test_回傳的那一週不必然等於你傳的那天(self):
-        # 實測：傳 09-08（週二），回來的 week_start 是 09-07（週一）。
-        # 要顯示「這是哪一週」一律讀回應裡的值，不要拿自己送出去的當答案
+        # 🔴 這條原本的註解寫「傳 09-08 回 09-07，**所以它正規化到週一**」。
+        # 那個結論是假陽性：2026-09-13 當下的本週正好就是 09-07～09-13，
+        # 「正規化到週一」與「參數被忽略、一律回本週」兩種解釋會產生完全相同
+        # 的輸出，用一個落在本週內的日期永遠分不出來。改用不在本週內的日期一
+        # 試就否證了（見 test_帶_week_start_參數照送但伺服器不理會 的註解）。
+        #
+        # 斷言本身照舊而且更該守：一律讀回應裡的 week_start，不要拿送出去的當答案。
         c, _ = client(FakeResponse(envelope(weekly_payload())))
         data = c.list_weekly_worklogs("2026-09-08")
         self.assertNotEqual(data["week_start"], "2026-09-08")

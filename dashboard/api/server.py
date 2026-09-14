@@ -3314,10 +3314,13 @@ def _zplanner_week_target(data: Any) -> Dict[str, Any]:
 def _zplanner_week_mismatch(data: Any, dates: List[str]) -> Optional[Dict[str, Any]]:
     """ZPlanner 回的那一週，跟我們請求的七天是同一段嗎？不是就回描述，是就回 None。
 
-    🔴 `list_weekly_worklogs` 的 docstring 寫得很清楚：**它會把日期正規化到
-    那一週的週一**，所以「傳出去的那天所在的週」不保證等於「回來的那一週」。
-    我們的端點又明說 `week_start` 不強制是星期一（見 `get_worklog_week`），
-    兩件事湊在一起就會錯開。
+    🔴 **ZPlanner 的 `/api/worklogs/weekly/` 只回「本週」，`week_start` 送了
+    沒有作用**（2026-09-14 實測五種輸入皆回同一週，見 `list_weekly_worklogs`
+    的 docstring）。所以只要使用者把週檢視切到本週以外的任何一週，這裡就必然
+    對不上——這不是偶發的邊界情況，是**非本週一律如此**。
+
+    再加上我們的端點明說 `week_start` 不強制是星期一（見 `get_worklog_week`），
+    即使在本週，週日起算的七天也會與 ZPlanner 的週一起算錯開。
 
     錯開之後最危險的不是少一格，是**總計**：ZPlanner 的 `total_hours`／
     `target_hours`／`completion_pct` 描述的是**它那一週**，直接抄過來就變成
@@ -3342,10 +3345,10 @@ def _zplanner_week_mismatch(data: Any, dates: List[str]) -> Optional[Dict[str, A
         "zplanner_week_start": zp_start or None,
         "zplanner_week_end": zp_end or None,
         "reason": (
-            f"ZPlanner 回的是 {zp_start or '?'}～{zp_end or '?'} 這一週"
-            f"（它會把日期正規化到週一），與這裡顯示的 {dates[0]}～{dates[-1]} "
-            "不是同一段。目標時數與完成率描述的是它那一週，拿來用會對不上，"
-            "所以整個不顯示；下面每一格仍然是各自那天的實際工時。"
+            f"ZPlanner 只查得到本週（{zp_start or '?'}～{zp_end or '?'}）的工時，"
+            f"與這裡顯示的 {dates[0]}～{dates[-1]} 不是同一段，所以這一段沒有"
+            "ZPlanner 的資料可以對照——不代表那幾天真的沒填。目標時數與完成率"
+            "描述的是它那一週，拿來用會對不上，因此整個不顯示。"
         ),
     }
 
