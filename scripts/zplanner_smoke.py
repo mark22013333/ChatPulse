@@ -18,11 +18,25 @@ log。要加新端點進來之前，先確認它也是唯讀。
 
 import os
 import sys
+from datetime import date, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.errors import ChatPulseError  # noqa: E402
 from core.zplanner_client import ZPlannerClient  # noqa: E402
+
+
+def _issue_id_of(client, issue_key):
+    """從 issue_key 換回數字 id。
+
+    匯出的 CSV 只給 issue_key，而 `/api/issues/{id}/worklogs/` 要數字 id。
+    走 worklogable 是因為它同時證明「這個 issue 我填得了工時」——拿
+    issues/search 的結果可能是沒有填報權限的 issue。
+    """
+    for row in client.list_worklogable_issues(issue_key.split("-")[0]):
+        if (row.get("issue_key") or row.get("key")) == issue_key:
+            return row.get("id")
+    raise ChatPulseError(f"worklogable 裡找不到 {issue_key}")
 
 PASS = "  ✅"
 FAIL = "  ❌"
@@ -166,6 +180,47 @@ def main():
             f"GET /api/projects/{project_id}/members/",
             lambda: client.list_project_members(project_id),
         )[0]
+
+    # 工時匯出：讀非本週工時的唯一管道（weekly 的 week_start 是無效的）。
+    # 用「上一個完整的週一～週五」當查詢區間——不寫死日期，否則這支腳本
+    # 過幾週就變成在查一段誰都沒填工時的區間，然後 0 筆看起來像壞掉。
+    today = date.today()
+    last_monday = today - timedelta(days=today.weekday() + 7)
+    last_friday = last_monday + timedelta(days=4)
+    ok, rows = run(
+        f"GET /api/worklogs/export/?date_from={last_monday}&date_to={last_friday}",
+        lambda: client.export_worklogs(str(last_monday), str(last_friday)),
+    )
+    results["export"] = ok
+    if ok and rows:
+        total = sum(float(r["hours"]) for r in rows if r.get("hours"))
+        print(f"     合計 {total} 小時（這是**本人**的工時，不是全公司）")
+    elif ok:
+        print("     0 筆——那一週沒填工時。這是合法結果，不是失敗")
+
+    # 匯出的兩個日期必填，少給會被擋在送出之前（ZPlanner 會回「日期格式錯誤」，
+    # 那個訊息會把人推去檢查日期格式，但日期格式是對的）
+    print("\n▶ 匯出缺 date_to（應被 client 擋下，不送出請求）")
+    try:
+        client.export_worklogs(str(last_monday), "")
+        print(f"{FAIL} 沒有擋下來——兩個日期必填的防呆失效了")
+        results["export_guard"] = False
+    except ChatPulseError as exc:
+        print(f"{PASS} 已擋下：{exc.code}")
+        results["export_guard"] = True
+
+    # 某個 issue 的工時。挑一個「已知必然有資料」的：上面匯出結果裡的第一筆。
+    # 隨便挑一個 issue 的話，0 筆分不出是「真的沒工時」還是「解析壞了」。
+    if ok and rows:
+        results["issue_worklogs"] = run(
+            f"GET /api/issues/{{id}}/worklogs/（用 {rows[0]['issue_key']} 當已知有資料的樣本）",
+            lambda: client.list_issue_worklogs(
+                _issue_id_of(client, rows[0]["issue_key"])
+            )[0],
+        )[0]
+    else:
+        print(f"\n{SKIP} 沒有已知必然有工時的 issue，跳過 issue 工時查詢")
+        results["issue_worklogs"] = None
 
     print("\n" + "=" * 60)
     passed = sum(1 for v in results.values() if v is True)

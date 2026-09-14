@@ -400,6 +400,33 @@ class ZPlannerUnavailable(ChatPulseError):
     default_message = "無法連線到 ZPlanner"
 
 
+class ZPlannerWriteIndeterminate(ChatPulseError):
+    """寫入請求在傳輸層就失敗了——**不知道 ZPlanner 那邊有沒有寫進去**。
+
+    刻意與 ZPLANNER_UNAVAILABLE 分開，雖然兩者的成因看起來是同一類。差別在
+    **下一步能不能自動做**：
+
+    * ZPLANNER_UNAVAILABLE 用在唯讀查詢，重試無害，前端可以直接重試。
+    * 這個用在 POST／PATCH／DELETE，**一律不准自動重試**。重試可能在 ZPlanner
+      那邊變成兩筆，而月結之後多出來的那筆刪不掉，只能走 correction-request。
+
+    ⚠️ **連「連線被拒」也算進來，不只逾時。** 直覺會想把 ConnectionError 當成
+    「確定沒送達所以可以安全重送」，但 requests 的 ConnectionError 也涵蓋「送
+    出去了、對方處理完了、回應讀到一半連線斷掉」。我們分不出這兩種，而分不出
+    的時候唯一安全的假設是「可能已經寫進去了」。**只有拿到 code != 200 的回應
+    信封才證明沒有寫進去**——那是 ZPlanner 應用層親口說的。
+
+    對應到 `worklog_draft_entries.state` 的 `unknown`（見 `core/db.py`）：
+    這種筆不自動重試，改請人對帳。對帳現在很便宜——用
+    `ZPlannerClient.export_worklogs(date_from, date_to)` 查那一天，
+    看得到就是寫進去了。
+    """
+
+    code = "ZPLANNER_WRITE_INDETERMINATE"
+    http_status = 502
+    default_message = "工時可能已經送出，但無法確認——請先對帳再決定要不要重送"
+
+
 class ZPlannerApiError(ChatPulseError):
     """連上了，但回應不是預期的形狀（非 JSON、缺 code 欄位、未知的 code）。
 

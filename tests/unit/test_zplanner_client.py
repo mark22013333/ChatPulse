@@ -39,6 +39,7 @@ from core.errors import (  # noqa: E402
     ZPlannerInvalidParameter,
     ZPlannerNotFound,
     ZPlannerUnavailable,
+    ZPlannerWriteIndeterminate,
 )
 from core.zplanner_client import ZPlannerClient  # noqa: E402
 
@@ -69,13 +70,17 @@ class FakeSession:
         self._responses = list(responses)
         self.calls = []
 
-    def request(self, method, url, headers=None, params=None, timeout=None):
+    def request(self, method, url, headers=None, params=None, json=None, timeout=None):
         self.calls.append(
             {
                 "method": method,
                 "url": url,
                 "headers": headers or {},
                 "params": params,
+                # 寫入端點的 body。**要記下來**：寫入的正確性幾乎全在 body 裡
+                # （issue_id 對不對、hours 是不是字串、選填欄位有沒有多送 null），
+                # 不記的話這些只能靠讀程式碼確認。
+                "json": json,
                 "timeout": timeout,
             }
         )
@@ -688,6 +693,271 @@ class WeeklyWorklogs(unittest.TestCase):
         c, _ = client(FakeResponse(envelope(None, code=403, message="權限不足")))
         with self.assertRaises(ZPlannerForbidden):
             c.list_weekly_worklogs()
+
+
+# ----------------------------------------------------------------------
+# 9. 寫入：一筆工時填錯或填重了，事後不見得改得回來
+#
+# 這一組守的是「寫入比讀取貴」這件事。讀錯了重讀一次就好；寫錯了在 ZPlanner
+# 那邊留下一筆真實的工時，月結之後連刪都刪不掉（要走 correction-request）。
+# ----------------------------------------------------------------------
+
+CREATED = {
+    "id": 116847,
+    "issue_key": "TPE01P2601-184",
+    "user_name": "某人",
+    "is_locked": False,
+}
+
+
+class CreateWorklog(unittest.TestCase):
+    def test_送出的_body_與端點(self):
+        c, session = client(FakeResponse(envelope(CREATED)))
+        got = c.create_worklog(44083, "2026-09-07", "1.00", note="查舊環境白名單問題")
+        call = session.calls[0]
+        self.assertEqual(call["method"], "POST")
+        self.assertTrue(call["url"].endswith("/api/worklogs/"))
+        self.assertEqual(
+            call["json"],
+            {
+                "issue_id": 44083,
+                "date": "2026-09-07",
+                "hours": "1.00",
+                "note": "查舊環境白名單問題",
+            },
+        )
+        self.assertEqual(got["id"], 116847)
+
+    def test_選填欄位沒給就整個不送而不是送_null(self):
+        # 選填欄位送 null 與不送，在很多框架裡不是同一件事，沒有理由賭
+        c, session = client(FakeResponse(envelope(CREATED)))
+        c.create_worklog(44083, "2026-09-07", "1.00")
+        self.assertNotIn("note", session.calls[0]["json"])
+        self.assertNotIn("start_time", session.calls[0]["json"])
+
+    def test_hours_是_float_就擋下來不送出(self):
+        # 🔴 float 格式化後可能變成 2.0000000001 或科學記號，而 ZPlanner 只會
+        # 回一句分不出欄位的「格式錯誤」。擋在送出之前，訊息才說得清楚。
+        c, session = client(FakeResponse(envelope(CREATED)))
+        with self.assertRaises(InvalidParameter):
+            c.create_worklog(44083, "2026-09-07", 1.5)
+        self.assertEqual(session.calls, [], "不該送出請求")
+
+    def test_hours_超出_schema_的_pattern_就擋下來(self):
+        c, session = client(FakeResponse(envelope(CREATED)))
+        for bad in ("1.234", "1234", "abc", ""):
+            with self.subTest(hours=bad):
+                with self.assertRaises(InvalidParameter):
+                    c.create_worklog(44083, "2026-09-07", bad)
+        self.assertEqual(session.calls, [])
+
+    def test_負數是合法的(self):
+        # ZPlanner 用負數做沖銷，schema 的 pattern 也允許。不要自作主張擋掉。
+        c, session = client(FakeResponse(envelope(CREATED)))
+        c.create_worklog(44083, "2026-09-07", "-1.50")
+        self.assertEqual(session.calls[0]["json"]["hours"], "-1.50")
+
+    def test_日期格式不對就擋下來不送出(self):
+        c, session = client(FakeResponse(envelope(CREATED)))
+        for bad in ("2026/09/07", "26-09-07", "2026-9-7", ""):
+            with self.subTest(date=bad):
+                with self.assertRaises(InvalidParameter):
+                    c.create_worklog(44083, bad, "1.00")
+        self.assertEqual(session.calls, [])
+
+    def test_回應拿不到_id_就拋(self):
+        # 拿不到 id 就沒辦法把它記回草稿，那是一筆認領不了的孤兒工時——
+        # 下次重送會再建一筆，而這一筆永遠不會被發現
+        c, _ = client(FakeResponse(envelope(None)))
+        with self.assertRaises(ZPlannerApiError):
+            c.create_worklog(44083, "2026-09-07", "1.00")
+
+    def test_權限不足照拋而不是回_None(self):
+        c, _ = client(FakeResponse(envelope(None, code=403, message="權限不足")))
+        with self.assertRaises(ZPlannerForbidden):
+            c.create_worklog(44083, "2026-09-07", "1.00")
+
+
+class WriteFailuresAreIndeterminate(unittest.TestCase):
+    """🔴 寫入的傳輸層失敗＝不知道有沒有寫進去，不可以自動重送。"""
+
+    def test_寫入逾時是_indeterminate_不是_unavailable(self):
+        c, _ = client(requests.Timeout("timed out"))
+        with self.assertRaises(ZPlannerWriteIndeterminate):
+            c.create_worklog(44083, "2026-09-07", "1.00")
+
+    def test_寫入的連線錯誤同樣是_indeterminate(self):
+        # ConnectionError 涵蓋「送出去了、對方處理完了、回應讀到一半斷線」。
+        # 分不出它與「根本沒送到」，分不出就必須假設可能已經寫進去了。
+        c, _ = client(requests.ConnectionError("connection reset"))
+        with self.assertRaises(ZPlannerWriteIndeterminate):
+            c.create_worklog(44083, "2026-09-07", "1.00")
+
+    def test_唯讀逾時仍然是_unavailable(self):
+        # 正對照：唯讀重試無害，不該被升級成「要人工對帳」
+        c, _ = client(requests.Timeout("timed out"))
+        with self.assertRaises(ZPlannerUnavailable):
+            c.list_my_issues()
+
+    def test_indeterminate_不是_unavailable_的子類(self):
+        # 兩者若有繼承關係，上層 `except ZPlannerUnavailable: 重試` 會把
+        # 「可能已經寫進去」的情況一起吃掉——那正是這個型別要防的事
+        self.assertNotIsInstance(ZPlannerWriteIndeterminate(), ZPlannerUnavailable)
+
+    def test_body_說失敗才證明沒寫進去(self):
+        # 正對照：拿得到 code != 200 的信封，就是 ZPlanner 應用層親口說失敗，
+        # 這種才可以安全地當成 failed 而不是 unknown
+        c, _ = client(FakeResponse(envelope(None, code=400, message="格式錯誤")))
+        with self.assertRaises(ZPlannerInvalidParameter):
+            c.create_worklog(44083, "2026-09-07", "1.00")
+
+
+class UpdateAndDeleteWorklog(unittest.TestCase):
+    def test_只送有給的欄位(self):
+        c, session = client(FakeResponse(envelope({"id": 116847})))
+        c.update_worklog(116847, hours="2.00")
+        self.assertEqual(session.calls[0]["method"], "PATCH")
+        self.assertTrue(session.calls[0]["url"].endswith("/api/worklogs/116847/"))
+        self.assertEqual(session.calls[0]["json"], {"hours": "2.00"})
+
+    def test_一個欄位都沒給就擋下來(self):
+        # 空的 PATCH 會回 200，看起來像成功但什麼都沒改——那種成功最難查
+        c, session = client(FakeResponse(envelope({})))
+        with self.assertRaises(InvalidParameter):
+            c.update_worklog(116847)
+        self.assertEqual(session.calls, [])
+
+    def test_更新時的_hours_一樣要驗(self):
+        c, session = client(FakeResponse(envelope({})))
+        with self.assertRaises(InvalidParameter):
+            c.update_worklog(116847, hours=2.0)
+        self.assertEqual(session.calls, [])
+
+    def test_刪除用_delete_與正確路徑(self):
+        c, session = client(FakeResponse(envelope(None)))
+        c.delete_worklog(116847)
+        self.assertEqual(session.calls[0]["method"], "DELETE")
+        self.assertTrue(session.calls[0]["url"].endswith("/api/worklogs/116847/"))
+
+    def test_刪除不存在的照拋_404(self):
+        # 404 可能代表「本來就沒了」（與目標一致），也可能代表 id 記錯了。
+        # 這一層不替上層決定是哪一種。
+        c, _ = client(FakeResponse(envelope(None, code=404, message="找不到工時")))
+        with self.assertRaises(ZPlannerNotFound):
+            c.delete_worklog(999999)
+
+    def test_worklog_id_不是數字就擋在送出之前(self):
+        c, session = client(FakeResponse(envelope(None)))
+        with self.assertRaises(InvalidParameter):
+            c.delete_worklog("116847/../../something")
+        self.assertEqual(session.calls, [])
+
+
+#: **專案代碼一律用假的。** 這個 repo 是公開的，而
+#: `ConfigHygiene.test_這次新增的檔案不含公司內部網域` 會掃這個檔案——
+#: 拿真實的非專案工時代碼來當 fixture 會直接讓那條紅燈（實測過了）。
+EXPORT_CSV = (
+    "日期,人員,專案代碼,Issue 編號,Issue 標題,工時(h),備註\r\n"
+    "2026-09-07,某人,ACME01P2601,ACME01P2601-179,用戶管理介面,1.5,用戶管理介面\r\n"
+    "2026-09-07,某人,NONPROJ,NONPROJ-9,聯繫溝通討論,0.5,例會\r\n"
+)
+
+
+class ExportWorklogs(unittest.TestCase):
+    """讀非本週工時的唯一管道（weekly 的 week_start 是無效的）。"""
+
+    def test_解析_csv_並正規化欄名(self):
+        c, session = client(FakeResponse(text=EXPORT_CSV))
+        rows = c.export_worklogs("2026-09-07", "2026-09-11")
+        self.assertEqual(session.calls[0]["method"], "GET")
+        self.assertEqual(
+            session.calls[0]["params"],
+            {"date_from": "2026-09-07", "date_to": "2026-09-11"},
+        )
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(
+            rows[0],
+            {
+                "date": "2026-09-07",
+                "user_name": "某人",
+                "project_code": "ACME01P2601",
+                "issue_key": "ACME01P2601-179",
+                "issue_title": "用戶管理介面",
+                "hours": "1.5",
+                "note": "用戶管理介面",
+            },
+        )
+
+    def test_hours_維持字串不轉數字(self):
+        # 轉 float 會讓「2」與「2.0」在去重比對時錯開，而錯開的後果是
+        # 重複填一整天的工時
+        c, _ = client(FakeResponse(text=EXPORT_CSV))
+        rows = c.export_worklogs("2026-09-07", "2026-09-11")
+        self.assertIsInstance(rows[0]["hours"], str)
+
+    def test_utf8_sig_的_bom_不會污染第一個欄名(self):
+        # 留著 BOM 的話第一個欄名會變成 "﻿日期"，於是 date 整欄取不到值
+        c, _ = client(FakeResponse(text="﻿" + EXPORT_CSV))
+        rows = c.export_worklogs("2026-09-07", "2026-09-11")
+        self.assertEqual(rows[0]["date"], "2026-09-07")
+
+    def test_兩個日期都必填(self):
+        # 少給一個時 ZPlanner 會回「日期格式錯誤」，把人推去檢查日期格式，
+        # 但日期格式明明是對的。擋在送出之前，訊息才講得出真正的原因。
+        c, session = client(FakeResponse(text=EXPORT_CSV))
+        for kwargs in ({"date_from": "", "date_to": "2026-09-11"},
+                       {"date_from": "2026-09-07", "date_to": ""}):
+            with self.subTest(**kwargs):
+                with self.assertRaises(InvalidParameter):
+                    c.export_worklogs(**kwargs)
+        self.assertEqual(session.calls, [])
+
+    def test_錯誤信封不會被當成_csv_解成空清單(self):
+        # 🔴 這是這支最危險的壞法：先當 CSV 解的話，`{"code":400,...}` 會變成
+        # 一份只有標題列的 CSV，然後靜默回 0 筆——而 0 筆看起來就像「那天真的
+        # 沒填」，於是去重失效、整批重複填。
+        c, _ = client(
+            FakeResponse(
+                envelope(None, code=400, message="日期格式錯誤，需為 YYYY-MM-DD"),
+                text='{"code":400}',
+            )
+        )
+        with self.assertRaises(ZPlannerInvalidParameter):
+            c.export_worklogs("2026-09-07", "2026-09-11")
+
+    def test_欄位少了就拋而不是回半套(self):
+        # 少一欄而照樣回傳的話，issue_key 會是空字串，去重比對全部落空
+        c, _ = client(FakeResponse(text="日期,人員,工時(h)\r\n2026-09-07,某人,1.5\r\n"))
+        with self.assertRaises(ZPlannerApiError):
+            c.export_worklogs("2026-09-07", "2026-09-11")
+
+    def test_只有標題列是合法結果(self):
+        # 正對照：那一段真的沒填工時，不是錯誤。必須與「欄位少了」分得開。
+        c, _ = client(FakeResponse(text="日期,人員,專案代碼,Issue 編號,Issue 標題,工時(h),備註\r\n"))
+        self.assertEqual(c.export_worklogs("2026-09-07", "2026-09-11"), [])
+
+    def test_完全空白的回應要拋(self):
+        # 連標題列都沒有，那不是「沒有資料」，是回應不對
+        c, _ = client(FakeResponse(text="   "))
+        with self.assertRaises(ZPlannerApiError):
+            c.export_worklogs("2026-09-07", "2026-09-11")
+
+
+class IssueWorklogs(unittest.TestCase):
+    def test_回_worklogs_與_actual_hours(self):
+        c, session = client(
+            FakeResponse(envelope({"actual_hours": "5.50", "worklogs": [{"id": 116412}]}))
+        )
+        rows, actual = c.list_issue_worklogs(42069)
+        self.assertEqual(rows, [{"id": 116412}])
+        self.assertEqual(actual, "5.50")
+        self.assertTrue(session.calls[0]["url"].endswith("/api/issues/42069/worklogs/"))
+
+    def test_issue_id_不是數字就擋在送出之前(self):
+        c, session = client(FakeResponse(envelope({"worklogs": []})))
+        with self.assertRaises(InvalidParameter):
+            c.list_issue_worklogs("42069/../../x")
+        self.assertEqual(session.calls, [])
 
 
 if __name__ == "__main__":
