@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { api, errorMessage, LIMIT_DEFAULT, streamUrls } from '@/lib/api'
 import { streamSse } from '@/lib/sse'
 import { streamErrorMessage } from '@/lib/aiErrors'
-import { providerRequestField } from '@/store/providers'
+import { modelRequestField, providerRequestField } from '@/store/providers'
 import type { SseMeta, SummaryRecord, SummaryStyle, SummaryStyleValue } from '@/lib/types'
 
 interface SummaryState {
@@ -125,8 +125,9 @@ export const useSummaryStore = create<SummaryState>((set, get) => ({
 
     await streamSse(
       streamUrls.summarize(),
-      // provider 是選填：選「自動」時整個欄位不出現，交給伺服器解析
-      { space_id: spaceId, limit, style, ...providerRequestField() },
+      // provider 與 model 都是選填：選「自動」／「跟隨預設」時整個欄位不出現，
+      // 交給伺服器解析。model 帶的是裸值，不是用量欄位那種帶前綴的識別字。
+      { space_id: spaceId, limit, style, ...providerRequestField(), ...modelRequestField() },
       {
         onMeta: (meta) => set({ meta }),
         onChunk: (chunk) => set((state) => ({ text: state.text + (chunk.text ?? '') })),

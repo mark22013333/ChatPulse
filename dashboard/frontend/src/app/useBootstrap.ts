@@ -79,10 +79,15 @@ export function useBootstrap(): { booting: boolean; authenticated: boolean } {
 
   // 供應商清單：/me 已經帶了 ai 就直接用（少一次往返），否則補打 /providers。
   // 初始選擇＝偏好的 default_provider → 沒有就用伺服器的 default（見 store/providers.ts）
+  // model 偏好一併帶進去（一個 provider 一格），切換供應商時才切得回該供應商的偏好。
   useEffect(() => {
     if (!authenticated) return
     if (me?.ai?.providers?.length) {
-      applyProviderConfig(me.ai, me.preferences?.default_provider ?? null)
+      applyProviderConfig(
+        me.ai,
+        me.preferences?.default_provider ?? null,
+        me.preferences?.default_models ?? null,
+      )
     } else if (!providersLoaded) {
       void loadProviders()
     }
@@ -90,6 +95,7 @@ export function useBootstrap(): { booting: boolean; authenticated: boolean } {
     authenticated,
     me?.ai,
     me?.preferences?.default_provider,
+    me?.preferences?.default_models,
     providersLoaded,
     applyProviderConfig,
     loadProviders,

@@ -53,6 +53,7 @@ def run_summary(
     style: str = cfg.SUMMARY_STYLE_DEFAULT,
     post_back: bool = False,
     provider: str = "",
+    model: str = "",
 ):
     """執行摘要流程。
 
@@ -66,7 +67,7 @@ def run_summary(
     count = validate_limit(count)
     style = prompts.validate_style(style)
 
-    ai = providers.resolve(provider or None)
+    ai = providers.resolve(provider or None, model=model or None)
     print(f"🚀 初始化 Google Chat 與 AI 模組（供應商：{ai.name}／模型：{ai.model}）...")
     chat = GoogleChatClient()
 
@@ -158,6 +159,16 @@ def build_parser():
         ),
     )
     parser.add_argument(
+        "--model",
+        default="",
+        help=(
+            "模型裸值（例 sonnet、gemini-3.6-flash），留空＝用該供應商的預設。"
+            "**要搭配 --provider 指定具體供應商**（claude_cli 或 gemini）："
+            "別名 claude／auto 會自行挑供應商，指定的 model 未必適用，會被擋下。"
+            "--list-providers 可以看每家的常用值（那不是完整清單，其他模型名照樣可填）"
+        ),
+    )
+    parser.add_argument(
         "--list-providers",
         action="store_true",
         help="列出所有 AI 供應商與各自現在可不可用，然後結束",
@@ -183,6 +194,10 @@ def main() -> int:
         for d in providers.describe_all():
             print(f"\n  {'✅' if d['available'] else '❌'} {d['name']}（{d['label']}）")
             print(f"     模型：{d['model']}")
+            # 「常用」不是「可用」——未列出的模型名照樣可以用 --model 填
+            choices = "、".join(d.get("models") or []) or "（無常用清單）"
+            print(f"     目前生效的 model：{d.get('model_id', '?')}")
+            print(f"     常用 model：{choices}")
             print(f"     {d['reason']}")
         return 0
 
@@ -198,6 +213,7 @@ def main() -> int:
             style=args.style,
             post_back=post_back,
             provider=args.provider,
+            model=args.model,
         )
     except ChatPulseError as exc:
         # 8.4：可預期的錯誤只印中文訊息，不讓 traceback 冒到終端

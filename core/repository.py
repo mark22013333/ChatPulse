@@ -8,14 +8,17 @@ ADR-0002 的執行點在這裡：所有 summaries 與 mentions 的查詢函式�
 """
 
 import json
+import logging
 import secrets
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from . import config as cfg
-from . import crypto, db
-from .errors import WorklogAlreadySubmitted
+from . import crypto, db, providers
+from .errors import InvalidParameter, WorklogAlreadySubmitted
+
+log = logging.getLogger("chatpulse.repository")
 
 
 def _now() -> str:
@@ -148,8 +151,120 @@ def get_preferences(viewer_id: int) -> Dict[str, Any]:
             if row.get("default_sepia_enabled") is None
             else bool(row["default_sepia_enabled"])
         ),
+        # 各 AI 供應商各自的預設 model（裸值）。沒設過是空 dict，不是 None——
+        # 呼叫端一律 `default_models.get(provider_name)`，不必先判空。
+        "default_models": _parse_default_models(row.get("default_models_json")),
         "updated_at": row["updated_at"],
     }
+
+
+def _parse_default_models(raw: Any) -> Dict[str, str]:
+    """把 `preferences.default_models_json` 解析成 {實作名: 裸值}。
+
+    🔴 **這裡刻意不照專案硬規則「認不出來就拋」**，理由是它的下游不同：
+    這是偏好讀取路徑，而偏好是「錦上添花」的資料。壞掉的 JSON 若往上拋，
+    Viewer 會遇到整個設定頁與摘要頁都打不開，而且自己修不了（壞值在 DB 裡）；
+    退化成「沒有偏好」的代價只是回到 config 預設，看得見也救得回來。
+
+    同理逐一檢查型別而不是整包信任：非字串的值（例如手動改 DB 改成數字）
+    會一路流進 `--model`，錯誤要到執行 CLI 才浮現，不如在這裡就當它不存在。
+
+    🔴 **鍵要濾掉已經不存在的供應商**（2026-09-17 驗收實測）。
+    不濾的話會出現一條自己解不開的死結：供應商名冊會變動（`claude_api` 已於
+    2026-09-05 移除），Viewer 存過的舊鍵留在 JSON 裡 → 讀出來原樣給前端 →
+    前端「設為預設」是送**整份**回來 → API 逐鍵驗合法性 → 400。那位 Viewer
+    從此存不了任何 model 偏好，而錯誤訊息指著一個他從來沒選過的供應商名，
+    UI 上也沒有任何地方刪得掉它。濾掉之後下一次整份覆寫就會把髒鍵洗掉，會自癒。
+    這道防護 `default_provider` 早就有（見 dashboard 的 `preferred_provider_name`），
+    是 `default_models` 漏了，不是新規定。
+
+    丟東西要留紀錄：Viewer 只會看到「我的偏好自己不見了」，沒有 log 就查不出原因。
+    每次讀取都可能印一行（這支在多數請求上都會被呼叫過），與 `default_provider`
+    的既有行為一致；髒鍵被洗掉之後就不會再印。
+    """
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        log.warning("default_models 偏好不是合法 JSON，這次當作沒設過：%r", raw)
+        return {}
+    if not isinstance(data, dict):
+        log.warning("default_models 偏好不是 JSON 物件，這次當作沒設過：%r", data)
+        return {}
+
+    out: Dict[str, str] = {}
+    malformed: List[str] = []
+    unknown: List[str] = []
+    for key, value in data.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            malformed.append(repr(key))
+            continue
+        name, model = key.strip(), value.strip()
+        if not name or not model:
+            continue
+        if name not in providers.MODEL_CHOICES:
+            unknown.append(name)
+            continue
+        out[name] = model
+    if malformed:
+        log.warning("default_models 偏好有型別不對的項目，已略過：%s", "、".join(malformed))
+    if unknown:
+        log.warning(
+            "default_models 偏好裡的 %s 已不是合法的供應商實作名，已略過"
+            "（下次存偏好時會一併清掉）",
+            "、".join(sorted(unknown)),
+        )
+    return out
+
+
+def get_default_models(viewer_id: int) -> Dict[str, str]:
+    """這位 Viewer 各供應商的預設 model（裸值）。沒設過回空 dict。
+
+    值是裸值（`opus`），不是用量表的識別字（`claude-cli:opus`）。
+    """
+    return _parse_default_models(ensure_preferences(viewer_id).get("default_models_json"))
+
+
+def set_default_models(viewer_id: int, mapping: Dict[str, str]) -> None:
+    """整份覆寫這位 Viewer 的 model 偏好。
+
+    值為 None 或空字串的鍵會被剔除——「清除某個 provider 的偏好」與
+    「把它存成 null」在讀取端是同一件事，但存 null 會讓 JSON 裡長期累積
+    一堆沒有意義的鍵，日後很難分辨「沒設過」與「設過又清掉」。
+    全部清空時寫回 NULL 而不是 `{}`，讓「沒有偏好」在 DB 裡只有一種樣子。
+
+    鍵應該是**具體實作名**（`claude_cli`／`gemini`），不是別名——別名會展開成
+    不同實作，存進去就對應不回來。這件事由 API 層驗（它才知道要回幾號錯誤），
+    這裡不重複擋，避免兩邊的判準日後各走各的。
+
+    ⚠️ 寫入不擋未知的鍵、讀取卻會濾掉，兩邊**刻意不對稱**：讀取那側要處理的是
+    「存的時候合法、後來供應商被移除」的舊資料（見 `_parse_default_models`），
+    那是時間造成的，不是寫入時擋得掉的。
+    """
+    ensure_preferences(viewer_id)
+    cleaned: Dict[str, str] = {}
+    for key, value in (mapping or {}).items():
+        if value is None:
+            continue
+        if not isinstance(key, str) or not isinstance(value, str):
+            # 寫入路徑遇到型別不對一律拋，不要靜默跳過：靜默跳過的下場是
+            # 前端顯示「已儲存」但什麼也沒存，Viewer 只會覺得功能壞了卻查不出來。
+            # （讀取路徑相反——見 `_parse_default_models` 的理由。）
+            raise InvalidParameter(
+                f"model 偏好的鍵與值都必須是字串，收到 {key!r}: {value!r}"
+            )
+        if key.strip() and value.strip():
+            cleaned[key.strip()] = value.strip()
+    db.execute(
+        "UPDATE preferences SET default_models_json = ?, updated_at = ? "
+        "WHERE viewer_id = ?",
+        (
+            json.dumps(cleaned, ensure_ascii=False) if cleaned else None,
+            _now(),
+            viewer_id,
+        ),
+    )
 
 
 class _Unset:

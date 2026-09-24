@@ -112,14 +112,19 @@ scope 含 chat 三項 ＋ `openid`/`userinfo.email`/`userinfo.profile`。
   "scopes": ["https://www.googleapis.com/auth/chat.spaces.readonly", "..."],
   "has_identity_scope": true,
   "preferences": { "pinned_space_ids": [], "default_limit": 50, "default_style": "general",
-                   "default_provider": null },
-  "ai": { "default": "claude", "providers": [ /* 同 GET /api/v1/providers */ ] },
+                   "default_provider": null, "default_models": { "claude_cli": "opus" } },
+  "ai": { "default": "claude", "providers": [ /* 同 GET /api/v1/providers */ ],
+          "default_models": { "claude_cli": "opus" } },
   "collector": { "implementation": "polling", "interval_seconds": 45, "running": true,
                  "last_polled_at": "2026-09-05T01:23:45+00:00", "last_error": null,
                  "last_run_stats": { "new_mentions": 0, "spaces_polled": 2, "spaces_total": 436, "api_calls": 3, "elapsed_seconds": 0.8 } },
   "mention_counts": { "pending": 3, "resolved": 12 }
 }
 ```
+`ai.default_models` 是 `{供應商實作名: model 裸值}`，**沒設過的供應商不會出現在物件裡**
+（前端要顯示「跟著該供應商的預設走」，不是空字串）。`preferences.default_models` 是同一份資料，
+`ai` 那份是給 AI 相關 UI 用的、與 `providers[]` 放在一起。偏好的 JSON 壞掉時兩邊都回 `{}`
+而不是 500——偏好壞掉不該讓整個頁面打不開。
 
 ### `PATCH /api/v1/preferences`
 需登入。body 任一欄位可省略：
@@ -128,10 +133,26 @@ scope 含 chat 三項 ＋ `openid`/`userinfo.email`/`userinfo.profile`。
   "default_provider": "claude_cli",
   "default_code_project_id": 3, "default_code_environment": "production",
   "default_reply_tone": "professional", "default_persona_id": 4,
-  "default_reply_prompt_id": 2, "default_sepia_enabled": true }
+  "default_reply_prompt_id": 2, "default_sepia_enabled": true,
+  "default_models": { "claude_cli": "opus" } }
 ```
 回傳更新後的 preferences，另含 `updated_at`（ISO 8601 UTC）。
 `default_provider` 傳空字串等同清除（回到伺服器預設）；傳非法值回 `400 INVALID_PARAMETER`。
+
+**`default_models`**：每個供應商各自的預設 model（**裸值**，例 `opus`，不是 `claude-cli:opus`）。
+一個供應商一格，而不是單一個 `default_model`——model 的意義依附在供應商上，`opus` 對 Gemini
+毫無意義，存單一字串的話 Viewer 一換供應商偏好就變成非法值。
+
+| 規則 | 說明 |
+| :--- | :--- |
+| 鍵 | 必須是**具體實作名**（`claude_cli`／`gemini`）。別名 `claude`／`auto` 會展開成不同實作，存了就對應不回來 → `400 INVALID_PARAMETER` |
+| 值 | 非空字串；**不驗白名單**（`models` 只是常用值，自訂輸入是這個功能的重點） |
+| 值送 `null`／空字串 | 清除**那一個供應商**的偏好，回到「跟著該供應商的預設走」 |
+| 只送部分鍵 | **merge，不是整份覆寫**——沒帶到的供應商偏好原封不動。前端只會送剛改動的那一個，整份覆寫會把另一個供應商存好的值弄丟 |
+| 整個欄位沒帶、送 `null`、或送 `{}` | 不動既有偏好，**也不會寫入**（`updated_at` 不動）。沒有任何一格要改的時候去寫一次同樣的 JSON，只會讓「這筆偏好上次什麼時候被動過」變成不可信的欄位 |
+
+⚠️ merge 的基底讀自資料庫。**讀不到就整支失敗（5xx），不會退化成整份覆寫**——
+寧可這次 PATCH 不成功，也不要靜默寫進一份少了幾格的資料還回 200。
 
 **`null` 的語意在新舊欄位之間不一致，這是實作上真實存在的差異，呼叫端必須知道：**
 
@@ -139,6 +160,7 @@ scope 含 chat 三項 ＋ `openid`/`userinfo.email`/`userinfo.profile`。
 | :--- | :--- |
 | `pinned_space_ids`／`default_limit`／`default_style`／`default_provider`／`default_code_project_id`／`default_code_environment` | **不改**（等同沒帶這個欄位） |
 | `default_reply_tone`／`default_persona_id`／`default_reply_prompt_id`／`default_sepia_enabled` | **清除**（回到「沒有預設值」的狀態） |
+| `default_models` | 整個欄位送 `null`＝不改（連寫入都不會發生）；**物件裡某個鍵的值**送 `null`＝清除那一個供應商（見上表） |
 
 四個回覆設定欄位需要「清除」這個動作，是因為「不使用 Persona」「不套用預設口氣」「不要自動潤稿」都是使用者會主動選的狀態，必須存得下去；而舊欄位的 `null`＝不改已經被現有前端依賴，改掉會弄壞它。handler 靠 `model_fields_set` 區分「沒帶這個欄位」與「帶了 null」，對應到 repository 的 `UNSET` 哨兵或 `None`。
 
@@ -197,8 +219,11 @@ scope 含 chat 三項 ＋ `openid`/`userinfo.email`/`userinfo.profile`。
 ### `POST /api/v1/summarize/stream`
 需登入。**SSE**。body：
 ```json
-{ "space_id": "spaces/AAAAxLxqJxY", "limit": 50, "style": "general", "provider": "claude_cli" }
+{ "space_id": "spaces/AAAAxLxqJxY", "limit": 50, "style": "general", "provider": "claude_cli",
+  "model": "opus" }
 ```
+`model` 選填，是 model 的**裸值**（`opus`，不是識別字 `claude-cli:opus`）。
+生效順序見下方〈選擇 model〉。
 事件序：`meta` → 多個 `chunk` → `done`。
 `meta` 內容：`{"type":"meta","space":"0.暫存","space_id":"spaces/...","message_count":50,"style":"general","provider":"claude_cli","model":"claude-cli:opus","image_count":2,"images_skipped":[]}`
 
@@ -218,14 +243,54 @@ scope 含 chat 三項 ＋ `openid`/`userinfo.email`/`userinfo.profile`。
   "default": "claude",
   "providers": [
     { "name": "claude_cli", "label": "Claude Code（本機 CLI，用你現有的訂閱）", "model": "claude-cli:opus",
+      "model_id": "opus", "models": ["opus", "sonnet", "haiku"],
       "available": true, "reason": "使用本機 /Users/cheng/.local/bin/claude", "supports_vision": true },
     { "name": "gemini", "label": "Gemini（Google AI Studio）", "model": "gemini-3.6-flash",
+      "model_id": "gemini-3.6-flash", "models": ["gemini-3.6-flash"],
       "available": true, "reason": "使用 GOOGLE_API_KEY", "supports_vision": true }
   ]
 }
 ```
 `default` 可能是別名（`claude`／`auto`）。`available: false` 的 `reason` 寫的是
 **該設哪個環境變數、該裝什麼**——前端要顯示出來，不要吞掉。
+
+🔴 **`model` 與 `model_id` 是兩個不同的東西，不要互換**：
+
+| 欄位 | 是什麼 | 用在哪 |
+| :--- | :--- | :--- |
+| `model` | **識別字**，記進 `token_usage.model` 的完整字串。ClaudeCLI 會加前綴（`claude-cli:opus`），Gemini 與裸值相同。**語意與既有行為完全不變** | 顯示「這份產出用了什麼」、用量統計 |
+| `model_id` | **裸值**，目前生效的那一個（`opus`） | ModelSelect 的目前值 |
+| `models` | 常用裸值清單，**不是完整列舉** | ModelSelect 的下拉選項；Viewer 也可以自己打字輸入清單外的值 |
+
+把識別字當裸值送回來會變成 `claude-cli:claude-cli:opus` 流進 CLI 參數，所以
+**API 參數、偏好、白名單一律是裸值**，識別字只出現在 `model` 這個既有欄位裡。
+
+#### 選擇 model（兩個串流端點共用）
+
+`POST /summarize/stream` 與 `POST /mentions/{id}/draft/stream` 的 body 可以帶選填的
+`model`（裸值）。生效順序是**先展開、再查**，**兩個端點同一份實作**
+（`dashboard/api/server.py` 的 `resolve_model()`）：
+
+0. 先把供應商別名展開成具體實作名（`auto` → `claude_cli`）
+1. body 的 `model` 有值 → 用它
+2. 否則查 Viewer 的 `default_models[展開後的實作名]`
+3. 否則不指定，由供應商用自己的 config 預設
+4. 最後用**展開後的實作名**建構供應商
+
+**為什麼要先展開**：供應商別名 ＋ model 的組合會被 `resolve()` 拒絕（`auto` 自己會
+換供應商，把 `opus` 餵給 Gemini 要到真的呼叫 API 才看得出來壞了）。先展開就完全避開
+那個組合，而偏好查的是展開後那一格，不會錯配。`auto` 挑供應商的時機不變。
+
+值**不驗白名單**（自訂輸入是重點）。**body 不帶 `model` 是正常且常見的路徑**
+（前端的「跟隨預設」選項就是不帶），不是錯誤。
+
+🔴 唯一的硬規則：**body 明確帶了 `model`、而 `provider` 是 `auto`** →
+`400 INVALID_PARAMETER`。偏好是 per-provider 的對照表，查哪一格不會錯；body 的單一
+`model` 值不帶供應商資訊，「auto ＋ 某個 model」本身就是矛盾的組合。前端選了 `auto`
+時要停用 ModelSelect，並讓 Viewer 看得出原因。
+
+`POST /worklogs/{date}/draft/stream` **沒有** `model` 欄位：那個端點這一階段不接 AI，
+收下一個保證無效的參數比不收更糟——呼叫端會以為自己選的模型生效了。
 
 ### `GET /api/v1/styles`
 不需登入。摘要風格選項，供下拉選單。
@@ -296,12 +361,13 @@ mentions 表**只存識別資訊**，不存內容）。
 需登入。**SSE**。產生 Draft Reply。body：
 ```json
 { "reference_space_ids": ["spaces/BBB", "spaces/CCC"], "limit": 50, "provider": "claude_cli",
-  "merge_mention_ids": [46],
+  "model": "opus", "merge_mention_ids": [46],
   "code_refs": [ { "project_id": 3, "environment": "production" } ], "code_terms": [],
   "tone_id": "engineer", "persona_id": 4, "custom_prompt": null,
   "custom_prompt_id": 2, "sepia_enabled": true }
 ```
 `reference_space_ids` **預設空陣列**（7.3：不自動選擇 Reference Space）。
+`model` 選填，裸值，生效順序見〈選擇 model〉。
 
 `merge_mention_ids`：一起回成一則的其他 Mention（收件匣多選）。URL 上那則是主要的，
 回話會送到它的討論串。三條限制，違反回 **400 INVALID_PARAMETER**（SSE 開始前就擋，
@@ -840,6 +906,10 @@ POST／PATCH／verify 都回帶 `verification` 的單筆：
 | `total_hours` | **省略就不分配**，`entries[].hours` 一律 `null` |
 | `provider` | 這一階段**不接 AI**，只回進 `meta.provider` 備查 |
 | `force` | 預設 `false`。明示「我知道重產會清掉已經選好的專案，還是要重來」。**蓋不過「已送進 ZPlanner」那條線**（見下方重產規則） |
+
+⚠️ **這裡沒有 `model` 欄位**，另外兩個串流端點有（見〈選擇 model〉）。理由同上：
+這一階段不接 AI（`meta.model` 固定 `null`），收下一個保證無效的參數比不收更糟——
+呼叫端會以為自己選的模型生效了。
 
 事件序：`meta` → 每群一個 `chunk` → `done`。**事件型別不新增**，仍只有
 `meta`／`chunk`／`done`／`error`。以上參數錯誤全部**在 SSE 開始之前**回 4xx。

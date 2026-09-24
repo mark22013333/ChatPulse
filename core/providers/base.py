@@ -45,6 +45,11 @@ class AIProvider(ABC):
     #: 這個實作能不能看圖。**呼叫端要在「下載圖片之前」先問這個**——
     #: 若只在實作內部靜默忽略 images，就會付了下載與流量成本卻沒有效果。
     supports_vision: bool = False
+    #: 這個供應商的常用模型**裸值**（不含 `claude-cli:` 這類前綴）。
+    #: ⚠️ **不是完整列舉**：沒有任何一家供應商保證會公布可用模型的全集，
+    #: 硬把它當白名單擋下來，會讓「今天剛發布的模型」變成無法使用。
+    #: 這裡只是下拉選單的常用值，未列出的值由 Viewer 自訂輸入，不做驗證。
+    model_choices: tuple[str, ...] = ()
 
     def __init__(self, *, usage_recorder: Optional[UsageRecorder] = None):
         self._usage_recorder = usage_recorder
@@ -54,7 +59,22 @@ class AIProvider(ABC):
     @property
     @abstractmethod
     def model(self) -> str:
-        """實際使用的模型識別字，會被記進 token_usage。"""
+        """實際使用的模型**識別字**，會被記進 token_usage。
+
+        🔴 這不一定等於傳給供應商的值：ClaudeCLI 會加上 `claude-cli:` 前綴，
+        用途是讓用量表分得出同名模型是走哪條路徑來的。要拿去當參數回填
+        （下拉選單的選中值、CLI 的 --model）的是 `model_id`，不是這個。
+        """
+
+    @property
+    @abstractmethod
+    def model_id(self) -> str:
+        """建構時實際生效的**裸值**（不含任何前綴）。
+
+        刻意做成抽象而不給預設實作：基底類別猜不出要從 `model` 剝掉什麼前綴，
+        猜錯的下場是 `claude-cli:claude-cli:opus` 這種值流進 CLI 參數，
+        而且要到真的執行 `claude` 才會發現。新增供應商時一併實作它。
+        """
 
     @abstractmethod
     def available(self) -> tuple[bool, str]:
@@ -116,8 +136,14 @@ class AIProvider(ABC):
         return {
             "name": self.name,
             "label": self.label,
+            # 既有鍵，語意不變（前端的摘要頁與證據頁正在顯示它）
             "model": self.model,
             "available": ok,
             "reason": reason,
             "supports_vision": self.supports_vision,
+            # 下面兩個是給「選 model」用的。分開兩個鍵而不是改 `model` 的語意，
+            # 是因為 `model` 要的是「這次用量記在誰頭上」，而選單要的是
+            # 「下次要送什麼值回來」——前綴在前者有意義、在後者是錯的。
+            "model_id": self.model_id,
+            "models": list(self.model_choices),
         }

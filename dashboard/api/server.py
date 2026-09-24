@@ -163,31 +163,133 @@ def _client_factory_for_collector(viewer_row: Dict[str, Any]) -> Optional[Google
         return None
 
 
-def get_provider(
+def preferred_provider_name(
     viewer_id: Optional[int] = None, name: Optional[str] = None
+) -> Optional[str]:
+    """請求沒指定供應商時，補上 Viewer 的偏好（供應商解析的第一步）。
+
+    抽成獨立函式是為了讓 `get_provider()` 與 `resolve_model()` 看到**同一個**
+    供應商名。不共用的話會出現這種漏洞：請求沒帶 provider、Viewer 偏好是
+    `auto`、body 帶了 model——model 解析那邊以為不是 auto 而放行，實際建構
+    供應商時才炸，錯誤就從 400 掉進串流中的 error 事件裡。
+
+    傳入的 name 有值時原樣回傳，所以重複呼叫是冪等的。
+    """
+    if name is not None or viewer_id is None:
+        return name
+    try:
+        saved = repo.get_preferences(viewer_id).get("default_provider") or None
+        # 偏好是使用者以前存下的，而供應商清單會變（例：claude_api 於
+        # 2026-09-05 移除）。存過的舊值若已不合法，當作沒設、退回伺服器預設，
+        # 不要原樣丟進 resolve()——那會讓摘要與 Draft Reply 一律回
+        # 「未知的 AI 供應商」，而使用者看不出問題出在自己幾週前的偏好上。
+        if saved and saved not in providers.VALID_NAMES:
+            log.warning(
+                "Viewer %s 的 default_provider 偏好 %r 已不是合法供應商，改用伺服器預設",
+                viewer_id,
+                saved,
+            )
+            saved = None
+        return saved
+    except Exception:
+        return None
+
+
+def viewer_default_models(viewer_id: Optional[int]) -> Dict[str, str]:
+    """Viewer 存下來的「每個供應商各自的預設 model」，鍵是具體實作名。
+
+    讀不到就當作沒設過。偏好壞掉不該讓摘要與草稿整個打不開——退回去用供應商
+    自己的 config 預設，Viewer 頂多發現「怎麼沒照我選的」，而不是整個功能不能用。
+
+    🔴 **只給讀取路徑用，不可以拿來當寫入的基底。** 這支會把讀取失敗吞成空
+    dict，當成 merge 的基底就等於「一次短暫的讀取失敗，PATCH 靜默變成整份
+    覆寫、把別的供應商那格清掉，而且照樣回 200」。寫入路徑要用會拋的
+    `repo.get_default_models()`（同 `repository.py` 自己的分界：讀取寬鬆、
+    寫入一律拋）。
+    """
+    if viewer_id is None:
+        return {}
+    try:
+        return dict(repo.get_preferences(viewer_id).get("default_models") or {})
+    except Exception:
+        log.exception("Viewer %s 的 default_models 偏好讀取失敗，這次當作沒設過", viewer_id)
+        return {}
+
+
+def resolve_model(
+    viewer_id: Optional[int] = None,
+    name: Optional[str] = None,
+    model: Optional[str] = None,
+) -> Tuple[Optional[str], Optional[str]]:
+    """一次解析出「這次要用哪個供應商、哪個 model」。這條路的唯一實作。
+
+    回傳 `(供應商名, model 裸值)`。順序是**先展開、再查**：
+
+    0. 先把別名展開成具體實作名（`auto` → `claude_cli`）
+    1. body 的 `model` 有值 → 用它
+    2. 否則查 `default_models[具體實作名]`
+    3. 否則 `None`（讓供應商用自己的 config 預設）
+
+    🔴 回傳的 model 是裸值（`opus`），不是識別字（`claude-cli:opus`）。前綴由
+    供應商自己加（`claude_cli.py:58`），這裡再加一次會讓
+    `claude-cli:claude-cli:opus` 流進 CLI 參數。
+
+    **為什麼要先展開**：`resolve()` 拿到「別名 ＋ model」會拒絕（`auto` 自己會
+    換供應商，把 `opus` 餵給 Gemini 要到真的呼叫 API 才看得出來壞了）。先展開
+    就完全避開那個禁忌組合，而且偏好查的是**展開後那一格**，不會錯配。
+    退而求其次的做法是「auto 時不查偏好」，但那會讓 Viewer 設了預設卻靜默失效
+    ——同樣是靜默失敗，只是換一種。
+
+    ⚠️ **代價是多建一次供應商實例再丟掉**（`resolve_name()` 內部會建一個來問
+    可用性）。這不是冗餘呼叫，不要順手優化掉：`auto` 的挑選時機必須維持原樣
+    （仍由 `resolve()` 那條路決定誰可用），而兩個實作的 `__init__` 只是存字串、
+    Gemini 的 client 是 lazy（`gemini.py:33`），所以成本可忽略。
+
+    仍然要擋的例外：**body 明確帶了 model、而供應商是多候選別名** → 400。
+    偏好是 per-provider 的對照表，查哪一格不會錯；body 的單一 model 值不帶
+    供應商資訊，Viewer 選的是「auto ＋ 某個 model」這個本身就矛盾的組合。
+    「是不是多候選別名」一律問 `providers.is_multi_candidate()`，**不要在這裡
+    自己列一份名單**——手抄的複本不會跟著 core 新增的別名走，而它失效的表現是
+    靜默放行（新別名底下的 Gemini 收到 `opus`，要到呼叫 API 才壞）。
+    """
+    # 先 strip：`model="   "` 在底層等同沒指定（供應商自己會 strip），這裡若把它
+    # 當成「有指定」，auto 會回一個 400 而底層根本不認為 Viewer 指定了什麼——
+    # 兩層對同一個輸入給出相反結論，是最難查的那種不一致。
+    model = (model or "").strip() or None
+    name = preferred_provider_name(viewer_id, name)
+    # `is_multi_candidate()` 自己會把 None 退回 CHATPULSE_AI_PROVIDER，
+    # 所以這裡原樣傳——伺服器預設本身就可能是 auto，「沒指定」不等於「不是別名」。
+    if model and providers.is_multi_candidate(name):
+        raise InvalidParameter(
+            "指定 model 時請一併指定具體的供應商（claude_cli 或 gemini），"
+            "auto 會自行挑選供應商，指定的 model 未必適用"
+        )
+
+    try:
+        implementation = providers.resolve_name(name)
+    except ChatPulseError:
+        # 供應商現在不可用（沒裝 CLI、沒設金鑰）。那個錯誤要留在它原本會發生的
+        # 地方——串流中的 error 事件或建構供應商時——不要因為「順便展開個名字」
+        # 就提前變成 400，那會改掉既有端點的錯誤時機。名字原樣傳回去。
+        return name, (model or None)
+
+    if model:
+        return implementation, model
+    return implementation, viewer_default_models(viewer_id).get(implementation) or None
+
+
+def get_provider(
+    viewer_id: Optional[int] = None,
+    name: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> providers.AIProvider:
     """取得一個 AI 供應商實例，並把用量記到該 Viewer 名下。
 
     name 為 None 時依序取：Viewer 的偏好 → CHATPULSE_AI_PROVIDER → "claude"。
+    供應商名與 model 都走 `resolve_model()`，所以這裡拿到的一律是具體實作名。
     模型名由供應商自己回報，不由這裡猜——換供應商後用量表才不會記到錯的模型上。
     """
-    if name is None and viewer_id is not None:
-        try:
-            saved = repo.get_preferences(viewer_id).get("default_provider") or None
-            # 偏好是使用者以前存下的，而供應商清單會變（例：claude_api 於
-            # 2026-09-05 移除）。存過的舊值若已不合法，當作沒設、退回伺服器預設，
-            # 不要原樣丟進 resolve()——那會讓摘要與 Draft Reply 一律回
-            # 「未知的 AI 供應商」，而使用者看不出問題出在自己幾週前的偏好上。
-            if saved and saved not in providers.VALID_NAMES:
-                log.warning(
-                    "Viewer %s 的 default_provider 偏好 %r 已不是合法供應商，改用伺服器預設",
-                    viewer_id,
-                    saved,
-                )
-                saved = None
-            name = saved
-        except Exception:
-            name = None
+    name, model_id = resolve_model(viewer_id, name, model)
 
     def _recorder(
         operation: str, model: str, prompt_t: int, output_t: int, total_t: int
@@ -199,7 +301,7 @@ def get_provider(
         except Exception:
             log.exception("token 用量記錄失敗")
 
-    return providers.resolve(name, usage_recorder=_recorder)
+    return providers.resolve(name, model=model_id, usage_recorder=_recorder)
 
 
 # 背景補齊私訊對象時，同一個 viewer 不要同時跑兩份
@@ -748,6 +850,9 @@ def get_me(viewer: Dict[str, Any] = ViewerDep):
         "ai": {
             "default": providers.default_name(),
             "providers": providers.describe_all(),
+            # 每個供應商各自的預設 model（裸值）。沒設過的供應商不會出現在這裡，
+            # 前端要顯示「跟著供應商的預設走」而不是空字串。
+            "default_models": viewer_default_models(viewer["id"]),
         },
     }
 
@@ -773,6 +878,18 @@ class PreferencesRequest(BaseModel):
     default_persona_id: Optional[int] = None
     default_reply_prompt_id: Optional[int] = None
     default_sepia_enabled: Optional[bool] = None
+
+    #: 每個供應商各自的預設 model（**裸值**，例 `opus`）。
+    #:
+    #: 一個供應商一格，而不是單一個 `default_model`：model 的意義依附在供應商
+    #: 上，`opus` 對 Gemini 毫無意義。存單一字串的話，Viewer 一換供應商偏好就
+    #: 變成非法值，而且要到送出時才浮現。
+    #:
+    #: 鍵必須是**具體實作名**（`claude_cli`／`gemini`），不接受別名——`claude`／
+    #: `auto` 會展開成不同實作，存進去就對應不回來。值送 `null` 或空字串＝清除
+    #: 那一個供應商的偏好；整個欄位沒帶＝不動既有偏好（同其他欄位）。
+    #: 值**不驗白名單**：白名單只是常用值，「也能自己打字自訂」正是這個功能要的。
+    default_models: Optional[Dict[str, Optional[str]]] = None
 
 
 # ==========================================================================
@@ -1839,6 +1956,40 @@ def patch_preferences(req: PreferencesRequest, viewer: Dict[str, Any] = ViewerDe
     if "default_sepia_enabled" in sent:
         sepia = req.default_sepia_enabled
 
+    # ---- 每個供應商各自的預設 model ----
+    #
+    # **這裡是 merge，不是整份覆寫。** 前端只會送「剛剛改動的那一個供應商」，
+    # 直接覆寫等於把另一個供應商的偏好一起清掉。契約給了 null／空字串
+    # 「清除這一個」的語意，那句話也只有在 merge 之下才成立——整份覆寫的話，
+    # 不送那個鍵就已經是清除了，null 就沒有存在的必要。
+    #
+    # 寫在 update_preferences 之前：那個函式的回傳值就是這支端點的回應，
+    # 它讀的是資料庫現值，先寫才看得到這次的改動。
+    #
+    # 🔴 基底用**會拋**的 `repo.get_default_models()`，不是寬鬆的
+    # `viewer_default_models()`。後者把讀取失敗吞成 `{}`，當基底的話一次短暫的
+    # 讀取失敗就會讓這段 merge 靜默退化成整份覆寫——別的供應商那格被清掉、
+    # 回應還是 200，而 Viewer 沒有任何線索。讀取路徑可以降級，**寫入路徑不行**。
+    #
+    # 整個欄位沒帶、或帶了 null／空物件都是「不改」：沒有任何一格要動的時候
+    # 不去寫，才不會白白推進 `updated_at`（與文件寫的一致）。
+    incoming = req.default_models if "default_models" in sent else None
+    if incoming:
+        merged = dict(repo.get_default_models(viewer_id))
+        for key, value in incoming.items():
+            if key not in providers.MODEL_CHOICES:
+                raise InvalidParameter(
+                    f"default_models 的鍵 {key!r} 不是具體的供應商實作名。"
+                    f"可用值：{'、'.join(providers.MODEL_CHOICES)}。"
+                    "別名（claude／auto）會展開成不同實作，存了就對應不回來"
+                )
+            text = (value or "").strip()
+            if text:
+                merged[key] = text
+            else:
+                merged.pop(key, None)
+        repo.set_default_models(viewer_id, merged)
+
     return repo.update_preferences(
         viewer_id,
         pinned_space_ids=req.pinned_space_ids,
@@ -2060,6 +2211,10 @@ class SummarizeRequest(BaseModel):
     space_id: str
     #: AI 供應商；省略時用 Viewer 偏好或伺服器預設
     provider: Optional[str] = None
+    #: 這次要用的 model **裸值**（例 `opus`）；省略時走 Viewer 偏好或供應商預設。
+    #: 值不驗白名單（自訂輸入是這個功能的重點），但 `provider` 是 `auto` 時
+    #: 帶值會被擋下來——見 `resolve_model()`。
+    model: Optional[str] = None
     # 5.5：SSE 端點補上驗證，不再是裸 int（v1 可傳 99999）
     limit: int = Field(default=cfg.LIMIT_DEFAULT, ge=cfg.LIMIT_MIN, le=cfg.LIMIT_MAX)
     style: str = cfg.SUMMARY_STYLE_DEFAULT
@@ -2092,7 +2247,15 @@ def summarize_stream(req: SummarizeRequest, viewer: Dict[str, Any] = ViewerDep):
     display = space_display_name(viewer_id, space_id)
     # 供應商名稱在進串流前先驗，這樣打錯名字會得到 HTTP 400 而不是
     # 一個「串流開始後才出錯」的 error 事件（與 limit／style 的處理一致）
-    resolved_provider = providers.resolve_name(req_provider)
+    providers.resolve_name(req_provider)
+    # 供應商與 model 一起在門外解析：別名在這裡就展開成具體實作名，
+    # 而「明確指定 model ＋ auto」這個矛盾組合也在 SSE 開始之前就回 400。
+    #
+    # ⚠️ `meta.provider` 要用這裡的 `provider_name`，**不要**另外呼叫一次
+    # `providers.resolve_name(req.provider)`：後者看不到 Viewer 的
+    # `default_provider` 偏好，於是會回報 claude_cli、實際卻是用 gemini 跑的。
+    # 以前沒人在意，但 Viewer 現在會盯著 meta 判斷自己選的 model 有沒有生效。
+    provider_name, req_model = resolve_model(viewer_id, req_provider, req.model)
 
     def generate() -> Generator[str, None, None]:
         # 這三個放在 try 外面：客戶端中途斷線時 yield 會拋 GeneratorExit，
@@ -2104,7 +2267,7 @@ def summarize_stream(req: SummarizeRequest, viewer: Dict[str, Any] = ViewerDep):
             client = get_client(viewer_id)
             # 供應商在 meta 之前就要建好——meta 事件要帶 model，而 model
             # 由供應商自己回報
-            ai = get_provider(viewer_id, req_provider)
+            ai = get_provider(viewer_id, provider_name, model=req_model)
             messages = client.fetch_recent_messages(space_id, limit=limit)
             learn_names(messages)
             learn_dm_peer(viewer, space_id, messages)
@@ -2140,7 +2303,7 @@ def summarize_stream(req: SummarizeRequest, viewer: Dict[str, Any] = ViewerDep):
                     "space_id": space_id,
                     "message_count": count,
                     "style": style,
-                    "provider": resolved_provider,
+                    "provider": provider_name,
                     "model": ai.model,
                     "image_count": len(images),
                     "images_skipped": skipped_images,
@@ -2398,6 +2561,8 @@ class DraftRequest(BaseModel):
     # 7.3：不自動選擇 Reference Space，預設空陣列
     reference_space_ids: List[str] = Field(default_factory=list)
     provider: Optional[str] = None
+    #: 這次要用的 model **裸值**；語意同 `SummarizeRequest.model`
+    model: Optional[str] = None
     limit: int = Field(default=cfg.LIMIT_DEFAULT, ge=cfg.LIMIT_MIN, le=cfg.LIMIT_MAX)
 
     #: 一起回的其他 Mention（收件匣多選合併）。空陣列＝只回 URL 上那一則。
@@ -2825,8 +2990,11 @@ def draft_stream(
 
     ref_ids = list(dict.fromkeys(req.reference_space_ids))  # 去重、保留順序
     limit = req.limit
-    resolved_provider = providers.resolve_name(req.provider)
+    providers.resolve_name(req.provider)
     req_provider = req.provider
+    # 與 summarize_stream 同一份解析：別名先展開，「指定 model ＋ auto」在門外擋掉。
+    # `meta.provider` 一律用這裡的 `provider_name`，理由同 summarize_stream。
+    provider_name, req_model = resolve_model(viewer_id, req_provider, req.model)
     # 在進 generator 之前驗證：SSE 一旦開始就是 HTTP 200，之後的錯誤只能變成
     # error 事件，使用者比較難注意到。參數錯誤要用正常的 4xx 擋在門外。
     targets = resolve_merge_targets(viewer_id, mention, req.merge_mention_ids)
@@ -2846,7 +3014,7 @@ def draft_stream(
         meta_event: Optional[Dict[str, Any]] = None
         try:
             client = get_client(viewer_id)
-            ai = get_provider(viewer_id, req_provider)
+            ai = get_provider(viewer_id, provider_name, model=req_model)
 
             # 被 @ 的那則訊息本身；多選合併時還有其他幾則要一起回
             anchor_msgs = [client.get_message(t["message_name"]) for t in targets]
@@ -3009,7 +3177,7 @@ def draft_stream(
                         for b in code_blocks
                     ],
                     "code_skipped": code_skipped,
-                    "provider": resolved_provider,
+                    "provider": provider_name,
                     "model": ai.model,
                     "image_count": len(images),
                     "images_skipped": skipped_images,
@@ -3086,7 +3254,7 @@ def draft_stream(
                         )
 
             generation_config = {
-                "provider": resolved_provider,
+                "provider": provider_name,
                 "model": ai.model,
                 **reply_meta,
                 **polish_meta,
@@ -3125,7 +3293,7 @@ def draft_stream(
                 # 答不出「當時用什麼語氣產的」的一批。標 partial 讓它與
                 # 正常完成的草稿分得出來——這一份沒有經過潤稿。
                 partial_config = {
-                    "provider": resolved_provider,
+                    "provider": provider_name,
                     **reply_meta,
                     "partial": True,
                     "polished": False,
@@ -3525,6 +3693,10 @@ class WorklogDraftRequest(BaseModel):
     space_ids: Optional[List[str]] = None
     total_hours: Optional[float] = None
     provider: Optional[str] = None
+    #: ⚠️ **這裡刻意沒有 `model` 欄位**，另外兩個串流端點有。
+    #: 這個端點這一階段不接 AI（見下方 meta：note 來自 commit subject，
+    #: `meta.model` 固定 null），收下一個保證無效的參數比不收更糟——呼叫端會
+    #: 以為自己選的模型生效了。等這裡接上 AI 再加，連同 `resolve_model()` 一起。
     #: 明示「我知道重產會清掉已經選好的專案，還是要重來」。
     #:
     #: 預設 `False`，因為選專案是這個功能裡最花心力的一步（ADR-0008：系統只

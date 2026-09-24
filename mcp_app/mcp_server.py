@@ -47,15 +47,25 @@ def get_chat_client() -> GoogleChatClient:
     return _chat_client
 
 
-def get_ai(name: Optional[str] = None) -> "providers.AIProvider":
+def get_ai(
+    name: Optional[str] = None, model: Optional[str] = None
+) -> "providers.AIProvider":
     """取得 AI 供應商（延遲建立並快取）。
 
     name 省略時用 CHATPULSE_AI_PROVIDER（預設別名 `claude`，目前解析為
-    本機的 Claude Code CLI）。
+    本機的 Claude Code CLI）。model 是裸值，省略＝用該供應商的預設。
+
+    🔴 **快取鍵必須含 model**：只用供應商名當鍵的話，同一個 session 裡第二次
+    改指定 model 會直接拿到第一次建好的實例，換模型靜默無效——而回應內容
+    看起來完全正常，沒有任何地方會報錯。
     """
-    key = (name or "").strip().lower() or "__default__"
+    key = (
+        ((name or "").strip().lower() or "__default__")
+        + "\x00"
+        + ((model or "").strip() or "__default__")
+    )
     if key not in _ai_providers:
-        _ai_providers[key] = providers.resolve(name or None)
+        _ai_providers[key] = providers.resolve(name or None, model=model or None)
     return _ai_providers[key]
 
 
@@ -150,6 +160,7 @@ def summarize_chat_space(
     style: str = cfg.SUMMARY_STYLE_DEFAULT,
     post_to_chat: bool = False,
     provider: str = "",
+    model: Optional[str] = None,
 ) -> str:
     """
     對指定 Google Chat 空間的對話產出結構化摘要（AI 供應商可選，見 provider 參數）。
@@ -167,10 +178,24 @@ def summarize_chat_space(
         • auto        別名，依序試 claude_cli → gemini，挑第一個可用的
         • claude_cli  本機 Claude Code CLI（吃現有訂閱，不需 API key）
         • gemini      Google Gemini（免費層每天僅 20 次請求）
+    - model: 要用哪個模型，**不填＝用該供應商的預設**。填的是裸值（例 'sonnet'、
+      'gemini-3.6-flash'），不要帶 'claude-cli:' 前綴。常用值可用 list_ai_providers
+      查（那不是完整清單，供應商支援的其他模型名照樣可以填）。
+      指定 model 時 provider 要一併指定成具體的供應商（claude_cli 或 gemini）——
+      別名 claude／auto 會自行挑供應商，指定的 model 未必適用，會被擋下。
     """
     try:
         limit = validate_limit(limit)
         style = prompts.validate_style(style)
+        # 🔴 這個組合**必定失敗**，要在花掉任何一次 Google Chat 呼叫之前擋掉：
+        # 供應商是在抓完訊息之後才解析的（那對「供應商剛好不可用」是合理的，
+        # 那是罕見狀況），但「參數組合非法」在呼叫前就知道了，讓它先白抓一次
+        # 訊息只是多付一次配額與等待時間，換不到任何東西。
+        # 只在偵測到該組合時才提前解析——其他情況的既有順序一行都不動；
+        # 判準與錯誤訊息都由 core 給（`is_multi_candidate` 是唯一的一份），
+        # 所以這裡是「叫一個一定會拋的東西」，不是在這裡重寫一次規則。
+        if model and providers.is_multi_candidate(provider):
+            get_ai(provider, model)
         space = _resolve_space(space_name_or_id)
         space_id = space["name"]
         display_name = space.get("displayName") or space_id
@@ -186,7 +211,7 @@ def summarize_chat_space(
         return f"空間「{display_name}」最近的訊息都沒有文字內容，無法摘要。"
 
     try:
-        ai = get_ai(provider)
+        ai = get_ai(provider, model)
         # 能力檢查在下載之前——不支援視覺就不去取圖，省掉整條 API 往返。
         # 取不到的圖仍以佔位符留在 conversation_text 裡，AI 會知道有圖沒看到。
         images: list = []
@@ -227,13 +252,19 @@ def list_ai_providers() -> str:
     """列出可用的 AI 供應商與各自的狀態。
 
     在 summarize_chat_space 回報配額不足時，可以先用這個查有哪些替代選項，
-    再帶 provider 參數重試。
+    再帶 provider 參數重試。一併列出每家的常用模型，供 model 參數使用。
     """
     lines = [f"預設：{providers.default_name()}"]
     for d in providers.describe_all():
         mark = "✅ 可用" if d["available"] else "❌ 不可用"
         lines.append(f"- {d['name']}（{d['label']}）｜模型 {d['model']}｜{mark}")
         lines.append(f"    {d['reason']}")
+        # 標明「常用」而不是「可用」：這不是完整清單，未列出的模型名照樣可以填，
+        # 寫成「可用值」會讓讀的人以為填別的一定會被拒。
+        choices = "、".join(d.get("models") or []) or "（無常用清單）"
+        lines.append(
+            f"    目前生效的 model：{d.get('model_id', '?')}｜常用 model：{choices}"
+        )
     return "\n".join(lines)
 
 

@@ -18,7 +18,7 @@ from . import config as cfg
 
 _local = threading.local()
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -67,6 +67,17 @@ CREATE TABLE IF NOT EXISTS preferences (
     default_reply_prompt_id  INTEGER,
     -- 0/1；NULL 代表沒有偏好（目前的系統預設是關閉）
     default_sepia_enabled    INTEGER,
+    -- 每個 AI 供應商各自的預設 model：JSON 物件 {"claude_cli": "opus", "gemini": "…"}。
+    -- NULL／空字串＝全部沿用 config 預設，與上面幾個欄位同慣例。
+    --
+    -- **為什麼是 JSON 而不是單一 default_model TEXT**：model 的意義依附在
+    -- provider 上，`opus` 對 Gemini 毫無意義。存單值的話，Viewer 一換 provider
+    -- 偏好就變成非法值，而且錯誤要到送出摘要時才浮現。一個 provider 一格，
+    -- 換來換去都記得住，日後新增供應商也不必再動 schema。
+    --
+    -- 存的一律是**裸值**（`opus`），不是用量表那種帶前綴的識別字
+    -- （`claude-cli:opus`）——混進來會組出 `--model claude-cli:opus`。
+    default_models_json      TEXT,
     updated_at       TEXT NOT NULL
 );
 
@@ -435,6 +446,9 @@ _ADD_COLUMNS = [
     ("preferences", "default_persona_id", "INTEGER"),
     ("preferences", "default_reply_prompt_id", "INTEGER"),
     ("preferences", "default_sepia_enabled", "INTEGER"),
+    # 「Viewer 自己選 model」的偏好。舊資料庫補上時是 NULL，讀取端要能把
+    # 「沒有這個欄位／值是 NULL」一律當成「沒有偏好」，不是錯誤。
+    ("preferences", "default_models_json", "TEXT"),
     # 這份草稿是用什麼設定產生的。舊資料庫的既有草稿會是 NULL，
     # 讀取端一律要能處理「沒有這份資訊」（那些草稿產生時還沒有這個功能）。
     ("draft_replies", "generation_config_json", "TEXT"),
