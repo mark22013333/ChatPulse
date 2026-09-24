@@ -11,6 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { ModelSelect } from '@/components/ModelSelect'
 import { ProviderSelect } from '@/components/ProviderSelect'
 import { api, errorMessage } from '@/lib/api'
 import { useSummaryStore } from '@/store/summary'
@@ -137,6 +138,8 @@ export function SummaryToolbar({ space, onDraftCreated }: SummaryToolbarProps) {
       </div>
 
       <ProviderSelect id="summary-provider" disabled={streaming} />
+
+      <ModelSelect id="summary-model" disabled={streaming} />
 
       <div className="flex flex-col gap-1">
         <Label htmlFor="summary-limit" className="text-xs text-muted-foreground">

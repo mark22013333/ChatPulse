@@ -43,6 +43,11 @@ class ClaudeCLIProvider(AIProvider):
     # 圖片內容，且 init 事件顯示 "tools":[]。**視覺是模型的原生能力，不是 Read 工具**，
     # 所以停用工具不影響它。多張圖的順序也正確。
     supports_vision = True
+    # 2026-09-17 實測 `claude --help`：`--model` 收別名（help 舉例 'fable'、'opus'、
+    # 'sonnet'）或完整名稱（例 'claude-fable-5'）。**help 只舉例、沒有給完整清單**，
+    # 所以這三個是常用值而不是列舉——擋掉未列出的值就等於擋掉還沒被寫進這裡的模型。
+    # 'fable' 需特批才可用，放進選單只會讓多數人選到一個會失敗的值，所以不列。
+    model_choices = ("opus", "sonnet", "haiku")
 
     def __init__(self, model: Optional[str] = None, **kwargs):
         super().__init__(**kwargs)
@@ -50,7 +55,13 @@ class ClaudeCLIProvider(AIProvider):
 
     @property
     def model(self) -> str:
+        # 前綴只存在於用量表的識別字裡。要傳回 CLI 的是 model_id，
+        # 不是這個——混用會組出 `--model claude-cli:opus`。
         return f"claude-cli:{self._model}"
+
+    @property
+    def model_id(self) -> str:
+        return self._model
 
     @staticmethod
     def _resolve_binary() -> Optional[str]:

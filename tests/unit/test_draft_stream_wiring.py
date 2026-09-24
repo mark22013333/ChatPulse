@@ -101,7 +101,7 @@ def run_stream(req=None, captured=None):
          mock.patch.object(server.repo, "create_draft", lambda mid, text, config=None: 1), \
          mock.patch.object(server.repo, "get_preferences", lambda vid: dict(PREFERENCES)), \
          mock.patch.object(server, "get_client", lambda vid: FakeClient()), \
-         mock.patch.object(server, "get_provider", lambda vid, p: provider), \
+         mock.patch.object(server, "get_provider", lambda vid, p, model=None: provider), \
          mock.patch.object(server, "space_shape", lambda vid, sid: ("SPACE", "THREADED_MESSAGES")), \
          mock.patch.object(server, "learn_names", lambda msgs: None), \
          mock.patch.object(server, "name_resolver_for", lambda v: (lambda uid: "對方")), \

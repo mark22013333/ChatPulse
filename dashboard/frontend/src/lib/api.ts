@@ -154,6 +154,12 @@ export const api = {
     /** 取消最後一個釘選要送 `[]`——送 `null` 是「不改」，會靜默地沒有效果 */
     pinned_space_ids?: string[]
     default_provider?: string | null
+    /**
+     * 每個供應商各一個 model 裸值。鍵只能是**具體實作名**（`claude_cli`／
+     * `gemini`）：別名（`claude`／`auto`）會展開成不同實作，存進去就對應不回來，
+     * 後端會用 400 擋。值送 `null` 代表清除該供應商的偏好。
+     */
+    default_models?: Record<string, string | null>
     default_limit?: number
     default_style?: string
     default_reply_tone?: string | null

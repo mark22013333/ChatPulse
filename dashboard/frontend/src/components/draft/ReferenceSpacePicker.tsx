@@ -2,6 +2,7 @@ import { XIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { ModelSelect } from '@/components/ModelSelect'
 import { ProviderSelect } from '@/components/ProviderSelect'
 import { useDraftStore } from '@/store/draft'
 
@@ -77,6 +78,8 @@ export function ReferenceSpacePicker() {
       ) : null}
 
       <ProviderSelect id="draft-provider" disabled={streaming} triggerClassName="w-full" />
+
+      <ModelSelect id="draft-model" disabled={streaming} triggerClassName="w-full" />
     </div>
   )
 }

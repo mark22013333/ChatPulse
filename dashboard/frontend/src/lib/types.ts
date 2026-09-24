@@ -26,6 +26,13 @@ export interface Preferences {
   default_style: SummaryStyleValue
   /** 使用者偏好的 AI 供應商；null＝沿用伺服器預設 */
   default_provider?: string | null
+  /**
+   * 每個供應商各記一個 model 裸值：`{provider實作名: 裸值}`。沒設過的不出現。
+   *
+   * 為什麼是一個物件而不是單一字串：model 的意義依附在 provider 上，`opus`
+   * 對 Gemini 沒有意義。存單一字串的話，Viewer 一換供應商偏好就變成非法值。
+   */
+  default_models?: Record<string, string>
   /** 草稿頁預選的參考專案與環境（ADR-0006） */
   default_code_project_id?: number | null
   default_code_environment?: CodeEnvironment | null
@@ -160,6 +167,20 @@ export interface AIProvider {
   model: string
   available: boolean
   reason: string
+  /**
+   * 目前生效的**裸值**（`opus`、`gemini-3.6-flash`），送 request 時帶的就是它。
+   *
+   * ⚠️ 與上面的 `model` **不是**同一種字串：`model` 是記進用量的識別字，
+   * ClaudeCLI 會加前綴變成 `claude-cli:opus`。把識別字拿去當 model 參數送，
+   * 後端會再加一次前綴變成 `claude-cli:claude-cli:opus`。要顯示用量時用
+   * `model`，要當參數送出時用 `model_id`。
+   */
+  model_id: string
+  /**
+   * 這個供應商的常用裸值清單。**不是完整列舉**——後端只放驗證過的值，
+   * 沒列到的由 Viewer 自己打字輸入，所以不可以拿它來擋 Viewer 的輸入。
+   */
+  models: string[]
 }
 
 /** `GET /api/v1/providers` 的回應，也是 `/me` 的 `ai` 欄位內容。 */
@@ -170,6 +191,13 @@ export interface AIConfig {
    */
   default: string
   providers: AIProvider[]
+  /**
+   * Viewer 存過的 model 偏好：`{provider實作名: 裸值}`，沒設過的 provider 不出現。
+   *
+   * 選填是因為契約只保證 `/me` 的 `ai` 帶這個鍵；未登入也能打的 `/providers`
+   * 沒有 Viewer 可言，自然不會有偏好。讀的時候一律當它可能不存在。
+   */
+  default_models?: Record<string, string>
 }
 
 export interface CollectorRunStats {

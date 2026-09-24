@@ -22,6 +22,10 @@ class GeminiProvider(AIProvider):
     # 把配額燒在測試上會擋掉使用者自己的使用。欄位名依官方文件，
     # 但單次請求的總大小上限與超限行為未驗證。
     supports_vision = True
+    # 只放 `core/config.py` 的預設值。其他 Gemini 模型名**本 repo 沒有驗證過**，
+    # 憑印象補上去的下場是選單裡有一個打了才知道不存在的值，而錯誤要到
+    # 真的呼叫 API 才浮現（還會吃掉免費層每天 20 次的配額）。要用別的走自訂輸入。
+    model_choices = ("gemini-3.6-flash",)
 
     def __init__(self, model: Optional[str] = None, **kwargs):
         super().__init__(**kwargs)
@@ -30,6 +34,12 @@ class GeminiProvider(AIProvider):
 
     @property
     def model(self) -> str:
+        return self._model
+
+    @property
+    def model_id(self) -> str:
+        # Gemini 這邊識別字與裸值相同，但仍然分成兩個 property——
+        # 讓呼叫端可以一律用 model_id，不必去記「哪一家有前綴」。
         return self._model
 
     def available(self) -> tuple[bool, str]:

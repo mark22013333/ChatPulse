@@ -3,7 +3,7 @@ import { api, errorMessage, LIMIT_DEFAULT, streamUrls } from '@/lib/api'
 import { parseCodeTerms } from '@/lib/codeTerms'
 import { streamSse } from '@/lib/sse'
 import { streamErrorMessage } from '@/lib/aiErrors'
-import { providerRequestField } from '@/store/providers'
+import { modelRequestField, providerRequestField } from '@/store/providers'
 import type { CodeEnvironment, DraftPolishMeta, Mention, SseMeta } from '@/lib/types'
 
 /** 建議回話段落的標題（契約：`### ✍️ 建議回話`）。容忍 emoji 與空白差異。 */
@@ -293,13 +293,15 @@ export const useDraftStore = create<DraftState>((set, get) => ({
 
     await streamSse(
       streamUrls.draft(mentionId),
-      // provider 是選填：選「自動」時整個欄位不出現，交給伺服器解析
+      // provider 與 model 都是選填：選「自動」／「跟隨預設」時整個欄位不出現，
+      // 交給伺服器解析。model 帶的是裸值，不是用量欄位那種帶前綴的識別字。
       {
         reference_space_ids: referenceSpaceIds,
         limit: refLimit,
         merge_mention_ids: mergeIds.filter((id) => id !== mentionId),
         code_refs: codeRefs,
         ...providerRequestField(),
+        ...modelRequestField(),
         ...replyFields,
       },
       {
