@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
-import { useRoute } from '@/router/useRouter'
+import { hashForWorklog } from '@/lib/route'
+import { useRouter } from '@/router/useRouter'
 import { useMentionsStore } from '@/store/mentions'
 import { useSpacesStore } from '@/store/spaces'
 import { useWorklogStore } from '@/store/worklog'
@@ -19,7 +20,7 @@ import { useWorklogStore } from '@/store/worklog'
  * 清成空白工作區。
  */
 export function useRouteSync() {
-  const route = useRoute()
+  const { route, navigate } = useRouter()
 
   useEffect(() => {
     if (route.section !== 'summary') return
@@ -58,11 +59,21 @@ export function useRouteSync() {
      *
      * 這裡尤其不能自作主張補成「今天」：日期會決定工時寫到哪一天，而那是會
      * 進月結、事後要走 correction-request 才改得動的東西。網址沒說就是沒說。
+     *
+     * ⚠️ 但「沒說」時要把網址**補回上次選的那一天**（replace，不多留一筆歷史）。
+     * 主導覽的工時連結是 `#/worklog`，從別的 section 切回來一定走這條路；不補的話
+     * 中欄還停在 09-14（草稿與串流都在），網址與週欄卻沒有選任何一天——三個地方
+     * 講三種話，重新整理一次就變成「什麼都沒選」。補的是 Viewer 自己選過的值，
+     * 不是猜的，所以不違反上一段。從來沒選過（null）就維持週檢視。
      */
-    if (target === null) return
+    if (target === null) {
+      const remembered = useWorklogStore.getState().selectedDate
+      if (remembered) navigate(hashForWorklog(remembered), { replace: true })
+      return
+    }
     if (useWorklogStore.getState().selectedDate === target) return
     useWorklogStore.getState().selectDate(target)
-  }, [route.section, route.worklogDate])
+  }, [route.section, route.worklogDate, navigate])
 
   // `?merge=` → 勾選狀態。route.mergeIds 每次解析都是新陣列，所以一定要比內容。
   useEffect(() => {

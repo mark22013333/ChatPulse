@@ -27,6 +27,10 @@ import type {
   HealthResponse,
   UsageResponse,
   WorkRepo,
+  WorklogDay,
+  WorklogEntryUpdate,
+  WorklogSubmitBody,
+  WorklogSubmitResponse,
   WorklogWeekResponse,
 } from './types'
 
@@ -45,13 +49,32 @@ export class ApiError extends Error {
   readonly code: string
   readonly status: number
   readonly retryAfter: number | null
+  /**
+   * 錯誤主體的 `error.detail`（結構化補充）。只有後端刻意給時才有，其餘是 `null`。
+   *
+   * 為什麼要留：工時草稿的 400／409 把「影響幾筆、哪幾筆」放在這裡
+   * （`unassigned_count`、`unknown_entry_ids`、`submitted_count`…）。以前這裡
+   * 丟掉 detail，前端就只剩從中文 message 裡用正則挖數字——文案改一個字，
+   * 數字就安靜地挖錯（D-17）。
+   *
+   * 建構子參數放最後、選填：既有的 `new ApiError(status, code, message[, retryAfter])`
+   * 呼叫一個字都不用改。
+   */
+  readonly detail: Record<string, unknown> | null
 
-  constructor(status: number, code: string, message: string, retryAfter: number | null = null) {
+  constructor(
+    status: number,
+    code: string,
+    message: string,
+    retryAfter: number | null = null,
+    detail: Record<string, unknown> | null = null,
+  ) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.code = code
     this.retryAfter = retryAfter
+    this.detail = detail
   }
 
   get isUnauthenticated(): boolean {
@@ -64,18 +87,26 @@ type Json = Record<string, unknown>
 async function toApiError(res: Response): Promise<ApiError> {
   let code = `HTTP_${res.status}`
   let message = `請求失敗（HTTP ${res.status}）`
+  let detail: Record<string, unknown> | null = null
   try {
-    const payload = (await res.json()) as { error?: { code?: string; message?: string } }
+    const payload = (await res.json()) as {
+      error?: { code?: string; message?: string; detail?: unknown }
+    }
     if (payload?.error) {
       code = payload.error.code ?? code
       message = payload.error.message ?? message
+      // 只收物件：契約規定結構化 detail 一律是物件，字串型的是內部訊息、只進 log
+      const raw = payload.error.detail
+      if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+        detail = raw as Record<string, unknown>
+      }
     }
   } catch {
     // 回應不是 JSON（例如代理層錯誤頁），沿用預設訊息
   }
   const retryHeader = res.headers.get('Retry-After')
   const retryAfter = retryHeader ? Number.parseInt(retryHeader, 10) : null
-  return new ApiError(res.status, code, message, Number.isNaN(retryAfter) ? null : retryAfter)
+  return new ApiError(res.status, code, message, Number.isNaN(retryAfter) ? null : retryAfter, detail)
 }
 
 /** 401 時通知外層（auth store 會清空狀態並回登入畫面）。 */
@@ -377,6 +408,38 @@ export const api = {
    */
   worklogWeek: (weekStart: string) =>
     request<WorklogWeekResponse>(`/worklogs/week${query({ week_start: weekStart })}`),
+  /**
+   * 某一天的草稿（contract §1）。**沒有草稿是 404 `WORKLOG_DRAFT_NOT_FOUND`**，
+   * 那是多數日子的正常狀態，不是錯誤——呼叫端要分辨它與其他失敗：把網路
+   * 錯誤也畫成「還沒有草稿」，Viewer 會按下產生，然後被重產守門擋下、或更糟，
+   * 清掉他已經選好的專案。
+   */
+  worklogDay: (date: string) => request<WorklogDay>(`/worklogs/${date}`),
+  /**
+   * 逐筆更新可編輯欄位（contract §2），回應是整份草稿重讀，前端拿它整份取代。
+   *
+   * 🔴 鍵沒帶＝不改、帶 `null`＝清除；歸屬四欄要一起帶。形狀規則見
+   * `WorklogEntryUpdate`。要改的筆中有已送出者 → 409 `WORKLOG_ALREADY_SUBMITTED`，
+   * 整批一筆都不動；與送出／另一個 PUT 撞在一起 → 409 `WORKLOG_SUBMIT_IN_PROGRESS`。
+   */
+  updateWorklogEntries: (date: string, entries: WorklogEntryUpdate[]) =>
+    request<WorklogDay>(`/worklogs/${date}`, {
+      method: 'PUT',
+      body: JSON.stringify({ entries }),
+    }),
+  /**
+   * 把那一天的草稿逐筆寫進 ZPlanner。
+   *
+   * 🔴 **HTTP 200 不代表每一筆都成功**——逐筆看 `entries[].state` 與 `summary`。
+   * 錯誤信封只留給「一筆都沒送」的整批拒絕。
+   * ⚠️ 正常情況約兩分鐘封頂（90 秒預算＋最後一筆的 client timeout），
+   * 不要自己加一個比這短的逾時：逾時中止會讓畫面以為沒送，而伺服器還在送。
+   */
+  submitWorklog: (date: string, body: WorklogSubmitBody = {}) =>
+    request<WorklogSubmitResponse>(`/worklogs/${date}/submit`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 
   // ── 維運 ────────────────────────────────────────────────
   usage: (days = 14) => request<UsageResponse>(`/usage${query({ days })}`),
@@ -391,6 +454,7 @@ export const api = {
 export const streamUrls = {
   summarize: () => `${API_BASE}/summarize/stream`,
   draft: (mentionId: number) => `${API_BASE}/mentions/${mentionId}/draft/stream`,
+  worklogDraft: (date: string) => `${API_BASE}/worklogs/${date}/draft/stream`,
 }
 
 export type StyleValue = SummaryStyleValue
