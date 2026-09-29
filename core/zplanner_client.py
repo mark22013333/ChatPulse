@@ -623,7 +623,7 @@ class ZPlannerClient:
         body: Dict[str, Any] = {
             "issue_id": _require_int(issue_id, "issue_id"),
             "date": _require_date(date, "date"),
-            "hours": _require_hours(hours),
+            "hours": require_hours(hours),
         }
         # note 與 start_time 是選填。**None 就整個不送**，不要送 null——
         # 選填欄位送 null 與不送在很多框架裡不是同一件事，而我們沒有理由賭。
@@ -660,7 +660,7 @@ class ZPlannerClient:
         """
         body: Dict[str, Any] = {}
         if hours is not None:
-            body["hours"] = _require_hours(hours)
+            body["hours"] = require_hours(hours)
         if date is not None:
             body["date"] = _require_date(date, "date")
         if note is not None:
@@ -737,7 +737,7 @@ class ZPlannerClient:
 # ----------------------------------------------------------------------
 
 
-def _require_hours(value: Any) -> str:
+def require_hours(value: Any) -> str:
     """把 `hours` 驗成 ZPlanner 收得下的字串。
 
     🔴 **只收字串，不收 float。** 這不是龜毛：`allocate()` 算出來的是
@@ -746,8 +746,20 @@ def _require_hours(value: Any) -> str:
     看不出是哪個欄位、哪裡不對。DB 的 `worklog_draft_entries.hours` 本來就是
     TEXT，整條路上維持字串才不會有地方偷偷做浮點運算。
 
-    pattern 直接抄 OpenAPI schema 的 `^-?\\d{0,3}(?:\\.\\d{0,2})?$`（最多三位
-    整數、兩位小數）。**負數是合法的**——ZPlanner 用它做沖銷，所以這裡不擋。
+    實際使用的 pattern 是 `_HOURS_PATTERN`：`-?(?=.*\\d)\\d{0,3}(?:\\.\\d{0,2})?`
+    （以 `fullmatch` 比對；最多三位整數、兩位小數）。**負數是合法的**——ZPlanner
+    用它做沖銷，所以這裡不擋。`(?=.*\\d)` 這段 lookahead 要求至少一位數字，所以
+    `""`、`"."`、`"-"`、`"-."`、只有空白的字串都會被拒絕。
+
+    ⚠️ 舊版 docstring 引用的是沒有 lookahead 的簡化版
+    `^-?\\d{0,3}(?:\\.\\d{0,2})?$`，曾讓人誤判空字串會被收下（2026-09-25）。
+    要判斷這裡收不收某個值，看 `_HOURS_PATTERN` 常數本身，不要看註解。
+
+    公開（不帶底線）是因為 `PUT /worklogs/{date}` 也要用它驗 Viewer 改過的
+    時數（D-13）：格式錯的值若在 PUT 收下，要到送出時才變成單筆 `failed`，
+    那時使用者早就離開編輯畫面了。被否決的做法：server 跨模組 import 私有名稱
+    （改名時沒人知道外面有人在用）、把 pattern 複製一份到 server（兩份早晚會
+    分岔，而分岔的症狀正是「PUT 收下、送出被拒」）。
     """
     if not isinstance(value, str):
         raise InvalidParameter(

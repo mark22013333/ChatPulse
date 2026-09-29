@@ -252,7 +252,7 @@ class MissingHoursGateTest(unittest.TestCase):
     null——那是正常流程的中間狀態，不是壞掉的資料。
 
     為什麼擋在前面而不是讓它們各自變成 `failed`：這種筆在 `create_worklog` 會
-    於**發出 HTTP 之前**就被 `_require_hours` 擋下，所以確實不會造成重複工時。
+    於**發出 HTTP 之前**就被 `require_hours` 擋下，所以確實不會造成重複工時。
     但那樣等於部分送出——D-3 否決過：那天的工時會變成不完整，而畫面上沒有任何
     訊號說明少了什麼。
     """

@@ -295,7 +295,7 @@ def find_missing_hours(
     整份草稿的 `hours` 一律是 null——那是正常流程的中間狀態，不是壞掉的資料。
 
     為什麼要擋在前面，而不是讓它們在迴圈裡各自變成 `failed`：這種筆送到
-    `create_worklog` 會在**發出 HTTP 之前**就被 `_require_hours` 擋下，所以確實
+    `create_worklog` 會在**發出 HTTP 之前**就被 `require_hours` 擋下，所以確實
     不會造成重複工時。但那樣等於部分送出——D-3 明文否決過：那天的工時會變成
     不完整，而畫面上沒有任何訊號說明少了什麼。
 
@@ -307,7 +307,7 @@ def find_missing_hours(
     擋不住任何人。
 
     ⚠️ **已知且刻意的殘留缺口**：格式讀得懂、卻違反 ZPlanner 欄位規則的值仍然
-    會漏過這道閘（`_require_hours` 的 pattern 只收三位整數兩位小數，所以
+    會漏過這道閘（`require_hours` 的 pattern 只收三位整數兩位小數，所以
     `"1000.5"` 這裡認得、ZPlanner 那邊不收），那一筆會變成單筆 `failed`。
     **不把那個 pattern 抄進來是刻意的**：抄過來等於把 client 的驗證規則複製一份，
     兩邊遲早不同步，而不同步的那天這裡會擋掉 ZPlanner 其實收得下的值——整天
@@ -412,7 +412,7 @@ def find_duplicates(
         if hours is None:
             # 本地時數壞掉或還沒填。這裡**不擋**，理由是同一個錯誤不要有兩種
             # 說法：`find_missing_hours` 已經是第一道網（送出流程一定先過它），
-            # 而真的漏過去的也會在發出 HTTP 之前被 `_require_hours` 擋下，
+            # 而真的漏過去的也會在發出 HTTP 之前被 `require_hours` 擋下，
             # 不會造成重複工時。
             #
             # ⚠️ 取捨要講明：這樣做的代價是那一筆最後**呈現成「送出失敗」而不是
