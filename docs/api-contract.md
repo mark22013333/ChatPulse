@@ -734,11 +734,15 @@ GitHub 未認證每小時只有 60 次呼叫，前端不要拿它做輸入即時
 
 從 Viewer 的 git commit 與 Chat 發言產生每日工時草稿。
 
-目前完成：「我的工作 repo」登錄、**週檢視**（`GET /worklogs/week`）、**草稿產生**
-（`POST /worklogs/{date}/draft/stream`）、**送出**（`POST /worklogs/{date}/submit`）。
-**尚未實作**：`GET`／`PUT /worklogs/{date}`、`GET /zplanner/issues/search`、
-`GET /zplanner/permissions`（候選與權限目前只在草稿的 SSE `meta` 裡一次帶回，
-沒有獨立的搜尋端點）。
+目前進度（後端與前端分開寫——兩邊不同步，合在一句會讓人以為畫面已經做好）：
+
+- **後端完成**：「我的工作 repo」登錄、**週檢視**（`GET /worklogs/week`）、**草稿產生**
+  （`POST /worklogs/{date}/draft/stream`）、**單日讀寫**（`GET`／`PUT /worklogs/{date}`，
+  `PUT` 是逐筆欄位更新）、**送出**（`POST /worklogs/{date}/submit`）。
+  **尚未實作**：`GET /zplanner/issues/search`、`GET /zplanner/permissions`（候選與
+  權限目前只在草稿的 SSE `meta` 裡一次帶回，沒有獨立的搜尋端點）。
+- **前端完成**：工時工作台的導航與路由骨架、「我的工作 repo」設定頁、週檢視；
+  本任務完成：單日工作區的產生／分配／歸屬確認／送出。
 
 ### 我的工作 repo
 
@@ -1050,6 +1054,85 @@ POST／PATCH／verify 都回帶 `verification` 的單筆：
 `NO_MESSAGES`），**且不落地任何草稿**——硬產一份空草稿會讓使用者把時數分給不存在
 的證據。其餘串流中的錯誤照 8.3 轉成 `error` 事件。
 
+### `GET /api/v1/worklogs/{date}`
+
+需登入。`{date}` 是 `YYYY-MM-DD`。讀這一天的草稿，**含 Viewer 存過的歸屬與時數**
+（重新整理頁面後就靠這支把畫面畫回來）。回應是**扁平的草稿物件**（不包外層）：
+
+```json
+{ "id": 7, "work_date": "2026-09-24", "status": "draft", "total_hours": "8.00",
+  "tz_offset": "+08:00", "generation_meta": { "clusters": [ "…同 SSE meta…" ] },
+  "generated_at": "…", "created_at": "…", "updated_at": "…",
+  "entries": [ { "id": 12, "draft_id": 7, "seq": 1,
+                 "issue_id": null, "issue_key": null, "project_id": null, "project_key": null,
+                 "hours": "3.50", "note": "…", "allocated_hours": "3.50", "weight": 0.42,
+                 "rounded_up": false, "evidence_refs": ["commit:ab12…"], "candidates": [],
+                 "state": "pending", "zplanner_worklog_id": null, "zplanner_issue_key": null,
+                 "is_locked": false, "submitted_at": null,
+                 "last_error_code": null, "last_error_message": null,
+                 "created_at": "…", "updated_at": "…",
+                 "cluster_key": "issue:PEI-133", "label": "…", "reason": "…" } ] }
+```
+
+- `entries[]` 是資料庫裡的完整明細（與 submit 回應的 `entries[]` 同一組欄位），
+  **另補** `cluster_key`／`label`／`reason`。那三個不存在 DB，是用這筆的
+  `evidence_refs` 以**集合相等**去對 `generation_meta.clusters[]` 取來的。
+  ⚠️ **對不到就是 `null`，不會退回用 `seq` 位置去對**：重產時 meta 與 entries 分兩個
+  交易寫，後者被已送出守門拒絕時 meta 已經換成新的一批，用位置對會把新群的
+  說明靜默貼到舊的卡片上。前端看到 `null` 就畫「說明對不上」，不要自己補。
+- 與 SSE `done` 的 `entries[]` **不是同一個形狀**：這裡多了送出結果的欄位
+  （`zplanner_worklog_id`／`is_locked`／`last_error_*`／`submitted_at`），畫送出狀態要用。
+
+| 情況 | 回應 |
+| :--- | :--- |
+| 這一天沒有草稿 | `404 WORKLOG_DRAFT_NOT_FOUND`（前端畫「還沒產草稿」的空狀態） |
+| `{date}` 格式不對 | `400 INVALID_PARAMETER` |
+
+### `PUT /api/v1/worklogs/{date}`
+
+需登入。**逐筆欄位更新**，只改時數、專案歸屬、備註。🔴 **不是整組取代**：整組取代
+要前端自己組出每筆的完整欄位，漏帶一個 `state`／`zplanner_worklog_id` 就是一次
+資料遺失。也**不能新增或刪除** entry——entry 只能由草稿產生流程依證據造出來。body：
+
+```json
+{ "entries": [
+    { "id": 12, "hours": "2.50",
+      "issue_id": 4821, "issue_key": "PEI-133", "project_id": 42, "project_key": "PEI" },
+    { "id": 13, "note": null } ] }
+```
+
+| 欄位 | 語意 |
+| :--- | :--- |
+| `id` | 必填，要改的那一筆。必須屬於這一天的草稿 |
+| 其餘欄位 | **鍵沒帶 ＝ 不改；帶 `null` ＝ 清除。** 沒出現在這張表裡的鍵（`state` 等）一律 `400`，不是靜默忽略——靜默忽略的話前端以為改到了，實際上什麼都沒發生 |
+| `hours` | 字串或 `null`。格式規則與送進 ZPlanner 的是**同一份**（最多三位整數、兩位小數，可為負數）；**不卡 0.5 倍數**，那是分配演算法的產出規則，不是 ZPlanner 的輸入限制。收到數字型別 → `400`。**不含任何數字的字串**（`""`、`"."`、`"-"`、`"-."`）也是 `400`——要清除時數請送 `null`，不要送空字串。前後空白會被去掉 |
+| `issue_id`／`issue_key`／`project_id`／`project_key` | **四個要一起帶**，而且 `issue_id` 與 `issue_key` 要同為 `null` 或同有值。只改一半的話，送出閘（看 `issue_id`）與重產守門（看 `issue_id` 或 `issue_key`）對「這筆指派了沒」會給出不同答案。**不限定只能選 `candidates` 裡的** |
+| `note` | 字串或 `null` |
+
+回應：`200`，與 `GET` **同一個形狀**（整份草稿寫完後重讀）。前端拿它直接重畫。
+
+- 🔴 **整批全有或全無。** 任何一筆被拒絕，這次請求**一筆都不會改**（守門與寫入在
+  同一個 DB 交易裡）。
+- **已送出守門是逐筆的：只看這次要改的筆。** 要改的筆裡有 `zplanner_worklog_id`
+  有值者才 `409`；`failed`／`unknown`（沒有遠端 id）可以改。當天別處有筆已經送出，
+  **不影響**其他筆的修改——否則選錯專案而 `failed` 的那筆就沒有路可以修。
+- 未觸碰的欄位（`state`／`zplanner_worklog_id`／`is_locked`／`last_error_*`／
+  `submitted_at`）一律原樣保留，改完 `failed` 那筆的歸屬，它仍然是 `failed`，
+  上一次的錯誤訊息也還在，重打一次才會更新。
+- 與送出**搶同一把鎖**：同一天正在送出時 PUT 回 `409 WORKLOG_SUBMIT_IN_PROGRESS`。
+  送出流程在迴圈開始前就把 entries 拍下來了，送出中被改值的話 ZPlanner 收的是
+  舊值、本地卻存著新值。⚠️ 反過來也成立：PUT 進行中按送出，也會拿到「正在送出中」
+  （文字不精確，是已知限制）。
+
+| 情況 | 回應 |
+| :--- | :--- |
+| 這一天沒有草稿 | `404 WORKLOG_DRAFT_NOT_FOUND` |
+| 有 `id` 不屬於這份草稿 | `400 INVALID_PARAMETER`，`detail: { unknown_entry_ids, draft_entry_ids }`（鍵名同 submit）。**是 400 不是 404**，理由同 submit |
+| **要改的筆中有已送出者** | `409 WORKLOG_ALREADY_SUBMITTED`，`detail: { submitted_count, force_allowed: false }`。`submitted_count` 是**這次要改的筆裡**已送出的筆數，不是整份草稿的。已送出的工時要改只能走 correction-request |
+| 同一天的送出（或另一個 PUT）正在進行中 | `409 WORKLOG_SUBMIT_IN_PROGRESS`，`detail: { work_date }` |
+| `entries` 是空陣列、同一個 `id` 出現兩次、歸屬四欄沒一起帶、`issue_id`／`issue_key` 一個有值一個 `null`、`hours` 格式不對或不是字串、帶了不認得的鍵 | `400 INVALID_PARAMETER`（**沒有 `detail`**，原因在 `message`） |
+| `{date}` 格式不對 | `400 INVALID_PARAMETER` |
+
 ### `POST /api/v1/worklogs/{date}/submit`
 
 需登入。`{date}` 是 `YYYY-MM-DD`。把那一天的草稿**逐筆**寫進 ZPlanner。body：
@@ -1214,10 +1297,11 @@ POST／PATCH／verify 都回帶 `verification` 的單筆：
 2. **任何送出動作都要二次確認對話框**（5.4、7.2 步驟 6）。
 3. **v1 的 ZPlanner 匯出按鈕已於 v2.0 移除**，不要在 Action Items 那裡保留任何
    剪貼簿 handler。（**Draft Worklog 是另一件事**，見 ADR-0008 與規格 5.3——它走真正的
-   API 串接、有自己的畫面。目前完成到：ZPlanner client 層、「我的工作 repo」
-   登錄端點與設定頁、工時工作台的導航與路由骨架、週檢視、草稿產生（SSE）與
-   送出（`POST /worklogs/{date}/submit`）。單日的讀取／整組取代（`GET`／`PUT`）
-   尚未實作。
+   API 串接、有自己的畫面。目前進度——**後端**：ZPlanner client 層、「我的工作
+   repo」登錄端點、週檢視、草稿產生（SSE）、單日讀取與**逐筆欄位更新**
+   （`GET`／`PUT /worklogs/{date}`；⚠️ `PUT` **不是整組取代**，只送改過的那幾筆、
+   那幾個欄位）、送出（`POST /worklogs/{date}/submit`）。**前端**：設定頁、工時
+   工作台的導航與路由骨架、週檢視；本任務完成：單日工作區的產生／分配／歸屬確認／送出。
    ⚠️ 送出那支的畫面要記得：**HTTP 200 不代表每一筆都成功**，逐筆狀態在
    `entries[].state`；跑到一半的草稿是混合狀態，前端必須畫得出來。另外兩個：
    收到 `409 WORKLOG_SUBMIT_IN_PROGRESS` 要顯示「正在送出中」並**停止自動重試**；
