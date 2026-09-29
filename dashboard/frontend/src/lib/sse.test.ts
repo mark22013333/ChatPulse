@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { ApiError } from './api'
 import { streamSse } from './sse'
 import type { SseEvent } from './types'
 
@@ -116,5 +117,98 @@ describe('streamSse', () => {
     const { events, handlers } = collect()
     await streamSse('/x', {}, handlers, controller.signal)
     expect(events).toHaveLength(0)
+  })
+})
+
+/** 非 2xx 的 JSON 錯誤回應，`error` 內容由測試決定。 */
+function mockErrorBody(status: number, error: Record<string, unknown>): void {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () =>
+      new Response(JSON.stringify({ error }), { status, headers: { 'Content-Type': 'application/json' } }),
+    ),
+  )
+}
+
+describe('streamSse：錯誤主體的 detail（D-17）', () => {
+  it('串流開始前被擋下的 400，detail 物件原樣帶到 error 事件', async () => {
+    // 重產守門：前端要講得出「會清掉幾筆」，數字只能從這裡來
+    mockErrorBody(400, {
+      code: 'INVALID_PARAMETER',
+      message: '有 2 筆已經選好專案了',
+      detail: { assigned_count: 2, assigned_issue_keys: ['PEI-133', 'PEI-140'], force_allowed: true },
+    })
+    const { events, handlers } = collect()
+    await streamSse('/api/v1/worklogs/2026-09-13/draft/stream', {}, handlers, new AbortController().signal)
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({ type: 'error', code: 'INVALID_PARAMETER' })
+    expect((events[0] as { detail?: Record<string, unknown> }).detail).toEqual({
+      assigned_count: 2,
+      assigned_issue_keys: ['PEI-133', 'PEI-140'],
+      force_allowed: true,
+    })
+  })
+
+  it('409 的 detail 也帶得出來', async () => {
+    mockErrorBody(409, {
+      code: 'WORKLOG_ALREADY_SUBMITTED',
+      message: '已經送出了',
+      detail: { submitted_count: 1, force_allowed: false },
+    })
+    const { events, handlers } = collect()
+    await streamSse('/x', {}, handlers, new AbortController().signal)
+    expect(events[0]).toMatchObject({ code: 'WORKLOG_ALREADY_SUBMITTED', detail: { submitted_count: 1 } })
+  })
+
+  it('沒有 detail 時事件不多出 detail 鍵（既有呼叫端收到的形狀不變）', async () => {
+    mockErrorBody(400, { code: 'INVALID_PARAMETER', message: '抓取則數超出範圍' })
+    const { events, handlers } = collect()
+    await streamSse('/x', {}, handlers, new AbortController().signal)
+    expect(events[0]).toMatchObject({ type: 'error', code: 'INVALID_PARAMETER' })
+    expect('detail' in events[0]).toBe(false)
+  })
+
+  it('字串或陣列型的 detail 不外洩成結構化 detail', async () => {
+    for (const detail of ['內部堆疊', ['a', 'b']]) {
+      mockErrorBody(400, { code: 'INVALID_PARAMETER', message: 'x', detail })
+      const { events, handlers } = collect()
+      await streamSse('/x', {}, handlers, new AbortController().signal)
+      expect('detail' in events[0]).toBe(false)
+    }
+  })
+
+  it('401 拋出的 ApiError 也帶著 detail', async () => {
+    mockErrorBody(401, { code: 'UNAUTHENTICATED', message: '請重新登入', detail: { reason: 'expired' } })
+    const { handlers } = collect()
+    const err = await streamSse('/x', {}, handlers, new AbortController().signal).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ApiError)
+    expect((err as ApiError).status).toBe(401)
+    expect((err as ApiError).detail).toEqual({ reason: 'expired' })
+  })
+
+  it('串流中途的 error 事件若自帶 detail，原樣交給 onError', async () => {
+    mockStream([
+      'data: {"type":"meta","work_date":"2026-09-13"}\n\n',
+      'data: {"type":"error","code":"WORKLOG_ALREADY_SUBMITTED","message":"x","detail":{"submitted_count":3}}\n\n',
+    ])
+    const { events, handlers } = collect()
+    await streamSse('/x', {}, handlers, new AbortController().signal)
+    expect(events.map((e) => e.type)).toEqual(['meta', 'error'])
+    expect((events[1] as { detail?: Record<string, unknown> }).detail).toEqual({ submitted_count: 3 })
+  })
+})
+
+describe('streamSse：工時草稿的事件形狀', () => {
+  it('meta／chunk／done 依序分派，工時專屬欄位原樣保留', async () => {
+    mockStream([
+      'data: {"type":"meta","work_date":"2026-09-13","clusters":[{"key":"c-a","label":"匯出逾時"}]}\n\n',
+      'data: {"type":"chunk","index":0,"cluster_key":"c-a","text":"修正匯出逾時"}\n\n',
+      'data: {"type":"done","draft_id":7,"entries":[],"allocation":null}\n\n',
+    ])
+    const { events, handlers } = collect()
+    await streamSse('/api/v1/worklogs/2026-09-13/draft/stream', { tz_offset: '+08:00' }, handlers, new AbortController().signal)
+    expect(events.map((e) => e.type)).toEqual(['meta', 'chunk', 'done'])
+    expect((events[1] as unknown as { cluster_key: string }).cluster_key).toBe('c-a')
+    expect((events[2] as unknown as { draft_id: number }).draft_id).toBe(7)
   })
 })
