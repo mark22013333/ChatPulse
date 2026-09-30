@@ -64,8 +64,8 @@ export function DraftSetupPanel({ mention }: { mention: Mention }) {
           emptyHint="查無符合的 Space"
           /*
             **一定要給確定的高度，不能留 `flex-1`。** `SpaceList` 內建
-            `flex-1 overflow-y-auto`（`SpaceList.tsx:124`）——那是為 `SpacesRail`
-            設計的「吃掉剩餘空間」。搬到這個捲動容器裡就成立不了：`basis-0`
+            `flex-1 overflow-y-auto`（`SpaceList.tsx:124`）——那是為舊的 Space 導覽欄
+            （已移除，現由 `SpacesTable` 取代）設計的「吃掉剩餘空間」。搬到這個捲動容器裡就成立不了：`basis-0`
             仍然對容器高度解析，上面兩塊固定內容一多，它就被壓到剩下一條縫。
             實測**只有 8px、而內容是 22708px**，使用者因此完全看不到 Reference
             Space 清單，也不會意識到自己漏勾了什麼。

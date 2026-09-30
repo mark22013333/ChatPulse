@@ -17,8 +17,9 @@ import type { Space } from '@/lib/types'
 /**
  * 給私訊／未命名的 Space 取別名。
  *
- * 從 `SpacesRail` 原樣抽出來：摘要工作台改成表格（`SpacesTable`）之後兩邊都要
- * 用，複製一份的話「自動猜的名字不預填」這種細節遲早只改到一邊。
+ * 從舊的 Space 導覽欄原樣抽出來：摘要工作台改成表格（`SpacesTable`）的過渡期
+ * 兩邊都要用，複製一份的話「自動猜的名字不預填」這種細節遲早只改到一邊。
+ * 舊導覽欄移除後，目前只有 `SpacesTable` 使用。
  */
 export function useSpaceRename() {
   const rename = useSpacesStore((state) => state.rename)

@@ -5,8 +5,8 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { DataTable, type DataTableColumn } from '@/components/table/DataTable'
 import { Pager, TableTotal } from '@/components/table/Pager'
 import { usePagedRows } from '@/components/table/usePagedRows'
-import { formatMonthDay, weekdayLabel } from '@/components/worklog/WeekDayRow'
 import { api, errorMessage } from '@/lib/api'
+import { formatMonthDay, weekdayLabel } from '@/lib/format'
 import { toggleSort, type SortState } from '@/lib/paginate'
 import { hashForWorklog } from '@/lib/route'
 import {
@@ -80,7 +80,7 @@ interface ExtraWeek {
  * 工時草稿的整頁表格（設計規格 2026-10-01 §4.4）：tabs → 篩選列 → 表格 → 分頁器。
  * 一列一天，點一列整頁切到 `#/worklog/:date` 的單日工作區。
  *
- * 取代舊的週欄（`WorklogWeekRail`，原檔保留未刪）。篩選列上的翻週（◂ ▸、回到本週）
+ * 取代舊的週欄（`WorklogWeekRail`，已移除）。篩選列上的翻週（◂ ▸、回到本週）
  * 沿用舊週欄的行為，可以翻到任何一週；tabs 的「本週」「上週」只是其中兩週的捷徑
  * （理由見 `lib/worklogTable.ts` 的 `WorklogMode`）。
  *
@@ -536,7 +536,7 @@ function ZplannerNotice({
 }
 
 /**
- * 翻週（與舊週欄 `WorklogWeekRail` 同一套行為）：◂ 上一週、▸ 下一週、不在本週時
+ * 翻週（與已移除的舊週欄同一套行為）：◂ 上一週、▸ 下一週、不在本週時
  * 出現「回到本週」。Viewer 需要翻回更早的週補填工時，tabs 只是其中兩週的捷徑。
  *
  * 標題**讀回應的** `week_start`／`week_end`；載入完成（且週次對得上）前不顯示任何

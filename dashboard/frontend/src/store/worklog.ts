@@ -148,7 +148,7 @@ interface WorklogState {
   weekError: string | null
 
   selectDate: (date: string | null) => void
-  /** 換一週（只改參數；實際載入由畫面的 effect 觸發，見 `WorklogWeekRail`）。 */
+  /** 換一週（只改參數；實際載入由畫面的 effect 觸發，見 `WorklogTable`）。 */
   setWeekStart: (weekStart: string) => void
   /** 前後移動 n 週。`-1` 是上一週。 */
   shiftWeek: (deltaWeeks: number) => void

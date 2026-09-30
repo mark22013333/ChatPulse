@@ -43,6 +43,42 @@ export function formatNumber(value: number | null | undefined): string {
   return value.toLocaleString('zh-TW')
 }
 
+/**
+ * ISO 星期 → 中文。
+ *
+ * **一定要用對照表，不可以拿 `weekday` 去索引一個七元素陣列。** 後端回的是
+ * ISO 星期（1＝一），但那個約定哪天變了（或者有人把它換成 ZPlanner 原生的
+ * 英文縮寫），陣列索引會安靜地整排錯位——七列每一列都標錯星期，而日期是對的，
+ * 光看畫面完全不會發現。對照表查不到就是查不到，出不了這種錯。
+ *
+ * （原本住在已移除的 `WeekDayRow.tsx`，現由 `WorklogTable` 使用。）
+ */
+const WEEKDAY_LABEL: Record<number, string> = {
+  1: '週一',
+  2: '週二',
+  3: '週三',
+  4: '週四',
+  5: '週五',
+  6: '週六',
+  7: '週日',
+}
+
+/** 查不到就回空字串：寧可只顯示日期，也不要編一個星期出來。 */
+export function weekdayLabel(weekday: number): string {
+  return WEEKDAY_LABEL[weekday] ?? ''
+}
+
+/**
+ * `2026-09-07` → `09/07`。
+ *
+ * 純字串切割，**不經過 `Date`**：`new Date('2026-09-07')` 會被當成 UTC 午夜，
+ * 在 UTC+8 以外的時區印回來就變成前一天。
+ */
+export function formatMonthDay(iso: string): string {
+  const parts = iso.split('-')
+  return parts.length === 3 ? `${parts[1]}/${parts[2]}` : iso
+}
+
 /** Space 類型的中文標籤。 */
 export function spaceTypeLabel(type: string | null | undefined): string {
   switch (type) {
