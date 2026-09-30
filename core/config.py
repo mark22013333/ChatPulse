@@ -384,6 +384,20 @@ MENTION_INITIAL_LOOKBACK_HOURS = 24
 CHAT_RETRY_MAX_ATTEMPTS = 3
 CHAT_RETRY_BASE_DELAY = 1.0
 
+# --- Google Chat HTTP 連線池 ---
+# ⚠️ requests 對每個主機預設只保留 10 條連線，而同一位 Viewer 的
+# GoogleChatClient 是跨請求快取共用的（dashboard/api/server.py 的 get_client），
+# 會被好幾個執行緒池同時使用：Mention 輪詢 MENTION_POLL_WORKERS（16）、
+# 列表即時抓訊息內容（server.py 的 min(8, …)）、附件下載 IMAGE_DOWNLOAD_WORKERS（4），
+# 最壞同時 28 條。超過 10 條的連線用完就被丟掉，log 會一直印
+# 「Connection pool is full, discarding connection」，下次再重做一次 TLS 握手。
+# 結果不會錯（預設不阻塞），只是白做握手。2026-10-01 以本機 HTTP 伺服器 ＋ 16 併發
+# 重現過同一句警告，放大到 32 後消失（重現腳本不進版控）。
+# 被否決的做法：把 MENTION_POLL_WORKERS 降到 10 以下——警告消失但輪詢變慢，
+# 而且另外兩個執行緒池疊上去仍然會超過。
+# 🔴 調高上面任何一個並行數時，這裡要跟著調，否則警告會回來。
+CHAT_HTTP_POOL_MAXSIZE = 32
+
 # --- Session ---
 SESSION_COOKIE_NAME = "chatpulse_session"
 SESSION_TTL_HOURS = 24 * 14
