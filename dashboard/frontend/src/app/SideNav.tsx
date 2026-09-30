@@ -1,8 +1,6 @@
 import {
   BarChart3Icon,
   CalendarRangeIcon,
-  ChevronsLeftIcon,
-  ChevronsRightIcon,
   ClockIcon,
   InboxIcon,
   LogOutIcon,
@@ -11,7 +9,6 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { PulseMark } from '@/app/PulseMark'
-import { ThemeToggle } from '@/components/ThemeToggle'
 import { NAV_GROUPS, NAV_MODULES, type ModuleId, type NavModule } from '@/lib/modules'
 import { hashForMentions, hashForSummary } from '@/lib/route'
 import { cn } from '@/lib/utils'
@@ -21,75 +18,48 @@ import { useDraftStore } from '@/store/draft'
 import { useMentionsStore } from '@/store/mentions'
 import { useSpacesStore } from '@/store/spaces'
 import { useSummaryStore } from '@/store/summary'
-import { useUiStore } from '@/store/ui'
 
 /**
- * 左側主導覽。
+ * 左側主導覽：深藍側欄（2026-10-01 改版，規格 `2026-10-01-table-layout.md` §3）。
  *
  * ### 為什麼是 `<a>` 而不是 `<button>`
  *
  * 規格 §10.2 明訂工作台切換要用 `<nav>` + `<a href="#/...">` + `aria-current="page"`，
- * 而且**不要補 tablist 語意**——它本來就是連結。改版前的頂列頁籤是
- * `<button onClick>`，偏離了規格；順手改回來。附帶好處是中鍵開新分頁、
- * 複製連結這些原生行為都回來了（所以 onClick 只攔沒有修飾鍵的左鍵）。
+ * 而且**不要補 tablist 語意**——它本來就是連結。附帶好處是中鍵開新分頁、
+ * 複製連結這些原生行為都在（所以 onClick 只攔沒有修飾鍵的左鍵）。
+ * 改版草稿用的是 `<button>`；那是示意用的 HTML，不照抄。
  *
- * ### 收合態沒有文字標籤這題怎麼解
+ * ### 固定寬度，不做收合
  *
- * 不繞路：**圖示下方直接放兩字中文標籤**（摘要／收件／統計／週報／設定），
- * 56px 塞得下。`title=` tooltip 是被 §17 紅線第 8 條禁止的，而且對鍵盤與
- * 觸控使用者不可達。展開時換成全名、改成水平排列。
+ * 在此之前這裡有「收合／展開／跟著斷點走」三態（`useUiStore().navExpanded`）。
+ * 這次拿掉，理由照規格 §3：主體從三欄變單欄後寬度已經充裕；只有 6 個模組，
+ * 另有 `g s`／`g m` 快速切換；收合要多背 tooltip、焦點、偏好儲存三份測試，
+ * 換來的價值不夠。
  *
- * ### 三態的展開狀態
+ * ⚠️ store 裡的 `navExpanded`／`setNavExpanded` **刻意沒刪**（規格 2026-09-09
+ * §17 紅線 3：既有 store 只准加、不准刪）。它現在沒有讀者，localStorage 裡
+ * 舊的 `chatpulse.navExpanded` 也無害——讀了不會影響任何畫面。
  *
- * `navExpanded === null` 時**不寫死寬度**，交給 CSS 斷點（≥1536 展開）。
- * 手動切換過才固定住。少了 null 這一態，沒表示過意見的人就會被迫接受
- * 某一種預設——而這個 app 在 1440 與 1920 下的合理預設本來就不同。
+ * ### 主題切換搬到頂列
+ *
+ * 規格 §3 的骨架把「深淺切換」放在頂列右側、Viewer 旁邊。這裡只留登出。
+ *
+ * ### 顏色為什麼全是 `nav-*`
+ *
+ * 側欄在淺色主題下也是深色面，吃 `--foreground`／`--signal` 會直接失去對比
+ * （全域 focus 環落在深藍上只有 2.06:1）。外層掛 `nav-surface`，index.css 會
+ * 把這個範圍內的 focus 環換成 `--nav-indicator`。理由與數字在 index.css。
  */
 
 const ICONS: Record<ModuleId, LucideIcon> = {
   summary: SparklesIcon,
   mentions: InboxIcon,
-  // 時鐘而不是日曆：日曆已經被「週報」用掉了，而那兩個模組在導航上相鄰，
-  // 圖示再撞的話收合成 56px 的 icon rail 時就分不出來了
+  // 時鐘而不是日曆：日曆已經被「週報」用掉了，兩個模組在導航上相鄰，
+  // 圖示再撞就分不出來
   worklog: ClockIcon,
   stats: BarChart3Icon,
   weekly: CalendarRangeIcon,
   settings: SettingsIcon,
-}
-
-/** 三態 → 各處要套的 class。集中在這裡，免得散落各處對不起來。 */
-function layoutClasses(navExpanded: boolean | null) {
-  const auto = navExpanded === null
-  const open = navExpanded === true
-  return {
-    auto,
-    open,
-    /** 導覽容器寬度 */
-    width: auto ? 'w-14 2xl:w-nav' : open ? 'w-nav' : 'w-14',
-    /** 只在展開態出現（全名標籤、分組標題、按鈕文字） */
-    onlyOpen: auto ? 'hidden 2xl:inline' : open ? 'inline' : 'hidden',
-    onlyOpenBlock: auto ? 'hidden 2xl:block' : open ? 'block' : 'hidden',
-    /** 只在收合態出現（圖示下方的兩字標籤） */
-    onlyCollapsed: auto ? 'inline 2xl:hidden' : open ? 'hidden' : 'inline',
-    /** 項目本身的排列方向：收合是直的、展開是橫的 */
-    itemFlow: auto
-      ? 'flex-col gap-0.5 2xl:flex-row 2xl:gap-2'
-      : open
-        ? 'flex-row gap-2'
-        : 'flex-col gap-0.5',
-    /**
-     * 未處理數字的位置：收合態沒有橫向空間，疊在圖示右上角；展開態排到最右。
-     *
-     * **只渲染一顆**、用 CSS 換位置，不要收合／展開各畫一顆——DOM 裡有兩顆
-     * 同樣的 badge 會讓 E2E 的 `span.rounded-full` 一次選中兩個而撞上
-     * Playwright 的 strict mode。
-     */
-    badgePlace: auto
-      ? 'absolute top-0.5 right-1 2xl:static 2xl:ml-auto'
-      : open
-        ? 'ml-auto'
-        : 'absolute top-0.5 right-1',
-  }
 }
 
 export function SideNav() {
@@ -103,10 +73,6 @@ export function SideNav() {
   // 訂閱布林值而不是內容：只有開始／結束生成時才重繪，不會被串流帶著跑
   const summaryStreaming = useSummaryStore((s) => s.streaming)
   const draftStreaming = useDraftStore((s) => s.streaming)
-
-  const navExpanded = useUiStore((s) => s.navExpanded)
-  const setNavExpanded = useUiStore((s) => s.setNavExpanded)
-  const L = layoutClasses(navExpanded)
 
   /** 回到那個模組時落在哪——保留上次看的 Space／Mention，不要跳回清單頂端 */
   const hrefFor = (module: NavModule): string => {
@@ -123,10 +89,7 @@ export function SideNav() {
   return (
     <nav
       aria-label="主導覽"
-      className={cn(
-        'flex shrink-0 flex-col border-r border-border bg-surface transition-[width] duration-150',
-        L.width,
-      )}
+      className="nav-surface flex w-nav shrink-0 flex-col bg-nav text-nav-fg"
     >
       <a
         href={brandHref}
@@ -135,32 +98,39 @@ export function SideNav() {
           e.preventDefault()
           navigate(brandHref)
         }}
-        className="flex h-(--topbar-h) shrink-0 items-center gap-2 px-4 outline-none focus-visible:ring-2 focus-visible:ring-signal"
+        // 高度跟頂列同一個 token：品牌區下緣與頂列下緣要對成一條水平線
+        className="flex h-(--topbar-h) shrink-0 items-center gap-2.5 border-b border-nav-line px-4 outline-none"
       >
-        <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-signal-wash text-signal ring-1 ring-signal-line">
-          <PulseMark className="size-3.5" />
+        <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-nav-active text-nav-indicator">
+          <PulseMark className="size-4" />
         </span>
-        <span className={cn('truncate text-sm font-semibold tracking-tight', L.onlyOpen)}>
-          ChatPulse
+        <span className="flex min-w-0 flex-col">
+          <span className="truncate text-md leading-tight font-semibold tracking-tight text-nav-fg-active">
+            ChatPulse
+          </span>
+          <span className="truncate text-2xs text-nav-fg-dim">Google Chat 輔助工具</span>
         </span>
       </a>
 
-      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto py-2">
+      <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto py-3">
         {NAV_GROUPS.map((group) => {
           const modules = NAV_MODULES.filter((m) => m.group === group)
           const allPlanned = modules.every((m) => m.status === 'planned')
           const headingId = `nav-group-${group}`
           return (
             <section key={group} aria-labelledby={headingId}>
-              <h2 id={headingId} className={cn('px-3 pb-1 text-2xs text-fg-subtle', L.onlyOpenBlock)}>
+              <h2
+                id={headingId}
+                className="px-4 pt-1 pb-1 text-2xs font-medium tracking-wider text-nav-fg-dim"
+              >
                 {group}
               </h2>
               {/* 整組都還沒上線就框起來，讓「這一區是預告」一眼看得出來。
                   虛線＝降級，與摘要章節的規線是同一套線型語意。 */}
               <ul
                 className={cn(
-                  'space-y-0.5 px-2',
-                  allPlanned && 'mx-1.5 rounded-md border border-dashed border-line-strong px-1 py-1',
+                  'space-y-0.5',
+                  allPlanned && 'mx-2 rounded-md border border-dashed border-nav-fg-dim/50 py-1',
                 )}
               >
                 {modules.map((module) => (
@@ -172,7 +142,6 @@ export function SideNav() {
                       active={route.section === module.id}
                       badge={module.id === 'mentions' ? pendingCount : 0}
                       busy={busyOf(module.id)}
-                      layout={L}
                       onNavigate={navigate}
                     />
                   </li>
@@ -183,50 +152,14 @@ export function SideNav() {
         })}
       </div>
 
-      {/* 容器只留 p-1，按鈕自己 px-1——收合態總寬只有 56px，
-          外層 p-2 加內層 px-2 會把可用寬吃到 24px，兩個中文字剛好卡邊界換行。 */}
-      <div className="flex shrink-0 flex-col gap-0.5 border-t border-border p-1">
-        <button
-          type="button"
-          onClick={() => setNavExpanded(!(L.open || (L.auto && window.innerWidth >= 1536)))}
-          className={cn(
-            'flex items-center justify-center rounded-md px-1 py-1.5 text-xs whitespace-nowrap text-fg-dim outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-signal',
-            L.itemFlow,
-          )}
-        >
-          {/* 圖示方向不能用 JS 判斷：auto 態下「現在到底是展開還是收合」由 CSS
-              斷點決定，JS 這邊看到的 navExpanded 永遠是 null。所以兩個圖示都畫，
-              用跟文字同一套 onlyOpen／onlyCollapsed 去顯示。 */}
-          <ChevronsLeftIcon className={cn('size-4 shrink-0', L.onlyOpen)} />
-          <ChevronsRightIcon className={cn('size-4 shrink-0', L.onlyCollapsed)} />
-          <span className={cn('truncate', L.onlyOpen)}>收合</span>
-          <span className={cn('text-2xs leading-none', L.onlyCollapsed)}>展開</span>
-        </button>
-        <ThemeToggle
-          className={cn(
-            'flex items-center justify-center rounded-md px-1 py-1.5 text-xs whitespace-nowrap text-fg-dim outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-signal',
-            L.itemFlow,
-          )}
-          label={
-            <>
-              <span className={cn('truncate', L.onlyOpen)}>主題</span>
-              <span className={cn('text-2xs leading-none whitespace-nowrap', L.onlyCollapsed)}>
-                主題
-              </span>
-            </>
-          }
-        />
+      <div className="shrink-0 border-t border-nav-line p-2">
         <button
           type="button"
           onClick={() => void logout()}
-          className={cn(
-            'flex items-center justify-center rounded-md px-1 py-1.5 text-xs whitespace-nowrap text-fg-dim outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-signal',
-            L.itemFlow,
-          )}
+          className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-xs text-nav-fg-dim outline-none hover:bg-nav-active/50 hover:text-nav-fg"
         >
           <LogOutIcon className="size-4 shrink-0" />
-          <span className={cn('truncate', L.onlyOpen)}>登出</span>
-          <span className={cn('text-2xs leading-none', L.onlyCollapsed)}>登出</span>
+          登出
         </button>
       </div>
     </nav>
@@ -240,70 +173,31 @@ interface NavItemProps {
   active: boolean
   badge: number
   busy: boolean
-  layout: ReturnType<typeof layoutClasses>
   onNavigate: (hash: string) => void
 }
 
-function NavItem({ module, icon: Icon, href, active, badge, busy, layout, onNavigate }: NavItemProps) {
+/** 項目共用的版型。左邊留 3px 給當前項色條，所以 padding 從 pl-4 起算。 */
+const ITEM = 'relative flex items-center gap-2.5 py-2 pr-3 pl-4 text-sm outline-none'
+
+function NavItem({ module, icon: Icon, href, active, badge, busy, onNavigate }: NavItemProps) {
   const planned = module.status === 'planned'
-
-  const body = (
-    <>
-      {/* 當前項的 3px 實心條。收合態沒有文字可以加粗，位置全靠它指出來 */}
-      <span
-        aria-hidden
-        className={cn(
-          'absolute inset-y-1 left-0 w-[3px] rounded-r-sm',
-          active ? 'bg-signal' : 'bg-transparent',
-        )}
-      />
-      <Icon className={cn('size-4 shrink-0', planned && 'opacity-60')} />
-
-      <span className={cn('truncate', layout.onlyOpen)}>{module.label}</span>
-      {/* whitespace-nowrap 是必要的：收合態只有 56px，兩個中文字一旦被
-          允許換行就會變成直排（底部按鈕實際踩過） */}
-      <span className={cn('text-2xs leading-none whitespace-nowrap', layout.onlyCollapsed)}>
-        {module.shortLabel}
-      </span>
-
-      {busy ? (
-        <>
-          <span className="live-dot" aria-hidden />
-          <span className="sr-only">（正在生成，切到別的模組也會繼續）</span>
-        </>
-      ) : null}
-
-      {badge > 0 ? (
-        <span
-          className={cn(
-            'inline-flex min-w-4 items-center justify-center rounded-full bg-signal px-1 text-2xs font-semibold text-signal-on',
-            layout.badgePlace,
-          )}
-        >
-          {badge}
-        </span>
-      ) : null}
-    </>
-  )
 
   if (planned) {
     return (
-      <span
-        aria-disabled="true"
-        className={cn(
-          'relative flex cursor-default items-center justify-center rounded-md px-2 py-1.5 text-xs text-disabled-fg',
-          layout.itemFlow,
-        )}
-      >
-        {body}
-        {/* 點線＝缺值，與摘要章節的線型語意一致。說明寫在畫面上，不進 tooltip */}
-        <span
-          className={cn(
-            'ml-auto border-b border-dotted border-line-strong text-2xs',
-            layout.onlyOpen,
-          )}
-        >
-          {module.plannedNote}
+      // 尚未上線：不是連結，也不可聚焦。說明寫在畫面上，不進 tooltip（§17 紅線 8）。
+      // 字色用 nav-fg-dim 而不是 disabled-fg：後者是為淺色表面配的，
+      // 放到深藍底上會掉到 2:1 以下，連「這裡有東西」都讀不出來。
+      <span aria-disabled="true" className={cn(ITEM, 'cursor-default items-start text-nav-fg-dim')}>
+        <Icon className="mt-0.5 size-4 shrink-0 opacity-60" />
+        {/* 說明排在名稱**下方**而不是同一行靠右：「回顧與匯出，不寫回工時系統」
+            在 200px 寬裡放不下，同一行時會把名稱擠掉、還把整欄撐出橫向捲軸
+            （2026-10-01 截圖實測）。改成兩行之後名稱永遠看得到。 */}
+        <span className="flex min-w-0 flex-col gap-0.5">
+          <span className="truncate">{module.label}</span>
+          {/* 點線＝缺值，與摘要章節的線型語意一致 */}
+          <span className="self-start border-b border-dotted border-nav-fg-dim text-2xs leading-snug">
+            {module.plannedNote}
+          </span>
         </span>
       </span>
     )
@@ -320,14 +214,37 @@ function NavItem({ module, icon: Icon, href, active, badge, busy, layout, onNavi
         onNavigate(href)
       }}
       className={cn(
-        'relative flex items-center justify-center rounded-md px-2 py-1.5 text-xs outline-none focus-visible:ring-2 focus-visible:ring-signal',
-        layout.itemFlow,
+        ITEM,
         active
-          ? 'bg-muted font-medium text-foreground'
-          : 'text-fg-dim hover:bg-muted hover:text-foreground',
+          ? 'bg-nav-active font-medium text-nav-fg-active'
+          : 'text-nav-fg hover:bg-nav-active/50 hover:text-nav-fg-active',
       )}
     >
-      {body}
+      {/* 當前項的 3px 實心條。不能只靠底色：nav 與 nav-active 的明度差只有
+          0.08，在投影機或低亮度螢幕上會糊在一起，色條（對 nav-active 4.58:1）
+          才是那條過得了 1.4.11 的線索 */}
+      <span
+        aria-hidden
+        className={cn(
+          'absolute inset-y-0 left-0 w-[3px]',
+          active ? 'bg-nav-indicator' : 'bg-transparent',
+        )}
+      />
+      <Icon className="size-4 shrink-0" />
+      <span className="truncate">{module.label}</span>
+
+      {busy ? (
+        <>
+          <span className="live-dot" aria-hidden />
+          <span className="sr-only">（正在生成，切到別的模組也會繼續）</span>
+        </>
+      ) : null}
+
+      {badge > 0 ? (
+        <span className="metric ml-auto inline-flex min-w-5 items-center justify-center rounded-full bg-nav-badge px-1.5 text-2xs font-semibold text-nav">
+          {badge}
+        </span>
+      ) : null}
     </a>
   )
 }
