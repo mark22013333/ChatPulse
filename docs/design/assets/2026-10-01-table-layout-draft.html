@@ -1,0 +1,273 @@
+<title>ChatPulse 改版草稿</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&family=Noto+Sans+TC:wght@400;500;700&display=swap">
+<style>
+/* 版面：深藍 SideNav ＋ 頂列 ＋ 主體。清單型模組＝tabs＋常用卡片＋篩選＋表格＋分頁；對話型模組保留主從式 */
+:root{
+  --nav:#1f3a6b; --nav-ink:#c9d6ee; --nav-active:#2c4c86;
+  --bg:#eef1f6; --surface:#ffffff; --ink:#1b2433; --dim:#5d6a80; --line:#dde3ec;
+  --accent:#2f6fd6; --accent-soft:#e6eefb;
+  --ok:#2e7d4f; --ok-soft:#e3f2e8; --warn:#c98a12; --warn-soft:#fbf1dc; --bad:#c2413b; --bad-soft:#f8e4e2; --idle:#7b8595; --idle-soft:#eceff3;
+  --sans:'Geist','Noto Sans TC','PingFang TC',system-ui,sans-serif;
+  --mono:'Geist Mono',ui-monospace,'SF Mono',monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  color-scheme:dark;
+  --nav:#121c30; --nav-ink:#9fb0cf; --nav-active:#1e2f52;
+  --bg:#141a24; --surface:#1b2230; --ink:#e3e8f0; --dim:#95a1b5; --line:#2a3344;
+  --accent:#6b9bf0; --accent-soft:#1f2d48;
+  --ok:#5fc08a; --ok-soft:#183324; --warn:#e3b04a; --warn-soft:#3a2e14; --bad:#ec7a73; --bad-soft:#3d1f1d; --idle:#95a1b5; --idle-soft:#262e3c;
+}}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --nav:#121c30; --nav-ink:#9fb0cf; --nav-active:#1e2f52;
+  --bg:#141a24; --surface:#1b2230; --ink:#e3e8f0; --dim:#95a1b5; --line:#2a3344;
+  --accent:#6b9bf0; --accent-soft:#1f2d48;
+  --ok:#5fc08a; --ok-soft:#183324; --warn:#e3b04a; --warn-soft:#3a2e14; --bad:#ec7a73; --bad-soft:#3d1f1d; --idle:#95a1b5; --idle-soft:#262e3c;
+}
+html,body{height:100%}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px}
+*{box-sizing:border-box}
+button{font:inherit;color:inherit;cursor:pointer}
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.metric{font-variant-numeric:tabular-nums}
+
+.note{background:var(--warn-soft);color:var(--ink);border-bottom:1px solid var(--line);padding:8px 16px;font-size:13px}
+.shell{display:flex;min-height:calc(100% - 37px)}
+/* SideNav */
+.nav{width:212px;flex-shrink:0;background:var(--nav);color:var(--nav-ink);display:flex;flex-direction:column;gap:4px;padding-block:18px}
+.brand{padding:0 20px 16px;border-bottom:1px solid rgb(255 255 255 / .08);margin-bottom:8px}
+.brand b{display:block;color:#fff;font-size:20px;font-weight:700;letter-spacing:.01em}
+.brand span{font-size:12px;opacity:.75}
+.grp{font-size:11px;letter-spacing:.08em;opacity:.6;padding:12px 20px 4px}
+.nav button{all:unset;cursor:pointer;display:flex;align-items:center;gap:10px;padding:9px 20px;font-size:14px;border-left:3px solid transparent}
+.nav button:hover{background:rgb(255 255 255 / .05)}
+.nav button[aria-current="page"]{background:var(--nav-active);color:#fff;border-left-color:#8fb3f5}
+.nav button:focus-visible{outline:2px solid #8fb3f5;outline-offset:-2px}
+.nav .cnt{margin-left:auto;background:rgb(255 255 255 / .14);border-radius:999px;padding:0 7px;font-size:11px}
+
+.main{flex:1;min-width:0;display:flex;flex-direction:column}
+.top{display:flex;align-items:center;gap:16px;padding:14px 24px;background:var(--surface);border-bottom:1px solid var(--line);flex-wrap:wrap}
+.top h1{font-size:20px;font-weight:600;margin:0;margin-right:auto}
+.search{border:1px solid var(--line);background:var(--bg);border-radius:6px;padding:7px 10px;min-width:0;width:220px;color:var(--ink)}
+.bell{position:relative;background:none;border:0;font-size:16px}
+.bell i{position:absolute;top:0;right:-2px;width:7px;height:7px;border-radius:50%;background:var(--bad)}
+.who{display:flex;align-items:center;gap:8px;font-size:13px}
+.av{width:30px;height:30px;border-radius:50%;background:var(--accent);color:#fff;display:grid;place-items:center;font-weight:600}
+.who small{display:block;color:var(--dim);font-size:11px}
+
+.body{padding-block:18px;padding-inline:24px;display:flex;flex-direction:column;gap:16px}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.tabs button{background:none;border:0;padding:9px 14px;color:var(--accent);border-bottom:2px solid transparent;margin-bottom:-1px}
+.tabs button[aria-selected="true"]{color:var(--ink);font-weight:600;border:1px solid var(--line);border-bottom:2px solid var(--surface);background:var(--surface);border-radius:6px 6px 0 0}
+.lbl{font-size:12px;color:var(--dim)}
+.pins{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px}
+.pin{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:10px 12px;box-shadow:0 1px 3px rgb(20 40 80 / .08);text-align:left}
+.pin b{color:var(--accent);font-size:13px;display:block}
+.pin span{font-size:12px;color:var(--dim);display:block;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.filters{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.filters input,.filters select{border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:6px;padding:7px 10px}
+.filters .total{margin-left:auto;color:var(--dim);font-size:12px}
+.tablewrap{background:var(--surface);border:1px solid var(--line);border-radius:8px;overflow-x:auto}
+table{width:100%;border-collapse:collapse;min-width:720px}
+th{text-align:left;font-size:12px;font-weight:600;color:var(--dim);padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
+th.s::after{content:" ↕";opacity:.5}
+td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+tr:last-child td{border-bottom:0}
+tbody tr:hover{background:var(--accent-soft);cursor:pointer}
+.star{color:var(--idle);width:28px}.star.on{color:var(--warn)}
+.code{font-family:var(--mono);font-size:12.5px;color:var(--dim)}
+.pill{display:inline-block;border-radius:999px;padding:2px 10px;font-size:12px;font-weight:500;white-space:nowrap}
+.p-ok{background:var(--ok-soft);color:var(--ok)}.p-warn{background:var(--warn-soft);color:var(--warn)}.p-bad{background:var(--bad-soft);color:var(--bad)}.p-idle{background:var(--idle-soft);color:var(--idle)}.p-acc{background:var(--accent-soft);color:var(--accent)}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%}
+.d-ok{background:var(--ok)}.d-warn{background:var(--warn)}.d-bad{background:var(--bad)}.d-idle{background:var(--idle)}
+.pager{display:flex;align-items:center;gap:0;flex-wrap:wrap}
+.pager button{border:1px solid var(--line);background:var(--surface);min-width:34px;height:32px;margin-left:-1px}
+.pager button[aria-current="page"]{background:var(--accent);color:#fff;border-color:var(--accent)}
+.pager .per{margin-left:auto;color:var(--dim);font-size:12px}
+.bar{height:6px;border-radius:3px;background:var(--idle-soft);width:90px;overflow:hidden;display:inline-block;vertical-align:middle;margin-right:6px}
+.bar i{display:block;height:100%;background:var(--accent)}
+
+/* 主從式（Mention 收件匣） */
+.md{display:grid;grid-template-columns:minmax(260px,340px) 1fr;gap:16px;min-height:480px}
+.inbox,.detail{background:var(--surface);border:1px solid var(--line);border-radius:8px}
+.inbox{display:flex;flex-direction:column}
+.mi{all:unset;cursor:pointer;display:flex;flex-direction:column;gap:3px;padding:12px 14px;border-bottom:1px solid var(--line)}
+.mi[aria-current="true"]{background:var(--accent-soft);box-shadow:inset 3px 0 0 var(--accent)}
+.mi .row{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--dim)}
+.mi .row b{color:var(--ink);font-size:13px}
+.mi p{margin:0;font-size:13px;line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.detail{padding:18px 20px;display:flex;flex-direction:column;gap:14px}
+.detail h2{font-size:16px;margin:0}
+.quote{border-left:3px solid var(--line);padding:4px 12px;color:var(--dim);line-height:1.6}
+.draft{border:1px solid var(--line);border-radius:6px;padding:12px;line-height:1.7;background:var(--bg)}
+.acts{display:flex;gap:8px;flex-wrap:wrap}
+.btn{border:1px solid var(--line);background:var(--surface);border-radius:6px;padding:7px 14px}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:#fff}
+
+[hidden]{display:none!important}
+@media (max-width:760px){
+  .shell{flex-direction:column}
+  .nav{width:auto;flex-direction:row;flex-wrap:wrap;padding:8px}
+  .brand,.grp{display:none}
+  .nav button{padding:8px 12px;border-left:0;border-bottom:3px solid transparent}
+  .nav button[aria-current="page"]{border-bottom-color:#8fb3f5}
+  .top{padding:12px 16px}.body{padding-inline:16px}
+  .search{width:100%}
+  .md{grid-template-columns:1fr}
+}
+</style>
+
+<div class="note">這是設計草稿，資料都是示意用的假資料。左側導覽和頁內分頁都可以點。</div>
+<div class="shell">
+  <nav class="nav" aria-label="模組">
+    <div class="brand"><b>ChatPulse</b><span>Google Chat 輔助工具</span></div>
+    <div class="grp">工作</div>
+    <button data-view="summary" aria-current="page">摘要工作台</button>
+    <button data-view="mentions">Mention 收件匣<span class="cnt metric">4</span></button>
+    <button data-view="worklog">工時草稿</button>
+    <div class="grp">分析</div>
+    <button data-view="stats">統計</button>
+    <button data-view="weekly">週報</button>
+    <div class="grp">系統</div>
+    <button data-view="settings">設定</button>
+  </nav>
+
+  <div class="main">
+    <header class="top">
+      <h1 id="title">摘要工作台</h1>
+      <input class="search" id="q" placeholder="搜尋 Space／Mention" aria-label="搜尋">
+      <button class="btn" id="theme" aria-label="切換淺色／深色">◐ 深色</button>
+      <div class="who"><div class="av">林</div><div>林示範<small>viewer@example.com</small></div></div>
+    </header>
+
+    <!-- 摘要工作台：表格型 -->
+    <section class="body" data-pane="summary">
+      <div class="tabs" role="tablist">
+        <button role="tab" aria-selected="true">全部 Space</button>
+        <button role="tab" aria-selected="false">有新 Mention</button>
+        <button role="tab" aria-selected="false">已釘選</button>
+      </div>
+      <div class="lbl">★ 已釘選的 Space（點表格中的 ☆ 加入）</div>
+      <div class="pins">
+        <button class="pin"><b>後端值班</b><span>今天 42 則新訊息・上次 Summary 09:10</span></button>
+        <button class="pin"><b>訂閱系統專案</b><span>今天 18 則新訊息・2 則 Mention</span></button>
+        <button class="pin"><b>前端改版討論</b><span>今天 7 則新訊息・尚未產生 Summary</span></button>
+      </div>
+      <div class="filters">
+        <input id="f-name" placeholder="Space 名稱">
+        <select id="f-kind" aria-label="類型"><option>全部類型</option><option>群組</option><option>多人對話</option><option>私訊</option></select>
+        <select id="f-sum" aria-label="Summary 狀態"><option>全部 Summary 狀態</option><option>已是最新</option><option>有新訊息</option><option>從未產生</option></select>
+        <span class="total metric">共 23 個 Space</span>
+      </div>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th></th><th class="s">Space 名稱</th><th>類型</th><th class="s">最後活動</th><th class="s">今日訊息</th><th class="s">Mention</th><th>Summary</th></tr></thead>
+          <tbody>
+            <tr><td class="star on">★</td><td>後端值班</td><td><span class="pill p-idle">群組</span></td><td class="metric">10:42</td><td class="metric">42</td><td class="metric">1</td><td><span class="pill p-warn">有 12 則新訊息</span></td></tr>
+            <tr><td class="star on">★</td><td>訂閱系統專案</td><td><span class="pill p-idle">群組</span></td><td class="metric">10:31</td><td class="metric">18</td><td class="metric">2</td><td><span class="pill p-ok">已是最新</span></td></tr>
+            <tr><td class="star on">★</td><td>前端改版討論</td><td><span class="pill p-idle">群組</span></td><td class="metric">09:58</td><td class="metric">7</td><td class="metric">0</td><td><span class="pill p-idle">從未產生</span></td></tr>
+            <tr><td class="star">☆</td><td>部署與維運</td><td><span class="pill p-idle">群組</span></td><td class="metric">09:20</td><td class="metric">11</td><td class="metric">1</td><td><span class="pill p-warn">有 4 則新訊息</span></td></tr>
+            <tr><td class="star">☆</td><td>PM ↔ 工程對齊</td><td><span class="pill p-acc">多人對話</span></td><td class="metric">昨天</td><td class="metric">0</td><td class="metric">0</td><td><span class="pill p-ok">已是最新</span></td></tr>
+            <tr><td class="star">☆</td><td>王小明</td><td><span class="pill p-acc">私訊</span></td><td class="metric">昨天</td><td class="metric">0</td><td class="metric">0</td><td><span class="pill p-idle">從未產生</span></td></tr>
+            <tr><td class="star">☆</td><td>資安通報</td><td><span class="pill p-idle">群組</span></td><td class="metric">9/28</td><td class="metric">0</td><td class="metric">0</td><td><span class="pill p-ok">已是最新</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="pager">
+        <button aria-current="page">1</button><button>2</button><button>3</button><button aria-label="下一頁">›</button>
+        <span class="per">每頁 25 筆</span>
+      </div>
+    </section>
+
+    <!-- Mention 收件匣：保留主從式 -->
+    <section class="body" data-pane="mentions" hidden>
+      <div class="tabs" role="tablist">
+        <button role="tab" aria-selected="true">待回覆</button>
+        <button role="tab" aria-selected="false">已有 Draft Reply</button>
+        <button role="tab" aria-selected="false">已處理</button>
+      </div>
+      <div class="md">
+        <div class="inbox">
+          <button class="mi" aria-current="true"><span class="row"><b>陳怡君</b>・訂閱系統專案・10:31</span><p>@林示範 推播重試那支排程今天凌晨又卡住了，可以幫忙看一下 log 嗎？</p></button>
+          <button class="mi"><span class="row"><b>張志豪</b>・後端值班・10:05</span><p>@林示範 這週的部署窗口改到週四晚上，DB migration 能先準備好嗎</p></button>
+          <button class="mi"><span class="row"><b>李佩珊</b>・部署與維運・09:20</span><p>@林示範 UAT 環境的憑證下週到期，要誰來換？</p></button>
+          <button class="mi"><span class="row"><b>陳怡君</b>・訂閱系統專案・昨天</span><p>@林示範 天氣推播的文案 PM 有新版本，貼在文件裡了</p></button>
+        </div>
+        <div class="detail">
+          <h2>回覆陳怡君</h2>
+          <div class="quote">@林示範 推播重試那支排程今天凌晨又卡住了，可以幫忙看一下 log 嗎？</div>
+          <div class="lbl">Draft Reply（AI 產生，送出前可編輯）</div>
+          <div class="draft">收到，我先看凌晨 01:00 那批的 log。上次卡住是連線池耗盡，這次如果是同一個原因，我中午前回報並附上修法。</div>
+          <div class="acts"><button class="btn pri">送出到 Space</button><button class="btn">重新產生</button><button class="btn">複製</button></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 工時草稿：表格型 -->
+    <section class="body" data-pane="worklog" hidden>
+      <div class="tabs" role="tablist">
+        <button role="tab" aria-selected="true">本週</button>
+        <button role="tab" aria-selected="false">上週</button>
+        <button role="tab" aria-selected="false">未送出</button>
+      </div>
+      <div class="filters">
+        <select id="f-week" aria-label="週次"><option>2026-09-28 ～ 10-04</option><option>2026-09-21 ～ 09-27</option></select>
+        <select id="f-st" aria-label="狀態"><option>全部狀態</option><option>未產生</option><option>草稿</option><option>已送出</option></select>
+        <span class="total metric">本週已記 22.5 / 40 小時</span>
+      </div>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th class="s">日期</th><th>星期</th><th class="s">草稿時數</th><th>專案分配</th><th>狀態</th><th>燈號</th></tr></thead>
+          <tbody>
+            <tr><td class="metric">09-28</td><td>一</td><td class="metric"><span class="bar"><i style="width:100%"></i></span>8.0</td><td>訂閱系統 5.0・後端值班 3.0</td><td><span class="pill p-ok">已送出</span></td><td><span class="dot d-ok" aria-label="完整"></span></td></tr>
+            <tr><td class="metric">09-29</td><td>二</td><td class="metric"><span class="bar"><i style="width:100%"></i></span>8.0</td><td>訂閱系統 8.0</td><td><span class="pill p-ok">已送出</span></td><td><span class="dot d-ok" aria-label="完整"></span></td></tr>
+            <tr><td class="metric">09-30</td><td>三</td><td class="metric"><span class="bar"><i style="width:81%"></i></span>6.5</td><td><span class="lbl">歸屬尚未選擇（3 段）</span></td><td><span class="pill p-warn">草稿</span></td><td><span class="dot d-warn" aria-label="待確認"></span></td></tr>
+            <tr><td class="metric">10-01</td><td>四</td><td class="metric"><span class="bar"><i style="width:0"></i></span>0.0</td><td>—</td><td><span class="pill p-idle">未產生</span></td><td><span class="dot d-idle" aria-label="尚未開始"></span></td></tr>
+            <tr><td class="metric">10-02</td><td>五</td><td class="metric"><span class="bar"><i style="width:0"></i></span>0.0</td><td>—</td><td><span class="pill p-idle">未產生</span></td><td><span class="dot d-idle" aria-label="尚未開始"></span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="lbl">09-30 的專案分配留空，是依照 ADR-0008：產生草稿時不預填歸屬，由 Viewer 自己選。</div>
+    </section>
+
+    <section class="body" data-pane="other" hidden>
+      <div class="tablewrap" style="padding:24px;min-height:200px">
+        <b id="other-name">統計</b>
+        <p class="lbl">這個模組只換視覺風格，結構不變，所以這份草稿沒有畫出內容。</p>
+      </div>
+    </section>
+  </div>
+</div>
+
+<script>
+const themeBtn=document.getElementById('theme');
+const isDark=()=>{const t=document.documentElement.dataset.theme;return t?t==='dark':matchMedia('(prefers-color-scheme: dark)').matches};
+const syncThemeLabel=()=>{themeBtn.textContent=isDark()?'◐ 淺色':'◐ 深色'};
+syncThemeLabel();
+themeBtn.addEventListener('click',()=>{document.documentElement.dataset.theme=isDark()?'light':'dark';syncThemeLabel()});
+const titles={summary:'摘要工作台',mentions:'Mention 收件匣',worklog:'工時草稿',stats:'統計',weekly:'週報',settings:'設定'};
+document.querySelectorAll('.nav button').forEach(b=>b.addEventListener('click',()=>{
+  const v=b.dataset.view;
+  document.querySelectorAll('.nav button').forEach(x=>x.removeAttribute('aria-current'));
+  b.setAttribute('aria-current','page');
+  document.getElementById('title').textContent=titles[v];
+  document.querySelectorAll('[data-pane]').forEach(p=>{
+    const key=p.dataset.pane;
+    p.hidden=!(key===v||(key==='other'&&!['summary','mentions','worklog'].includes(v)));
+  });
+  document.getElementById('other-name').textContent=titles[v];
+}));
+document.querySelectorAll('.tabs').forEach(t=>t.addEventListener('click',e=>{
+  const b=e.target.closest('button');if(!b)return;
+  t.querySelectorAll('button').forEach(x=>x.setAttribute('aria-selected','false'));
+  b.setAttribute('aria-selected','true');
+}));
+document.querySelectorAll('.inbox').forEach(i=>i.addEventListener('click',e=>{
+  const b=e.target.closest('.mi');if(!b)return;
+  i.querySelectorAll('.mi').forEach(x=>x.removeAttribute('aria-current'));
+  b.setAttribute('aria-current','true');
+}));
+document.querySelectorAll('.star').forEach(s=>s.addEventListener('click',e=>{
+  e.stopPropagation();s.classList.toggle('on');s.textContent=s.classList.contains('on')?'★':'☆';
+}));
+</script>
