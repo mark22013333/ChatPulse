@@ -10,9 +10,11 @@ import {
 import { isComposing } from '@/lib/keyboard'
 import { copyText } from '@/lib/clipboard'
 import { stepId } from '@/lib/listNavigation'
+import { sortMentions } from '@/lib/listSort'
 import { hashForMentions, hashForSettings, hashForSummary, hashForWorklog } from '@/lib/route'
 import { useRouter } from '@/router/useRouter'
 import { useDraftStore } from '@/store/draft'
+import { viewerListSortNow } from '@/store/listSort'
 import { selectMentionsByState, useMentionsStore } from '@/store/mentions'
 import { useSpacesStore } from '@/store/spaces'
 import { useSummaryStore } from '@/store/summary'
@@ -134,7 +136,8 @@ export function useGlobalHotkeys({ onToggleEvidence }: Handlers) {
     /** `[`／`]`：在收件匣目前那個分頁的清單裡走一格。 */
     const stepMention = (delta: 1 | -1) => {
       const { items, tab, selectedId, external } = useMentionsStore.getState()
-      const visible = selectMentionsByState(items, tab)
+      // 要與 MentionInbox 畫出來的順序一致，否則 `]` 跳到的不是畫面上的下一則
+      const visible = sortMentions(selectMentionsByState(items, tab), viewerListSortNow().mention)
       // 摘要工作台挑的那則（external）不在清單裡，用它當起點會直接算不出鄰居，
       // 所以退回 selectedId——它一定是清單裡的某一則或 null
       const from = visible.some((item) => item.id === external?.id)

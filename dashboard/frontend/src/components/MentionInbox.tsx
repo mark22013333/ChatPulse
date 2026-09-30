@@ -2,14 +2,29 @@ import { useMemo, useRef } from 'react'
 import { AlertCircleIcon, InboxIcon, Loader2Icon, RefreshCwIcon } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { MentionCard } from '@/components/inbox/MentionCard'
 import { MergeBar } from '@/components/inbox/MergeBar'
 import { errorMessage } from '@/lib/api'
 import { nextListIndex } from '@/lib/listNavigation'
+import {
+  MENTION_SORT_KEYS,
+  MENTION_SORT_LABELS,
+  mentionTruncation,
+  sortMentions,
+  type MentionSortKey,
+} from '@/lib/listSort'
 import { mergeBlockReason } from '@/lib/merge'
 import { hashForMentions } from '@/lib/route'
 import { useRouter } from '@/router/useRouter'
+import { useViewerListSort } from '@/store/listSort'
 import { selectMentionsByState, useMentionsStore } from '@/store/mentions'
 import { useSpacesStore } from '@/store/spaces'
 import type { MentionState } from '@/lib/types'
@@ -57,7 +72,14 @@ export function MentionInbox({ onSelect, onMergedGenerate }: MentionInboxProps) 
   // 載入與 45 秒輪詢已經搬進 store，由 AppShell 在登入後啟動一次
   // （設計規格 §7.4）——輪詢屬於這份資料，不屬於這個畫面。
 
-  const visible = useMemo(() => selectMentionsByState(items, tab), [items, tab])
+  const { prefs, setMentionSort } = useViewerListSort()
+  const mentionSort = prefs.mention
+
+  // 快捷鍵 `[`／`]`（useGlobalHotkeys）用同一條組合算「下一則」，兩邊要一致
+  const visible = useMemo(
+    () => sortMentions(selectMentionsByState(items, tab), mentionSort),
+    [items, tab, mentionSort],
+  )
 
   // 勾選的順序就是「誰是主要那則」：回話會送到第一則所在的討論串
   const selected = useMemo(
@@ -65,6 +87,10 @@ export function MentionInbox({ onSelect, onMergedGenerate }: MentionInboxProps) 
     [mergeIds, items],
   )
   const merging = selected.length > 0
+
+  // 收件匣最多只載入最新 200 筆（見 mentionTruncation 的註解）。
+  // 截斷時「新→舊」仍然正確（截的正好是最新那段），其他排序只涵蓋已載入的部分
+  const truncation = useMemo(() => mentionTruncation(counts, items.length), [counts, items.length])
 
   const handleCheckNow = async () => {
     const stats = await checkNow()
@@ -153,6 +179,49 @@ export function MentionInbox({ onSelect, onMergedGenerate }: MentionInboxProps) 
             </TabsTrigger>
           </TabsList>
         </Tabs>
+
+        <Select
+          items={MENTION_SORT_LABELS}
+          value={mentionSort}
+          onValueChange={(next) => {
+            // Base UI 的 Select 清除選擇時會給 null；那不是「換一種排序」，不動
+            if (!next) return
+            setMentionSort(next as MentionSortKey)
+          }}
+        >
+          <SelectTrigger size="sm" className="h-7 w-full text-xs" aria-label="Mention 排序方式">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {MENTION_SORT_KEYS.map((key) => (
+              <SelectItem key={key} value={key}>
+                {MENTION_SORT_LABELS[key]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        {/* 放在排序控制項正下方、清單上方：這句話是在限定「這份排序」的意義，
+            放清單底部的話，Viewer 要捲完 200 筆才知道前面的順序不是全部 */}
+        {truncation ? (
+          <p
+            role="status"
+            data-testid="mention-truncation"
+            data-loaded={truncation.loaded}
+            data-total={truncation.total}
+            // 讓測試斷言「有沒有多說那一句」而不必斷言措辭
+            data-partial-sort={mentionSort !== 'time-desc' ? 'true' : 'false'}
+            className="flex items-start gap-1.5 text-2xs leading-snug text-caution"
+          >
+            <AlertCircleIcon className="mt-px size-3 shrink-0" aria-hidden />
+            <span>
+              只載入最新 {truncation.loaded} 筆，共 {truncation.total} 筆。
+              {mentionSort !== 'time-desc'
+                ? `目前的排序只涵蓋已載入的 ${truncation.loaded} 筆，不是全部。`
+                : null}
+            </span>
+          </p>
+        ) : null}
       </div>
 
       {error ? (

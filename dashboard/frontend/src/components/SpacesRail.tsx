@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { LayersIcon, Loader2Icon, RefreshCwIcon, SearchIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -11,12 +12,21 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { SpaceList } from '@/components/SpaceList'
 import { relativeTime } from '@/lib/format'
+import { SPACE_SORT_KEYS, SPACE_SORT_LABELS, sortSpaces, type SpaceSortKey } from '@/lib/listSort'
 import { onEnter } from '@/lib/keyboard'
 import { hashForSummary } from '@/lib/route'
 import { useRouter } from '@/router/useRouter'
-import { filterSpaces, sortByPinned, useSpacesStore } from '@/store/spaces'
+import { useViewerListSort } from '@/store/listSort'
+import { filterSpaces, useSpacesStore } from '@/store/spaces'
 import type { Space } from '@/lib/types'
 
 /** 左側 Space 導覽（搜尋 + 強制刷新 + 虛擬滾動清單）。 */
@@ -45,8 +55,17 @@ export function SpacesRail() {
   // 首次載入搬到 AppShell 的 bootstrap（設計規格 §7.4）：釘選、命令面板、
   // Reference Space 三處都要 spaces，不該由「哪個畫面剛好先掛載」決定何時載入。
 
-  // 釘選的排前面。過濾與排序刻意分開（filterSpaces 有 14 項既有測試打在上面）
-  const visible = useMemo(() => sortByPinned(filterSpaces(items, search)), [items, search])
+  const { prefs, setSpaceSort } = useViewerListSort()
+  const spaceSort = prefs.space
+
+  // 過濾與排序刻意分開（filterSpaces 有 14 項既有測試打在上面）。
+  // 以前這裡是 sortByPinned：保留後端順序、釘選插隊到最前面——但後端順序
+  // 本來就不保證依時間，於是 Viewer 看到「釘選 22 小時前」排在「5 分鐘前」
+  // 之前（2026-09-30 回報）。現在一律前端依所選欄位排，釘選置頂變成選項。
+  const visible = useMemo(
+    () => sortSpaces(filterSpaces(items, search), spaceSort),
+    [items, search, spaceSort],
+  )
 
   const openRename = (space: Space) => {
     // 自動猜的名字不預填——那是猜的，讓使用者從空白開始比較清楚；
@@ -87,6 +106,37 @@ export function SpacesRail() {
             placeholder={`搜尋 ${total || items.length} 個 Space 名稱…`}
             className="h-7 pl-7"
           />
+        </div>
+
+        <div className="flex items-center gap-2">
+          <Select
+            items={SPACE_SORT_LABELS}
+            value={spaceSort.sort}
+            onValueChange={(next) => {
+              // Base UI 的 Select 清除選擇時會給 null；那不是「換一種排序」，不動
+              if (!next) return
+              setSpaceSort({ sort: next as SpaceSortKey })
+            }}
+          >
+            <SelectTrigger size="sm" className="h-7 min-w-0 flex-1 text-xs" aria-label="Space 排序方式">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {SPACE_SORT_KEYS.map((key) => (
+                <SelectItem key={key} value={key}>
+                  {SPACE_SORT_LABELS[key]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <label className="flex shrink-0 cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
+            <Checkbox
+              checked={spaceSort.pinnedFirst}
+              onCheckedChange={(checked) => setSpaceSort({ pinnedFirst: checked === true })}
+            />
+            釘選置頂
+          </label>
         </div>
       </div>
 
