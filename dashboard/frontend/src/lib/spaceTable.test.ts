@@ -4,7 +4,11 @@ import {
   headerSortOf,
   lastActiveLabel,
   nextSpaceSort,
+  nextSummarySort,
   outstandingBySpace,
+  parseZonedTime,
+  sortBySummaryStatus,
+  summaryStatusOf,
   parseSpaceTab,
   parseSpaceTypeFilter,
   spaceTableFilter,
@@ -140,5 +144,126 @@ describe('parse 函式認不得就回 null', () => {
     expect(parseSpaceTab(null)).toBeNull()
     expect(parseSpaceTypeFilter('群組')).toBe('群組')
     expect(parseSpaceTypeFilter('SPACE')).toBeNull()
+  })
+})
+
+describe('summaryStatusOf：三種狀態', () => {
+  const at = '2026-09-02T00:00:00+00:00'
+
+  it('lastSummaryAt 為 null → 從未產生（不論有沒有活動時間）', () => {
+    expect(summaryStatusOf({ lastActiveTime: '2026-09-03T00:00:00Z', lastSummaryAt: null })).toBe('never')
+    expect(summaryStatusOf({ lastActiveTime: null, lastSummaryAt: null })).toBe('never')
+  })
+
+  it('活動晚於 Summary → 有新活動；早於或同時 → 已是最新', () => {
+    expect(summaryStatusOf({ lastActiveTime: '2026-09-02T00:00:01Z', lastSummaryAt: at })).toBe('stale')
+    expect(summaryStatusOf({ lastActiveTime: '2026-09-01T23:59:59Z', lastSummaryAt: at })).toBe('fresh')
+    expect(summaryStatusOf({ lastActiveTime: '2026-09-02T00:00:00Z', lastSummaryAt: at })).toBe('fresh')
+  })
+
+  it('🔴 lastActiveTime 缺少或解析不了 → unknown，不准猜成已是最新', () => {
+    expect(summaryStatusOf({ lastActiveTime: null, lastSummaryAt: at })).toBe('unknown')
+    expect(summaryStatusOf({ lastActiveTime: '', lastSummaryAt: at })).toBe('unknown')
+    expect(summaryStatusOf({ lastActiveTime: '昨天', lastSummaryAt: at })).toBe('unknown')
+  })
+
+  it('lastSummaryAt 欄位缺少（舊後端）或解析不了 → unknown，不當成從未產生', () => {
+    expect(summaryStatusOf({ lastActiveTime: '2026-09-03T00:00:00Z' })).toBe('unknown')
+    expect(summaryStatusOf({ lastActiveTime: '2026-09-03T00:00:00Z', lastSummaryAt: 'garbage' })).toBe('unknown')
+  })
+})
+
+describe('summaryStatusOf：時區與表示法', () => {
+  it('同一瞬間、表示法不同（Z＋微秒 vs +00:00）→ 不算有新活動', () => {
+    expect(
+      summaryStatusOf({ lastActiveTime: '2026-09-02T00:00:00.000000Z', lastSummaryAt: '2026-09-02T00:00:00+00:00' }),
+    ).toBe('fresh')
+  })
+
+  it('同一瞬間、時區不同（UTC vs +08:00）→ 不算有新活動', () => {
+    expect(
+      summaryStatusOf({ lastActiveTime: '2026-09-02T00:00:00Z', lastSummaryAt: '2026-09-02T08:00:00+08:00' }),
+    ).toBe('fresh')
+  })
+
+  it('正對照：字串看起來較早、實際較晚（+08:00 的 07:00 ＝ UTC 前一天 23:00）時，以實際時間點判斷', () => {
+    // 字串比較會說 "2026-09-01T23:30:00Z" < "2026-09-02T07:00:00+08:00"（已是最新），
+    // 實際上活動在 23:30Z、Summary 在 23:00Z，活動比較晚
+    expect(
+      summaryStatusOf({ lastActiveTime: '2026-09-01T23:30:00Z', lastSummaryAt: '2026-09-02T07:00:00+08:00' }),
+    ).toBe('stale')
+  })
+
+  it('Google 的微秒精度：同一秒內晚 0.77 秒的活動仍算有新活動（Summary 只存到秒，誤差方向保守）', () => {
+    expect(
+      summaryStatusOf({ lastActiveTime: '2026-09-02T00:00:00.773695Z', lastSummaryAt: '2026-09-02T00:00:00+00:00' }),
+    ).toBe('stale')
+  })
+})
+
+describe('parseZonedTime', () => {
+  it('接受 Z 與 ±hh:mm，含小數秒', () => {
+    expect(parseZonedTime('2026-09-02T00:00:00Z')).toBe(Date.UTC(2026, 8, 2))
+    expect(parseZonedTime('2026-09-02T00:00:00+00:00')).toBe(Date.UTC(2026, 8, 2))
+    expect(parseZonedTime('2026-09-02T08:00:00.5+08:00')).toBe(Date.UTC(2026, 8, 2) + 500)
+  })
+
+  it('🔴 沒有時區標記一律拒絕（Date.parse 會當成本地時間，靜默差 8 小時）', () => {
+    expect(parseZonedTime('2026-09-02T00:00:00')).toBeNull()
+    expect(parseZonedTime('2026-09-02')).toBeNull()
+    expect(parseZonedTime('2026-09-02 00:00:00+00:00')).toBeNull()
+    expect(parseZonedTime(null)).toBeNull()
+    expect(parseZonedTime(undefined)).toBeNull()
+  })
+})
+
+describe('sortBySummaryStatus', () => {
+  const at = '2026-09-02T00:00:00+00:00'
+  const list = [
+    space('fresh', { lastActiveTime: '2026-09-01T00:00:00Z', lastSummaryAt: at }),
+    space('unknown', { lastActiveTime: null, lastSummaryAt: at }),
+    space('never-old', { lastActiveTime: '2026-08-01T00:00:00Z', lastSummaryAt: null }),
+    space('stale', { lastActiveTime: '2026-09-03T00:00:00Z', lastSummaryAt: at, pinned: true }),
+    space('never-new', { lastActiveTime: '2026-09-05T00:00:00Z', lastSummaryAt: null }),
+  ]
+  const ids = (xs: Space[]) => xs.map((s) => s.id)
+
+  it('升冪：有新活動 → 從未產生 → 已是最新；同狀態依最後活動新→舊；unknown 最後', () => {
+    expect(ids(sortBySummaryStatus(list, 'asc', false))).toEqual([
+      'stale',
+      'never-new',
+      'never-old',
+      'fresh',
+      'unknown',
+    ])
+  })
+
+  it('降冪反轉狀態順序，但 unknown 仍然排最後', () => {
+    expect(ids(sortBySummaryStatus(list, 'desc', false))).toEqual([
+      'fresh',
+      'never-new',
+      'never-old',
+      'stale',
+      'unknown',
+    ])
+  })
+
+  it('釘選置頂照舊生效；不改動傳入的陣列', () => {
+    const before = ids(list)
+    expect(ids(sortBySummaryStatus(list, 'desc', true))[0]).toBe('stale')
+    expect(ids(list)).toEqual(before)
+  })
+})
+
+describe('Summary 欄的表頭排序', () => {
+  it('summarySort 有值時表頭標在 Summary 欄；沒有時照 listSort 的鍵', () => {
+    expect(headerSortOf('name', 'asc')).toEqual({ key: 'summary', direction: 'asc' })
+    expect(headerSortOf('name', null)).toEqual({ key: 'name', direction: 'asc' })
+  })
+
+  it('第一次點＝升冪，再點一次反轉', () => {
+    expect(nextSummarySort(null)).toBe('asc')
+    expect(nextSummarySort('asc')).toBe('desc')
+    expect(nextSummarySort('desc')).toBe('asc')
   })
 })

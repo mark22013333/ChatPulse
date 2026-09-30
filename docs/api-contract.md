@@ -181,10 +181,21 @@ scope 含 chat 三項 ＋ `openid`/`userinfo.email`/`userinfo.profile`。
   "spaces": [
     { "id": "spaces/AAAAxLxqJxY", "displayName": "0.暫存", "type": "SPACE",
       "threadingState": "THREADED_MESSAGES",
-      "lastActiveTime": "2026-09-04T17:35:29.773695Z", "memberCount": 3, "pinned": false }
+      "lastActiveTime": "2026-09-04T17:35:29.773695Z", "memberCount": 3, "pinned": false,
+      "lastSummaryAt": "2026-09-04T09:12:03+00:00" }
   ]
 }
 ```
+`lastSummaryAt`（`string | null`）：**目前這位 Viewer 自己**最近一次對這個 Space 產生
+Summary 的時間（`summaries.created_at`，UTC、秒精度、`+00:00` 結尾）；沒產生過是 `null`，
+欄位一定存在。只看 `owner_viewer_id` 是自己的列（ADR-0002），別人的 Summary 不影響它。
+每次請求都即時查 DB（一次 `GROUP BY space_id`，不是每個 Space 一次），**不進** Space
+清單的 5 分鐘快取——否則剛產生的 Summary 要等快取過期才看得到。
+摘要工作台的「Summary」欄拿它跟 `lastActiveTime` 比（`lib/spaceTable.ts` 的
+`summaryStatusOf`）：`null`＝從未產生；活動較晚＝有新活動；否則＝已是最新；
+`lastActiveTime` 缺少或兩者任一沒有時區標記／解析不了＝顯示「—」，不猜成已是最新。
+⚠️ 兩個時間的表示法不同（Google 是 `Z`＋微秒，DB 是 `+00:00`＋秒），比較一律換成
+時間點再比，不可比字串。Summary 保留 90 天（九節），過期後會回到 `null`。
 `threadingState` 來自 Google 的 `spaceThreadingState`，Draft Reply 用它決定脈絡的形狀。
 **不可單獨拿它判斷「有沒有討論串」**：2026-09-06 實測 436 個 Space，私訊回報的是
 `THREADED_MESSAGES` 而不是官方文件寫的 `UNTHREADED_MESSAGES`。判準要與 `type` 取聯集，

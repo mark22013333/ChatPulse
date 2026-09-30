@@ -412,6 +412,42 @@ def get_summary(owner_viewer_id: int, summary_id: int) -> Optional[Dict[str, Any
     )
 
 
+def latest_summary_times(owner_viewer_id: int) -> Dict[str, str]:
+    """這位 Viewer 在每個 Space 最近一次產生 Summary 的時間：`{space_id: created_at}`。
+
+    沒產生過的 Space **不在回傳裡**（不是對應到 None）——呼叫端用 `.get()`
+    取到 None 就是「從未產生」。給 `GET /spaces` 的 Summary 狀態欄用。
+
+    🔴 ADR-0002：只看 `owner_viewer_id` 自己的。別人對同一個 Space 產過 Summary，
+    不能讓這位 Viewer 看到「已是最新」——那等於洩漏「有人在看這個 Space」，
+    而且那份 Summary 他根本讀不到。
+
+    ⚠️ 一次 GROUP BY 查完所有 Space，**不要改成逐 Space 查**：Space 清單常見
+    四百多個，逐一查就是四百多次往返，而這支每次打開摘要工作台都會跑。
+
+    ⚠️ `MAX(created_at)` 比的是**字串**。它之所以等於「時間最晚」，是因為
+    created_at 一律由 `_now()` 寫入——固定寬度、UTC、`+00:00` 結尾
+    （2026-10-01 查 git 歷史：自 ad4cfed 建立以來格式未變）。哪天有人改了
+    `_now()` 的格式或讓別的路徑寫入不同時區，這裡會**靜默**挑錯那一筆。
+
+    ⚠️ 索引：`idx_summaries_owner(owner_viewer_id, created_at DESC)` 讓
+    WHERE 走得到索引，但 GROUP BY space_id 仍需暫存排序。每位 Viewer 的
+    Summary 有 90 天保留上限，量級小，目前不值得為它加 DDL；若要加，
+    `(owner_viewer_id, space_id, created_at)` 可讓這支變成純索引掃描。
+    （未驗證推論：未對真實資料量量測過。）
+    """
+    rows = db.query_all(
+        """
+        SELECT space_id, MAX(created_at) AS last_created_at
+          FROM summaries
+         WHERE owner_viewer_id = ?
+         GROUP BY space_id
+        """,
+        (owner_viewer_id,),
+    )
+    return {row["space_id"]: row["last_created_at"] for row in rows}
+
+
 # --------------------------------------------------------------------------
 # Mention
 # --------------------------------------------------------------------------

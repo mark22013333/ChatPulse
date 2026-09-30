@@ -21,10 +21,14 @@ import {
   headerSortOf,
   lastActiveLabel,
   nextSpaceSort,
+  nextSummarySort,
   outstandingBySpace,
   parseSpaceTab,
   parseSpaceTypeFilter,
+  SUMMARY_STATUS_LABELS,
+  sortBySummaryStatus,
   spaceTableFilter,
+  summaryStatusOf,
   type SpaceColumnKey,
   type SpaceTableFilters,
 } from '@/lib/spaceTable'
@@ -33,6 +37,7 @@ import { useRouter } from '@/router/useRouter'
 import { useViewerListSort } from '@/store/listSort'
 import { isOutstanding, useMentionsStore } from '@/store/mentions'
 import { useSpacesStore } from '@/store/spaces'
+import type { SortDirection } from '@/lib/paginate'
 import type { Space } from '@/lib/types'
 
 const TYPE_ITEMS = SPACE_TYPE_FILTERS.map((value) => ({
@@ -52,8 +57,9 @@ const TYPE_ITEMS = SPACE_TYPE_FILTERS.map((value) => ({
  * 🔴 篩選與排序一律經 `usePagedRows`／`lib/paginate.ts` 對**全部** Space 做完
  * 再切頁。這裡不自己 `slice`、不自己排當頁。
  *
- * 欄位只放前端拿得到的資料（規格 §4.3 的「今日訊息」「Summary 狀態」目前
- * 沒有資料來源，這次先不放，不編造）。
+ * 欄位只放拿得到資料的（規格 §4.3 的「今日訊息」已決定不做）。「Summary」欄
+ * 用後端給的 `lastSummaryAt` 對 `lastActiveTime` 判定，不多打 Google API；
+ * 判定規則與「認不出來顯示 —」的理由在 `lib/spaceTable.ts` 的 `summaryStatusOf`。
  */
 export function SpacesTable() {
   const items = useSpacesStore((state) => state.items)
@@ -81,6 +87,9 @@ export function SpacesTable() {
   // 排序偏好沿用舊左欄那一份（store/listSort）：選過的排序換成表格之後仍然有效
   const { prefs, setSpaceSort } = useViewerListSort()
   const spaceSort = prefs.space
+  // Summary 欄的排序不在偏好的排序鍵裡（理由見 sortBySummaryStatus）。
+  // 有值＝它正在生效；點任何其他欄就清掉，回到偏好那一份——同一時間只有一份在生效
+  const [summarySort, setSummarySort] = useState<SortDirection | null>(null)
 
   const [filters, setFilters] = useState<SpaceTableFilters>(DEFAULT_SPACE_TABLE_FILTERS)
   const patchFilters = (patch: Partial<SpaceTableFilters>) =>
@@ -119,14 +128,20 @@ export function SpacesTable() {
       : 0
 
   const filter = useMemo(() => spaceTableFilter(filters, outstanding), [filters, outstanding])
-  const sort = useCallback((list: readonly Space[]) => sortSpaces(list, spaceSort), [spaceSort])
+  const sort = useCallback(
+    (list: readonly Space[]) =>
+      summarySort
+        ? sortBySummaryStatus(list, summarySort, spaceSort.pinnedFirst)
+        : sortSpaces(list, spaceSort),
+    [spaceSort, summarySort],
+  )
 
   const paged = usePagedRows({
     items,
     filter,
     sort,
     // 篩選或排序一變就回第 1 頁：停在第 4 頁看新的排序，看到的是「第 76 名之後」
-    resetKey: JSON.stringify({ filters, spaceSort }),
+    resetKey: JSON.stringify({ filters, spaceSort, summarySort }),
     table: 'summary',
   })
 
@@ -222,6 +237,25 @@ export function SpacesTable() {
       header: '待處理 Mention',
       numeric: true,
       cell: mentionCell,
+    },
+    {
+      id: 'summary',
+      header: 'Summary',
+      sortKey: 'summary',
+      cell: (space) => {
+        const status = summaryStatusOf(space)
+        return (
+          <span
+            className={cn(
+              'text-xs whitespace-nowrap',
+              status === 'stale' ? 'font-semibold text-caution' : 'text-fg-dim',
+            )}
+          >
+            {SUMMARY_STATUS_LABELS[status]}
+            {status === 'unknown' ? <span className="sr-only">（無法判斷 Summary 是否最新）</span> : null}
+          </span>
+        )
+      },
     },
   ]
 
@@ -371,8 +405,19 @@ export function SpacesTable() {
           columns={columns}
           rows={paged.items}
           rowKey={(space) => space.id}
-          sort={headerSortOf(spaceSort.sort)}
-          onSortChange={(key) => setSpaceSort({ sort: nextSpaceSort(spaceSort.sort, key) })}
+          sort={headerSortOf(spaceSort.sort, summarySort)}
+          onSortChange={(key) => {
+            if (key === 'summary') {
+              setSummarySort(nextSummarySort(summarySort))
+              return
+            }
+            // 從 Summary 欄點回來＝「從別欄點過來」，要得到該欄第一次點的方向。
+            // 偏好裡若剛好是 activity-desc，直接拿它當基準會被翻成 asc（看起來像點了兩次），
+            // 所以改拿一個「不是最後活動」的鍵當基準
+            const base = summarySort ? 'name' : spaceSort.sort
+            setSummarySort(null)
+            setSpaceSort({ sort: nextSpaceSort(base, key) })
+          }}
           onRowActivate={open}
           empty={emptyHint}
         />

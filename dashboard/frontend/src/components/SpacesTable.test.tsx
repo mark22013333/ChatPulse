@@ -235,10 +235,63 @@ describe('SpacesTable：Mention 欄只顯示拿得到的資料', () => {
     expect(screen.queryByText(/較舊的待處理 Mention/)).toBeNull()
   })
 
-  it('不出現沒有資料來源的欄位（今日訊息、Summary 狀態）', () => {
+  it('不出現已決定不做的「今日訊息」欄', () => {
     seed([space(1)])
     mount()
     const headers = screen.getAllByRole('columnheader').map((th) => th.textContent)
-    expect(headers.join('|')).not.toMatch(/今日訊息|Summary/)
+    expect(headers.join('|')).not.toMatch(/今日訊息/)
+  })
+})
+
+describe('SpacesTable：Summary 欄', () => {
+  function summaryCells(): string[] {
+    const table = screen.getByRole('table', { name: 'Space 清單' })
+    const headers = within(table).getAllByRole('columnheader').map((th) => th.textContent ?? '')
+    const col = headers.findIndex((h) => h.includes('Summary'))
+    return within(table)
+      .getAllByRole('row')
+      .slice(1)
+      .map((row) => within(row).getAllByRole('cell')[col].textContent ?? '')
+  }
+
+  const fourKinds = () => [
+    space(1, { displayName: '最新', lastSummaryAt: '2026-09-02T00:00:00+00:00' }),
+    space(2, { displayName: '有新', lastActiveTime: '2026-09-03T00:00:00Z', lastSummaryAt: '2026-09-02T00:00:00+00:00' }),
+    space(3, { displayName: '從未', lastSummaryAt: null }),
+    space(4, { displayName: '不明', lastActiveTime: null, lastSummaryAt: '2026-09-02T00:00:00+00:00' }),
+  ]
+
+  it('依 lastActiveTime 與 lastSummaryAt 顯示三種狀態；活動時間缺少顯示「—」而不是「已是最新」', () => {
+    seed(fourKinds())
+    mount()
+    const byName = Object.fromEntries(names().map((n, i) => [n, summaryCells()[i]]))
+    expect(byName['最新']).toBe('已是最新')
+    expect(byName['有新']).toBe('有新活動')
+    expect(byName['從未']).toBe('從未產生')
+    expect(byName['不明']).toMatch(/^—/)
+    // 不顯示則數：格子裡不該出現數字
+    expect(summaryCells().join('')).not.toMatch(/\d/)
+  })
+
+  it('點表頭依 Summary 狀態排序：有新活動 → 從未產生 → 已是最新，「—」排最後；再點一次反轉但「—」仍在最後', async () => {
+    seed(fourKinds())
+    mount()
+    await userEvent.click(screen.getByRole('button', { name: /Summary/ }))
+    expect(names()).toEqual(['有新', '從未', '最新', '不明'])
+    expect(screen.getByRole('columnheader', { name: /Summary/ })).toHaveAttribute('aria-sort', 'ascending')
+    await userEvent.click(screen.getByRole('button', { name: /Summary/ }))
+    expect(names()).toEqual(['最新', '從未', '有新', '不明'])
+    expect(screen.getByRole('columnheader', { name: /Summary/ })).toHaveAttribute('aria-sort', 'descending')
+  })
+
+  it('從 Summary 排序點回「最後活動」：回到最後活動新→舊，Summary 表頭不再標排序', async () => {
+    seed(fourKinds())
+    mount()
+    await userEvent.click(screen.getByRole('button', { name: /Summary/ }))
+    await userEvent.click(screen.getByRole('button', { name: /最後活動/ }))
+    expect(names()[0]).toBe('有新')
+    expect(useListSortStore.getState().byViewer[VIEWER]?.space.sort).toBe('activity-desc')
+    expect(screen.getByRole('columnheader', { name: /Summary/ })).not.toHaveAttribute('aria-sort')
+    expect(screen.getByRole('columnheader', { name: /最後活動/ })).toHaveAttribute('aria-sort', 'descending')
   })
 })

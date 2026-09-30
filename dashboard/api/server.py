@@ -2024,10 +2024,21 @@ def get_spaces(
     refresh: bool = False,
     viewer: Dict[str, Any] = ViewerDep,
 ):
-    """Space 列表（5.1）。必須涵蓋全部空間——list_spaces 已自動翻頁（D-1）。"""
+    """Space 列表（5.1）。必須涵蓋全部空間——list_spaces 已自動翻頁（D-1）。
+
+    每個 Space 帶 `lastSummaryAt`：**這位 Viewer 自己**最近一次對它產生 Summary
+    的時間（沒有就是 null）。前端拿它跟 `lastActiveTime` 比，判斷 Summary 是否
+    已是最新，不必多打任何 Google API。
+
+    ⚠️ `lastSummaryAt` 在這裡逐次查 DB，**不要**塞進 `list_spaces_cached` 的快取：
+    快取以 5 分鐘為單位，塞進去的話剛產生的 Summary 要等快取過期才看得到，
+    畫面會在 Viewer 剛摘要完時仍說「從未產生」。
+    """
     entry = list_spaces_cached(viewer["id"], refresh=refresh)
     spaces = entry["data"]
     pinned = set(repo.get_preferences(viewer["id"])["pinned_space_ids"])
+    # 一次查完所有 Space（GROUP BY），不是每個 Space 一次
+    last_summary = repo.latest_summary_times(viewer["id"])
 
     results = spaces
     if search:
@@ -2041,7 +2052,10 @@ def get_spaces(
         "cached_at": datetime.fromtimestamp(entry["timestamp"], timezone.utc).isoformat(
             timespec="seconds"
         ),
-        "spaces": [{**s, "pinned": s["id"] in pinned} for s in results],
+        "spaces": [
+            {**s, "pinned": s["id"] in pinned, "lastSummaryAt": last_summary.get(s["id"])}
+            for s in results
+        ],
     }
 
 

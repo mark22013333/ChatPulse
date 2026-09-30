@@ -1,6 +1,6 @@
 import { spaceTypeLabel } from '@/lib/format'
-import type { SortState } from '@/lib/paginate'
-import type { SpaceSortKey } from '@/lib/listSort'
+import type { SortDirection, SortState } from '@/lib/paginate'
+import { sortSpaces, type SpaceSortKey } from '@/lib/listSort'
 import type { Mention, MentionStateValue, Space } from '@/lib/types'
 
 /**
@@ -117,7 +117,7 @@ export function spaceTableFilter(
 // ── 表頭排序 ↔ listSort 的排序鍵 ───────────────────────────────────────
 
 /** 表格上可以點來排序的欄。 */
-export type SpaceColumnKey = 'name' | 'type' | 'activity'
+export type SpaceColumnKey = 'name' | 'type' | 'activity' | 'summary'
 
 /**
  * 目前的排序鍵對應到哪一欄、哪個方向（給 DataTable 的 `aria-sort`）。
@@ -126,7 +126,13 @@ export type SpaceColumnKey = 'name' | 'type' | 'activity'
  * 同一份（舊左欄選過的排序，換成表格之後仍然有效）。所以這裡只做「翻譯」，
  * 不另立一套排序狀態——兩份狀態就會有「表頭說依名稱、實際依時間」的時候。
  */
-export function headerSortOf(sort: SpaceSortKey): SortState<SpaceColumnKey> {
+export function headerSortOf(
+  sort: SpaceSortKey,
+  summarySort: SortDirection | null = null,
+): SortState<SpaceColumnKey> {
+  // Summary 欄的排序不在 listSort 的排序鍵裡（見 sortBySummaryStatus），
+  // 有值時就是它在生效，表頭必須照實標在 Summary 欄
+  if (summarySort) return { key: 'summary', direction: summarySort }
   switch (sort) {
     case 'activity-desc':
       return { key: 'activity', direction: 'desc' }
@@ -155,7 +161,10 @@ export function headerSortOf(sort: SpaceSortKey): SortState<SpaceColumnKey> {
  * 排最後」，整份反轉會把這兩條規則一起翻過來，得到一個誰都沒設計過的順序。
  * 要雙向就該在 listSort 補真的排序鍵，那屬於 listSort 的範圍，這次不動。
  */
-export function nextSpaceSort(current: SpaceSortKey, clicked: SpaceColumnKey): SpaceSortKey {
+export function nextSpaceSort(
+  current: SpaceSortKey,
+  clicked: Exclude<SpaceColumnKey, 'summary'>,
+): SpaceSortKey {
   if (clicked === 'activity') {
     return current === 'activity-desc' ? 'activity-asc' : 'activity-desc'
   }
@@ -183,4 +192,117 @@ export function lastActiveLabel(iso: string | null | undefined, now: Date = new 
   if (sameDay) return `${pad(date.getHours())}:${pad(date.getMinutes())}`
   const md = `${date.getMonth() + 1}/${date.getDate()}`
   return date.getFullYear() === now.getFullYear() ? md : `${date.getFullYear()}/${md}`
+}
+
+// ── Summary 狀態 ──────────────────────────────────────────────────────
+
+/**
+ * Summary 欄的四種值。前三種是規格的三種狀態；`unknown` 是「資料不夠下結論」。
+ *
+ * 判定（依序）：
+ *   1. `lastSummaryAt === null` → never（後端明確說沒有）
+ *   2. `lastSummaryAt` 缺欄位或解析不了 → unknown
+ *   3. `lastActiveTime` 缺少或解析不了 → unknown
+ *   4. lastActiveTime 晚於 lastSummaryAt → stale，否則 fresh
+ *
+ * 🔴 第 3 條**不准**退回 fresh。「不知道有沒有新活動」顯示成「已是最新」，
+ * Viewer 就會跳過一個其實有新訊息的 Space——那正是這一欄存在要防的事。
+ * 從未產生則不受 lastActiveTime 影響：沒有 Summary 這件事不必靠活動時間判斷。
+ *
+ * 🔴 欄位**缺少**（undefined）與 **null** 意思不同：null 是後端查過、確定沒有；
+ * undefined 是沒拿到這份資料（舊後端、fixture），當成「從未產生」就是猜。
+ */
+export type SummaryStatus = 'fresh' | 'stale' | 'never' | 'unknown'
+
+export const SUMMARY_STATUS_LABELS: Record<SummaryStatus, string> = {
+  fresh: '已是最新',
+  stale: '有新活動',
+  never: '從未產生',
+  unknown: '—',
+}
+
+/**
+ * 解析**帶時區**的 RFC3339 時間，回傳 epoch 毫秒；認不得回 null。
+ *
+ * ⚠️ 兩邊的格式不同：`lastActiveTime` 是 Google 給的 `…773695Z`（微秒、Z），
+ * `lastSummaryAt` 是 DB 的 `…+00:00`（秒、數字偏移）。兩者都是完整的時間點，
+ * 換成 epoch 毫秒再比就與表示法無關。
+ *
+ * 🔴 沒有時區標記的字串一律拒絕：`Date.parse('2026-10-01T10:00:00')` 會把它
+ * 當成**瀏覽器本地時間**，在 UTC+8 會差 8 小時，而且不會報錯——判定就在
+ * 「有新活動」與「已是最新」之間靜默翻面。認不出來就回 null，交給上層顯示「—」。
+ */
+export function parseZonedTime(value: string | null | undefined): number | null {
+  if (!value) return null
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/i.test(value)) return null
+  const t = Date.parse(value)
+  return Number.isNaN(t) ? null : t
+}
+
+/**
+ * ⚠️ 精度不對稱：lastSummaryAt 只到秒（`_now()` 截掉小數），lastActiveTime
+ * 到微秒。Summary 在 10:00:00.900 產生、最後一則訊息在 10:00:00.500 的話，
+ * 存下來是 10:00:00，比較結果會是「有新活動」。這個方向的誤差是**保守的**
+ * （多提醒一次），反過來才危險，所以不補償。
+ *
+ * ⚠️ lastActiveTime 來自 Space 清單的 5 分鐘快取，快取期間的新活動看不到——
+ * 這與「最後活動」欄是同一份資料、同一個延遲，頁尾已標示快取時間。
+ */
+export function summaryStatusOf(
+  space: Pick<Space, 'lastActiveTime' | 'lastSummaryAt'>,
+): SummaryStatus {
+  if (space.lastSummaryAt === null) return 'never'
+  const summaryAt = parseZonedTime(space.lastSummaryAt)
+  if (summaryAt === null) return 'unknown'
+  const activeAt = parseZonedTime(space.lastActiveTime)
+  if (activeAt === null) return 'unknown'
+  return activeAt > summaryAt ? 'stale' : 'fresh'
+}
+
+// 升冪＝「最需要處理的在前」：有新活動 → 從未產生 → 已是最新
+const SUMMARY_RANK: Record<Exclude<SummaryStatus, 'unknown'>, number> = {
+  stale: 0,
+  never: 1,
+  fresh: 2,
+}
+
+/**
+ * 依 Summary 狀態排序。回傳新陣列，不改動傳入的陣列。
+ *
+ * - `unknown` **不論方向都排最後**，理由同 listSort 的 byActivity：降冪時把
+ *   它們當成某一種狀態排到前面，清單開頭會是一整排「—」。
+ * - 同狀態之內依最後活動新→舊（沿用 `sortSpaces`，含沒有時間的排最後）。
+ * - `pinnedFirst` 照舊生效：那是 Viewer 另外勾的選項，換一欄排序不該讓它失效。
+ *
+ * ⚠️ 為什麼不在 `lib/listSort.ts` 加一個排序鍵：那份排序鍵會存進 Viewer 偏好
+ * （store/listSort），改它要動偏好的解析與遷移，超出這次的範圍。代價是 Summary
+ * 欄的排序只活在元件 state，重新整理後回到偏好裡的排序。
+ */
+export function sortBySummaryStatus(
+  items: readonly Space[],
+  direction: SortDirection,
+  pinnedFirst: boolean,
+): Space[] {
+  const sign = direction === 'asc' ? 1 : -1
+  const rankOf = (space: Space): number | null => {
+    const status = summaryStatusOf(space)
+    return status === 'unknown' ? null : SUMMARY_RANK[status]
+  }
+  const byActivity = sortSpaces(items, { sort: 'activity-desc', pinnedFirst: false })
+  // Array.sort 是穩定排序：同狀態維持上面排好的「最後活動新→舊」
+  const sorted = byActivity.sort((a, b) => {
+    const ra = rankOf(a)
+    const rb = rankOf(b)
+    if (ra === null && rb === null) return 0
+    if (ra === null) return 1
+    if (rb === null) return -1
+    return (ra - rb) * sign
+  })
+  if (!pinnedFirst) return sorted
+  return [...sorted.filter((s) => s.pinned), ...sorted.filter((s) => !s.pinned)]
+}
+
+/** 點 Summary 表頭：從別欄點過來＝升冪（需要處理的在前），再點一次反轉。 */
+export function nextSummarySort(current: SortDirection | null): SortDirection {
+  return current === 'asc' ? 'desc' : 'asc'
 }

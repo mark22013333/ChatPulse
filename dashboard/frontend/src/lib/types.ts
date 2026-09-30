@@ -253,6 +253,13 @@ export interface Space {
   renamable?: boolean
   /** 目前的名字是誰取的：dm_peer=自動認出、dm_manual=你自己取的 */
   nameSource?: 'dm_peer' | 'dm_manual' | null
+  /**
+   * 目前這位 Viewer 最近一次對這個 Space 產生 Summary 的時間（DB 的 created_at，
+   * UTC、`+00:00` 結尾）；沒產生過是 null。只算自己的（ADR-0002）。
+   * 狀態判定見 `lib/spaceTable.ts` 的 `summaryStatusOf`。可選：舊後端與測試
+   * fixture 沒有這個欄位，缺少時一律當成「無法判斷」，不當成「從未產生」。
+   */
+  lastSummaryAt?: string | null
 }
 
 export interface SpacesResponse {
