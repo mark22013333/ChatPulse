@@ -4,12 +4,14 @@ import { useGlobalHotkeys } from './useGlobalHotkeys'
 import { SEQUENCE_TIMEOUT_MS } from '@/lib/hotkeys'
 import { RouterProvider } from '@/router/useRouter'
 import { useRouteSync } from '@/router/useRouteSync'
+import { useAuthStore } from '@/store/auth'
 import { useDraftStore } from '@/store/draft'
+import { resetListSortForTest, useListSortStore } from '@/store/listSort'
 import { useMentionsStore } from '@/store/mentions'
 import { useSpacesStore } from '@/store/spaces'
 import { useSummaryStore } from '@/store/summary'
 import { useUiStore } from '@/store/ui'
-import type { Mention } from '@/lib/types'
+import type { Me, Mention } from '@/lib/types'
 
 /**
  * 全域快捷鍵的接線（設計規格 §11.1）。
@@ -382,6 +384,28 @@ describe('[ ] 換 Mention', () => {
     press(']')
     // 47 是 pending，不在這個分頁裡，所以下一則是 45
     expect(window.location.hash).toBe('#/mentions/45')
+  })
+
+  it('**跟著收件匣選的排序走**：舊→新時 ] 的下一則是比較新的那則', () => {
+    // 收件匣畫的順序與 ] 走的順序若各算各的，畫面上的「下一則」與按鍵跳到的
+    // 會是不同的兩則。這條確保兩處讀同一份 Viewer 的排序偏好
+    try {
+      localStorage.clear()
+    } catch {
+      // jsdom 一定有 localStorage；保險起見不讓清除失敗打斷測試
+    }
+    resetListSortForTest()
+    useAuthStore.setState({ me: { viewer: { id: 5 } } as unknown as Me })
+    useListSortStore.getState().setMentionSort(5, 'time-asc')
+    try {
+      mountAt('#/mentions/47', { sync: true })
+      press(']')
+      // 舊→新是 45、47、48，所以 47 的下一則是 48（預設新→舊時是 45，見上面兩條）
+      expect(window.location.hash).toBe('#/mentions/48')
+    } finally {
+      useAuthStore.setState({ me: null })
+      resetListSortForTest()
+    }
   })
 
   it('在輸入框裡是括號，不是換 Mention', () => {

@@ -1,11 +1,13 @@
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MentionInbox } from './MentionInbox'
 import { RouterProvider } from '@/router/useRouter'
+import { useAuthStore } from '@/store/auth'
+import { resetListSortForTest, useListSortStore } from '@/store/listSort'
 import { useMentionsStore } from '@/store/mentions'
 import { useSpacesStore } from '@/store/spaces'
-import type { Mention, MentionStateValue } from '@/lib/types'
+import type { Me, Mention, MentionStateValue } from '@/lib/types'
 
 function mention(id: number, state: MentionStateValue, sender = '陳柏元'): Mention {
   return {
@@ -260,5 +262,119 @@ describe('MentionInbox 的方向鍵導航', () => {
     const event = new KeyboardEvent('keydown', { key: 'a', bubbles: true, cancelable: true })
     cardButton('甲').dispatchEvent(event)
     expect(event.defaultPrevented).toBe(false)
+  })
+})
+
+describe('MentionInbox 的排序', () => {
+  /** 畫面上卡片由上而下的發言者。 */
+  function order() {
+    return screen.getAllByText(/ 提到你$/).map((el) => el.textContent?.replace(' 提到你', ''))
+  }
+
+  function at(id: number, sender: string, time: string): Mention {
+    return { ...mention(id, 'pending', sender), create_time: time }
+  }
+
+  const items = [
+    at(1, '舊', '2026-09-28T00:00:00Z'),
+    at(2, '新', '2026-09-30T00:00:00Z'),
+    at(3, '中', '2026-09-29T00:00:00Z'),
+  ]
+
+  beforeEach(() => {
+    try {
+      localStorage.clear()
+    } catch {
+      // jsdom 一定有；保險起見
+    }
+    resetListSortForTest()
+    useAuthStore.setState({ me: { viewer: { id: 11 } } as unknown as Me })
+  })
+
+  afterEach(() => {
+    useAuthStore.setState({ me: null })
+    resetListSortForTest()
+  })
+
+  it('預設新→舊', () => {
+    seed(items)
+    renderInbox()
+    expect(order()).toEqual(['新', '中', '舊'])
+  })
+
+  it('Viewer 選過舊→新（存在 localStorage），重新整理後照那個排', () => {
+    useListSortStore.getState().setMentionSort(11, 'time-asc')
+    resetListSortForTest() // 模擬重新整理：記憶體清空，只剩 storage
+    seed(items)
+    renderInbox()
+    expect(order()).toEqual(['舊', '中', '新'])
+  })
+
+  it('（正對照）換成另一位 Viewer 就回到預設，不繼承上一位的選擇', () => {
+    useListSortStore.getState().setMentionSort(11, 'time-asc')
+    useAuthStore.setState({ me: { viewer: { id: 12 } } as unknown as Me })
+    seed(items)
+    renderInbox()
+    expect(order()).toEqual(['新', '中', '舊'])
+  })
+})
+
+describe('MentionInbox 的截斷提示', () => {
+  const loaded = [mention(1, 'pending', '甲'), mention(2, 'pending', '乙')]
+
+  beforeEach(() => {
+    try {
+      localStorage.clear()
+    } catch {
+      // jsdom 一定有；保險起見
+    }
+    resetListSortForTest()
+    useAuthStore.setState({ me: { viewer: { id: 21 } } as unknown as Me })
+  })
+
+  afterEach(() => {
+    useAuthStore.setState({ me: null })
+    resetListSortForTest()
+  })
+
+  function notice() {
+    return screen.queryByRole('status')
+  }
+
+  it('總數多於已載入時，清單上方出現提示，帶出已載入與總數', () => {
+    seed(loaded)
+    useMentionsStore.setState({ counts: { pending: 2, resolved: 348 } })
+    renderInbox()
+
+    const el = notice()
+    expect(el).not.toBeNull()
+    expect(el).toHaveAttribute('data-loaded', '2')
+    expect(el).toHaveAttribute('data-total', '350')
+    expect(el?.textContent).toContain('2')
+    expect(el?.textContent).toContain('350')
+    // 位置：在清單之前（清單上方），不是清單底部
+    const list = screen.getAllByRole('listitem')[0]
+    expect(el!.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('預設新→舊時不多說「只涵蓋已載入」那句；換成其他排序才說', () => {
+    seed(loaded)
+    useMentionsStore.setState({ counts: { pending: 2, resolved: 348 } })
+    const { unmount } = renderInbox()
+    expect(notice()).toHaveAttribute('data-partial-sort', 'false')
+    unmount()
+
+    for (const sort of ['time-asc', 'space', 'sender'] as const) {
+      useListSortStore.getState().setMentionSort(21, sort)
+      const view = renderInbox()
+      expect(notice()).toHaveAttribute('data-partial-sort', 'true')
+      view.unmount()
+    }
+  })
+
+  it('（正對照）沒有截斷時不顯示提示', () => {
+    seed(loaded) // seed 的 counts 就等於清單筆數
+    renderInbox()
+    expect(notice()).toBeNull()
   })
 })

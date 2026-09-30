@@ -190,7 +190,8 @@ export function SpaceList({
                     {space.displayName || space.id}
                   </span>
                   <span className="flex items-center gap-1 truncate text-2xs text-muted-foreground">
-                    {/* 釘選的排在最前面，這個標記就是排序的解釋 */}
+                    {/* 釘選置頂開著時，這個標記就是排序的解釋；關著時它仍告訴
+                        Viewer 哪幾個是自己釘過的 */}
                     {space.pinned ? (
                       <>
                         <PinIcon className="size-2.5 shrink-0" aria-hidden />
