@@ -47,7 +47,7 @@ describe('ShortcutHelp', () => {
     // 那是決定這個鍵能不能用的資訊，不是補充說明，所以要在畫面上讀得到
     useUiStore.setState({ helpOpen: true })
     render(<ShortcutHelp />)
-    expect(screen.getAllByText(/焦點在左欄清單上時/).length).toBe(
+    expect(screen.getAllByText(/焦點在清單或表格上時/).length).toBe(
       SHORTCUT_HELP.filter((row) => row.scope === 'list').length,
     )
   })

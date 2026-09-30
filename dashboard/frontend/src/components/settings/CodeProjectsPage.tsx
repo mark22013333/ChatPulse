@@ -53,7 +53,7 @@ export function CodeProjectsPage() {
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="text-sm font-semibold">參考專案</h2>
+        <h2 className="text-md font-semibold">參考專案</h2>
         <p className="text-fg-dim mt-1 text-xs leading-relaxed">
           登錄這台機器上的程式碼資料夾，Draft Reply 就能引用實際程式碼回答問題。
           <strong className="text-foreground">每個環境對應哪個分支要在這裡講清楚</strong>

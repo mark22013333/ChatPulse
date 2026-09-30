@@ -104,7 +104,7 @@ export function ShortcutHelp() {
                 {/* 「這個鍵只在清單上有焦點時有效」是決定它能不能用的資訊，
                     不是補充說明，所以放在可見文字裡（規格 §10.3） */}
                 {row.scope === 'list' ? (
-                  <span className="text-fg-dim">　（焦點在左欄清單上時）</span>
+                  <span className="text-fg-dim">　（焦點在清單或表格上時）</span>
                 ) : null}
               </dd>
             </div>

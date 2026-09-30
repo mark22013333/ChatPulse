@@ -140,8 +140,12 @@ export function headerSortOf(
       return { key: 'activity', direction: 'asc' }
     case 'name':
       return { key: 'name', direction: 'asc' }
+    case 'name-desc':
+      return { key: 'name', direction: 'desc' }
     case 'type':
       return { key: 'type', direction: 'asc' }
+    case 'type-desc':
+      return { key: 'type', direction: 'desc' }
     default: {
       const exhaustive: never = sort
       void exhaustive
@@ -154,12 +158,12 @@ export function headerSortOf(
  * 點了某一欄的表頭之後，新的排序鍵是什麼。
  *
  * - 最後活動：從別欄點過來＝新→舊（會點它就是想看最近在動的）；再點一次反轉。
- * - 名稱、類型：`listSort.ts` 只有一個方向，再點一次**維持不變**。
+ * - 名稱、類型：從別欄點過來＝升冪；再點一次反轉成降冪（`name-desc`／`type-desc`）。
  *
  * ⚠️ 被否決的做法：名稱／類型用「把排好的結果整份反轉」做出降冪。
  * `sortSpaces` 的類型排序是「組內依最新活動」、最後活動是「沒有時間的永遠
  * 排最後」，整份反轉會把這兩條規則一起翻過來，得到一個誰都沒設計過的順序。
- * 要雙向就該在 listSort 補真的排序鍵，那屬於 listSort 的範圍，這次不動。
+ * 所以降冪是 listSort 裡真的排序鍵（S5 補上），這裡只負責切換。
  */
 export function nextSpaceSort(
   current: SpaceSortKey,
@@ -168,7 +172,8 @@ export function nextSpaceSort(
   if (clicked === 'activity') {
     return current === 'activity-desc' ? 'activity-asc' : 'activity-desc'
   }
-  return clicked
+  if (clicked === 'name') return current === 'name' ? 'name-desc' : 'name'
+  return current === 'type' ? 'type-desc' : 'type'
 }
 
 // ── 最後活動的顯示 ─────────────────────────────────────────────────────

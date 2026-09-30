@@ -412,9 +412,11 @@ export function SpacesTable() {
               return
             }
             // 從 Summary 欄點回來＝「從別欄點過來」，要得到該欄第一次點的方向。
-            // 偏好裡若剛好是 activity-desc，直接拿它當基準會被翻成 asc（看起來像點了兩次），
-            // 所以改拿一個「不是最後活動」的鍵當基準
-            const base = summarySort ? 'name' : spaceSort.sort
+            // 偏好裡若剛好是 activity-desc，直接拿它當基準會被翻成 asc（看起來像點了兩次）。
+            // ⚠️ 基準必須是「三欄的第一次方向都不會被它翻轉」的鍵：名稱／類型有了降冪之後，
+            // 拿 'name' 當基準會讓點名稱直接變成 name-desc。activity-asc 對三欄都成立：
+            // 最後活動翻成 desc、名稱與類型得到升冪
+            const base = summarySort ? 'activity-asc' : spaceSort.sort
             setSummarySort(null)
             setSpaceSort({ sort: nextSpaceSort(base, key) })
           }}

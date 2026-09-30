@@ -106,8 +106,10 @@ export function SettingsOverlay() {
       aria-modal="true"
       aria-label="設定"
     >
-      <header className="flex h-12 shrink-0 items-center gap-3 border-b border-line px-gutter">
-        <h1 className="text-sm font-semibold tracking-tight">設定</h1>
+      {/* 2026-10-01 改版 S5：標頭與工作台的 TopBar 同一個語法（白色表面、同高、
+          同字級的模組標題），開設定時才不會像跳到另一個 app */}
+      <header className="flex h-(--topbar-h) shrink-0 items-center gap-3 border-b border-line bg-surface px-5">
+        <h1 className="text-md font-semibold">設定</h1>
         <p className="text-fg-dim hidden text-xs sm:block">
           這裡改的是「以後每次」的預設值
         </p>
@@ -141,8 +143,10 @@ export function SettingsOverlay() {
                     aria-current={active ? 'page' : undefined}
                     className={cn(
                       'block rounded-lg px-2.5 py-2 transition-colors',
+                      // 選中＝accent 淡底＋左側 3px 指示條，與 Mention 收件匣的清單列同一個語法。
+                      // 指示條是底色之外的第二個線索：淡底在部分螢幕上幾乎看不出來
                       active
-                        ? 'bg-signal-wash text-signal'
+                        ? 'bg-signal-wash text-signal shadow-[inset_3px_0_0_var(--signal)]'
                         : 'text-foreground hover:bg-muted',
                     )}
                   >

@@ -52,18 +52,20 @@ export function MentionCard({
   return (
     <div
       className={cn(
-        'rounded-lg border p-2.5 transition-colors',
-        // 勾選與選中都是 signal 底，靠邊框強弱分辨：勾選用實心 signal，
-        // 選中用半透明的 signal-line——兩者都換成同一組 token 會讓狀態糊在一起
-        checked
-          ? 'border-signal bg-signal-wash'
-          : active
-            ? 'border-signal-line bg-signal-wash'
-            // 表面分層改版：從半透明的 `bg-card/50` 換成實色 surface。
-            // 半透明是舊版階層落差只有 0.013 時的補償手法，現在 ΔL 抬到 0.022，
-            // 實色就浮得出來，也不必再擔心疊在不同底上顏色會飄。
+        'px-3 py-2.5 transition-colors',
+        // 2026-10-01 改版 S5：每一則從「獨立的卡片」改成「清單卡片裡的一列」
+        // （外框與分隔線在 MentionInbox 的 <ul>）。
+        // 勾選與選中都是 signal 淡底，靠**左側 3px 指示條**分辨：選中（正在看的
+        // 那則）有指示條，只是勾選的沒有——勾選本身還有勾選框這個線索。
+        // 兩者都換成同一組樣式會讓狀態糊在一起。
+        // ⚠️ 指示條用 inset box-shadow 而不是 border-left：border 會把內容往右推
+        // 3px，選中與未選中的列文字就對不齊，點來點去整份清單會左右抖
+        active
+          ? 'bg-signal-wash shadow-[inset_3px_0_0_var(--signal)]'
+          : checked
+            ? 'bg-signal-wash'
             // 清單列**不加標頭帶**——標頭帶是「內容卡片」的語法，這裡不是。
-            : 'border-line bg-surface hover:border-line-strong',
+            : 'hover:bg-signal-wash',
         dimmed && 'opacity-45',
       )}
     >
@@ -90,12 +92,12 @@ export function MentionCard({
           onClick={onSelect}
         >
           <div className="flex items-baseline justify-between gap-2">
-            <span className="truncate text-xs font-medium">{mention.space_name}</span>
-            <span className="shrink-0 text-2xs text-muted-foreground">
+            <span className="truncate text-xs font-semibold">{mention.space_name}</span>
+            <span className="metric shrink-0 text-2xs text-fg-dim">
               {relativeTime(mention.create_time)}
             </span>
           </div>
-          <p className="mt-0.5 text-xs text-muted-foreground">{mention.sender_display} 提到你</p>
+          <p className="mt-0.5 text-xs text-fg-dim">{mention.sender_display} 提到你</p>
           <p className="mt-1 line-clamp-3 text-xs leading-relaxed whitespace-pre-wrap">
             {mention.text
               ? mention.text

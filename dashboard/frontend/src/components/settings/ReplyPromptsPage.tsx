@@ -60,7 +60,7 @@ export function ReplyPromptsPage() {
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="text-sm font-semibold">常用提示詞</h2>
+        <h2 className="text-md font-semibold">常用提示詞</h2>
         <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
           存起來重複使用的回覆要求。套用之後仍然可以在草稿頁微調——送出時以輸入框裡的內容為準。
         </p>

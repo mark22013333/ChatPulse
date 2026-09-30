@@ -97,11 +97,13 @@ describe('spaceTableFilter', () => {
 })
 
 describe('表頭排序與 listSort 排序鍵的對應', () => {
-  it('headerSortOf 把四個排序鍵都翻得出來', () => {
+  it('headerSortOf 把六個排序鍵都翻得出來', () => {
     expect(headerSortOf('activity-desc')).toEqual({ key: 'activity', direction: 'desc' })
     expect(headerSortOf('activity-asc')).toEqual({ key: 'activity', direction: 'asc' })
     expect(headerSortOf('name')).toEqual({ key: 'name', direction: 'asc' })
+    expect(headerSortOf('name-desc')).toEqual({ key: 'name', direction: 'desc' })
     expect(headerSortOf('type')).toEqual({ key: 'type', direction: 'asc' })
+    expect(headerSortOf('type-desc')).toEqual({ key: 'type', direction: 'desc' })
   })
 
   it('最後活動：從別欄點過來是新→舊，再點一次反轉', () => {
@@ -110,10 +112,14 @@ describe('表頭排序與 listSort 排序鍵的對應', () => {
     expect(nextSpaceSort('activity-asc', 'activity')).toBe('activity-desc')
   })
 
-  it('名稱／類型只有一個方向，再點一次維持不變', () => {
+  it('名稱／類型：從別欄點過來是升冪，再點一次反轉，再點回升冪', () => {
     expect(nextSpaceSort('activity-desc', 'name')).toBe('name')
-    expect(nextSpaceSort('name', 'name')).toBe('name')
-    expect(nextSpaceSort('type', 'type')).toBe('type')
+    expect(nextSpaceSort('name', 'name')).toBe('name-desc')
+    expect(nextSpaceSort('name-desc', 'name')).toBe('name')
+    expect(nextSpaceSort('name-desc', 'type')).toBe('type')
+    expect(nextSpaceSort('type', 'type')).toBe('type-desc')
+    expect(nextSpaceSort('type-desc', 'type')).toBe('type')
+    expect(nextSpaceSort('type-desc', 'name')).toBe('name')
   })
 })
 

@@ -141,6 +141,33 @@ describe('SpacesTable：分頁、排序、篩選作用於全部 Space', () => {
     expect(screen.getByRole('columnheader', { name: /Space 名稱/ })).toHaveAttribute('aria-sort', 'ascending')
   })
 
+  it('名稱欄可以雙向排序：再點一次變降冪，表頭與偏好都跟著變', async () => {
+    seed(forty())
+    mount()
+    const header = () => screen.getByRole('button', { name: /Space 名稱/ })
+    await userEvent.click(header())
+    await userEvent.click(header())
+    expect(useListSortStore.getState().byViewer[VIEWER]?.space.sort).toBe('name-desc')
+    expect(screen.getByRole('columnheader', { name: /Space 名稱/ })).toHaveAttribute('aria-sort', 'descending')
+    // 🔴 降冪也是對全部資料排：升冪第一名在降冪裡是第 40 名，第一頁（25 列）不該有它；
+    // 只反轉當頁的實作會把它留在第一頁最後一列
+    expect(names()).toHaveLength(25)
+    expect(names()).not.toContain('空間 01')
+    await userEvent.click(header())
+    expect(names()[0]).toBe('空間 01')
+  })
+
+  it('類型欄可以雙向排序', async () => {
+    seed(forty())
+    mount()
+    const header = () => screen.getByRole('button', { name: /類型/ })
+    await userEvent.click(header())
+    expect(screen.getByRole('columnheader', { name: /類型/ })).toHaveAttribute('aria-sort', 'ascending')
+    await userEvent.click(header())
+    expect(useListSortStore.getState().byViewer[VIEWER]?.space.sort).toBe('type-desc')
+    expect(screen.getByRole('columnheader', { name: /類型/ })).toHaveAttribute('aria-sort', 'descending')
+  })
+
   it('換頁看得到第 26 列之後的資料', async () => {
     seed(forty())
     mount()

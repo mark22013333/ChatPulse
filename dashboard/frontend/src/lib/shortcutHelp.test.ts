@@ -46,7 +46,7 @@ describe('SHORTCUT_HELP 與解析器不得漂移', () => {
   })
 
   it('清單類的鍵標成 list，不假裝是全域的', () => {
-    // ↑↓ 與 Enter 由 SpaceList／MentionInbox 自己的 onKeyDown 處理，
+    // ↑↓ 與 Enter 由 DataTable（表格型模組）／MentionInbox 自己的 onKeyDown 處理，
     // resolveHotkey 看不到它們。標成 global 會讓上面那條漂移守衛紅
     const list = SHORTCUT_HELP.filter((row) => row.scope === 'list')
     expect(list.map((row) => row.keys.join(' '))).toEqual(['↑ ↓', 'Enter'])

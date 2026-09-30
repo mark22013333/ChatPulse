@@ -92,7 +92,7 @@ export function PersonasPage() {
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="text-sm font-semibold">Persona</h2>
+        <h2 className="text-md font-semibold">Persona</h2>
         <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
           Persona 是「借用某個人的思考框架與表達習慣來寫回覆」，不是扮演那個人。
           匯入時會固定版本（記下 commit），遠端之後改了也不會影響已產生的回話。
