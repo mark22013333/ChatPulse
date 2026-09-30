@@ -151,9 +151,16 @@ export function useGlobalHotkeys({ onToggleEvidence }: Handlers) {
     }
 
     const focusSearch = (event: KeyboardEvent) => {
-      const search = document.querySelector<HTMLInputElement>(
-        'aside input[type="text"], aside input:not([type])',
-      )
+      // ⚠️ 不能取第一個命中：保留掛載（規格 §7.2）下三個 Pane 都在 DOM 裡，
+      // 順序固定是摘要、Mention、工時，第一個 `aside input` 往往屬於被收起來的
+      // Pane。對 inert 元素 focus() 不會報錯、也不會有任何反應，在 Mention 或
+      // 工時頁按 `/` 就像快捷鍵壞了。2026-10-01 以 useGlobalHotkeys.test.tsx
+      // 的「跳過收起來那頁」重現後修正。
+      const search = Array.from(
+        document.querySelectorAll<HTMLInputElement>(
+          'aside input[type="text"], aside input:not([type])',
+        ),
+      ).find((input) => !input.closest('[inert]'))
       if (!search) return
       event.preventDefault()
       search.focus()

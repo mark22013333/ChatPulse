@@ -447,3 +447,44 @@ describe('? 快捷鍵說明與整組停用', () => {
     expect(toggleEvidence).not.toHaveBeenCalled()
   })
 })
+
+/**
+ * `/` 聚焦搜尋框：保留掛載下，DOM 裡**第一個** `aside input` 通常屬於被收起來
+ * （inert）的 Pane——三個 Pane 的 DOM 順序固定是摘要、Mention、工時。
+ * 對 inert 元素呼叫 focus() 不會有任何反應也不會報錯，所以在 Mention 或工時頁
+ * 按 `/` 看起來就是「快捷鍵壞了」。
+ */
+function PanesHarness() {
+  useGlobalHotkeys({ onToggleEvidence: toggleEvidence })
+  return (
+    <aside>
+      {/* 模擬 Pane 的收起手法：inert ＋ 仍在 DOM 裡 */}
+      <div inert>
+        <input aria-label="收起來那頁的搜尋框" />
+      </div>
+      <div>
+        <input aria-label="作用中那頁的搜尋框" />
+      </div>
+    </aside>
+  )
+}
+
+describe('/ 聚焦搜尋框', () => {
+  it('🔴 跳過收起來（inert）那頁的輸入框，聚焦作用中的那一個', () => {
+    window.history.replaceState(null, '', '#/mentions')
+    const { getByLabelText } = render(
+      <RouterProvider>
+        <PanesHarness />
+      </RouterProvider>,
+    )
+    const event = press('/')
+    expect(document.activeElement).toBe(getByLabelText('作用中那頁的搜尋框'))
+    expect(event.defaultPrevented).toBe(true)
+  })
+
+  it('（正對照）只有一個輸入框時照常聚焦它', () => {
+    const { getByLabelText } = mountAt('#/mentions')
+    press('/')
+    expect(document.activeElement).toBe(getByLabelText('搜尋 Space'))
+  })
+})
