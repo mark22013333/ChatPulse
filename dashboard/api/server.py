@@ -32,7 +32,15 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
-from pydantic import BaseModel, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if BASE_DIR not in sys.path:
@@ -86,7 +94,7 @@ from core.errors import (
 )
 from core.mentions import CollectorRunner
 from core.polishers import sepia as sepia_polisher
-from core.zplanner_client import ZPlannerClient
+from core.zplanner_client import ZPlannerClient, require_hours
 
 logging.basicConfig(
     level=os.environ.get("CHATPULSE_LOG_LEVEL", "INFO"),
@@ -4207,6 +4215,199 @@ def worklog_draft_stream(
 
 
 # --------------------------------------------------------------------------
+# 單日讀寫：`GET`／`PUT /worklogs/{date}`
+#
+# PUT 是**逐筆欄位更新**，不是整組取代（D-2）：整組取代要前端自己組出每筆的
+# 完整欄位，漏帶一個 state／zplanner_worklog_id 就是一次資料遺失。
+# --------------------------------------------------------------------------
+
+#: 專案歸屬的四欄。**要改就四個一起帶**（D-12）：送出閘看 `issue_id`、重產守門
+#: 看 `issue_id or issue_key`，只寫一半的話兩道閘對「這筆指派了沒」給出不同答案。
+_WORKLOG_ATTRIBUTION_FIELDS = frozenset(
+    {"issue_id", "issue_key", "project_id", "project_key"}
+)
+
+
+class WorklogEntryUpdateItem(BaseModel):
+    """PUT 裡的一筆。**鍵沒帶 ＝ 不改，帶 `null` ＝ 清除**——靠 `model_fields_set`
+    分辨，所以每個欄位的預設值 `None` 不代表「清除」，只是 pydantic 需要一個值。
+
+    🔴 `extra="forbid"`：多帶一個 `state` 或 `zplanner_worklog_id` 直接 400，
+    不是靜默忽略。靜默忽略的話，前端以為「改成 pending 了」而後端什麼都沒做，
+    這種落差要到送出時才會浮現。
+
+    `issue_id`／`project_id` 用 StrictInt、字串欄位用 StrictStr：DB 是 INTEGER，
+    lax 模式會把 `"12"`、`true` 轉成整數收下，那是在替前端猜意思。
+
+    `hours` 的格式規則**只有一份**，在 `zplanner_client.require_hours`（D-5／
+    D-13）。不卡 0.5 倍數：那是分配演算法的產出規則，不是 ZPlanner 的輸入限制。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: StrictInt
+    hours: Optional[Any] = None
+    note: Optional[StrictStr] = None
+    issue_id: Optional[StrictInt] = None
+    issue_key: Optional[StrictStr] = None
+    project_id: Optional[StrictInt] = None
+    project_key: Optional[StrictStr] = None
+
+    @field_validator("hours")
+    @classmethod
+    def _hours_format(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError(
+                f"hours 必須是字串或 null（例如 \"1.50\"），收到 {type(value).__name__}。"
+            )
+        try:
+            # `""`、`"."`、`"-"` 這類不含數字的字串也由這裡擋下（pattern 帶
+            # 「至少一位數字」的 lookahead）。這裡**不要**再疊一道自己的檢查：
+            # 2026-09-25 曾因誤讀 docstring 而加過一道，實測永遠不會觸發，已撤回。
+            return require_hours(value)
+        except InvalidParameter as exc:
+            # 轉成 ValueError 讓 pydantic 收成 ValidationError，走同一條 400。
+            raise ValueError(exc.message) from exc
+
+    @model_validator(mode="after")
+    def _attribution_together(self) -> "WorklogEntryUpdateItem":
+        sent = self.model_fields_set & _WORKLOG_ATTRIBUTION_FIELDS
+        if sent and sent != _WORKLOG_ATTRIBUTION_FIELDS:
+            lacking = sorted(_WORKLOG_ATTRIBUTION_FIELDS - sent)
+            raise ValueError(
+                f"entry {self.id} 的專案歸屬要四欄一起帶，缺 {lacking}。"
+                "只改一半會讓送出閘與重產守門對「這筆指派了沒」給出不同答案。"
+            )
+        if sent and (self.issue_id is None) != (self.issue_key is None):
+            raise ValueError(
+                f"entry {self.id} 的 issue_id 與 issue_key 要同為 null 或同有值。"
+            )
+        return self
+
+    def to_update(self) -> Dict[str, Any]:
+        """轉成 `repo.update_worklog_entries` 的一項：只放有帶的鍵。"""
+        out: Dict[str, Any] = {"id": self.id}
+        for field in self.model_fields_set - {"id"}:
+            out[field] = getattr(self, field)
+        return out
+
+
+class WorklogDayUpdateBody(BaseModel):
+    """`PUT /worklogs/{date}` 的 body。只能改既有 entry，不能新增或刪除（D-4）：
+    entry 只能由產生流程依證據造出來，PUT 新增等於造出沒有證據的工時。
+
+    空陣列與重複 id 一律 400：空陣列會回 200 卻什麼都沒改，分不出是前端漏帶
+    還是真的沒東西要存；重複 id 的「後者贏」是在替呼叫端猜哪一個才是它要的。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    entries: List[WorklogEntryUpdateItem]
+
+    @field_validator("entries")
+    @classmethod
+    def _non_empty_unique(
+        cls, value: List[WorklogEntryUpdateItem]
+    ) -> List[WorklogEntryUpdateItem]:
+        if not value:
+            raise ValueError("entries 是空陣列，這次沒有任何東西可以存。")
+        seen: set = set()
+        dup = sorted({item.id for item in value if item.id in seen or seen.add(item.id)})
+        if dup:
+            raise ValueError(f"entries 裡的 id {dup} 出現不只一次。")
+        return value
+
+
+def _worklog_day_view(draft: Dict[str, Any]) -> Dict[str, Any]:
+    """GET 與 PUT 共用的回應形狀（D-8）：`repo.get_worklog_draft` 原樣，每筆
+    entry 另補 `cluster_key`／`label`／`reason`。
+
+    🔴 **用 `evidence_refs` 集合相等去對 `generation_meta.clusters[]`，對不到給
+    null，不退回用 seq 位置對（D-9）。** 重產時 meta 與 entries 分兩個交易寫，
+    後者被已送出守門拒絕時，meta 已經換成新的那一批——用位置對會把新群的
+    reason 靜默貼到舊 entry 上，畫面上看起來完全正常。null 至少看得出「對不上」。
+
+    同一組 evidence_refs 對到兩個以上 cluster、或 entry 的 evidence_refs 是空的，
+    一律當對不到：兩種情況都分不出該用哪一群，挑一個就是猜。
+
+    放在 dashboard 不放 repository：這是畫面組裝，存取層不該解讀 SSE 的 meta。
+    """
+    meta = draft.get("generation_meta") or {}
+    clusters = meta.get("clusters") if isinstance(meta, dict) else None
+    by_refs: Dict[frozenset, Optional[Dict[str, Any]]] = {}
+    if isinstance(clusters, list):
+        for cluster in clusters:
+            if not isinstance(cluster, dict) or not isinstance(
+                cluster.get("evidence_refs"), list
+            ):
+                continue
+            refs = frozenset(cluster["evidence_refs"])
+            by_refs[refs] = None if refs in by_refs else cluster
+    elif clusters is not None:
+        log.warning(
+            "工時草稿 %s 的 generation_meta.clusters 不是陣列，cluster 欄位一律給 null",
+            draft.get("id"),
+        )
+
+    entries = []
+    for entry in draft.get("entries") or []:
+        refs = frozenset(entry.get("evidence_refs") or [])
+        cluster = by_refs.get(refs) if refs else None
+        entries.append(
+            {
+                **entry,
+                "cluster_key": cluster.get("key") if cluster else None,
+                "label": cluster.get("label") if cluster else None,
+                "reason": cluster.get("reason") if cluster else None,
+            }
+        )
+    return {**draft, "entries": entries}
+
+
+@app.get("/api/v1/worklogs/{work_date}")
+def get_worklog_day(work_date: str, viewer: Dict[str, Any] = ViewerDep):
+    """讀某一天的工時草稿（含 Viewer 存過的歸屬與時數）。沒有草稿回 404
+    `WORKLOG_DRAFT_NOT_FOUND`——前端靠它畫「還沒產草稿」的空狀態。"""
+    viewer_id = viewer["id"]
+    date = worklog_evidence.parse_work_date(work_date).strftime("%Y-%m-%d")
+    draft = repo.get_worklog_draft(viewer_id, date)
+    if draft is None:
+        raise WorklogDraftNotFound(f"{date} 還沒有工時草稿。")
+    return _worklog_day_view(draft)
+
+
+@app.put("/api/v1/worklogs/{work_date}")
+def update_worklog_day(
+    work_date: str,
+    body: WorklogDayUpdateBody,
+    viewer: Dict[str, Any] = ViewerDep,
+):
+    """逐筆改寫某一天草稿的時數、專案歸屬與備註；回傳重讀後的整份草稿（同 GET）。
+
+    整批全有或全無：要改的筆中有已送出者回 409 `WORKLOG_ALREADY_SUBMITTED`
+    （D-21，**只看要改的筆**，failed／unknown 可改）、有 id 不屬於這份草稿回
+    400——兩種都一筆不動（守門在 repository 的同一個交易裡，理由見
+    `repo.update_worklog_entries`）。
+
+    🔴 **包在 `_claim_worklog_submit` 底下（D-14）。** 送出流程在迴圈開始前就把
+    entries 拍下來了；送出中被 PUT 改值的話，ZPlanner 收的是舊值、本地卻標成
+    submitted 並存著新值，兩邊從此對不起來而且沒有任何訊號。代價：submit 撞上
+    進行中的 PUT 也會拿到「正在送出中」，文字不精確（plan.md 已知限制）。
+    """
+    viewer_id = viewer["id"]
+    date = worklog_evidence.parse_work_date(work_date).strftime("%Y-%m-%d")
+    with _claim_worklog_submit(viewer_id, date):
+        saved = repo.update_worklog_entries(
+            viewer_id, date, [item.to_update() for item in body.entries]
+        )
+    if saved is None:
+        raise WorklogDraftNotFound(f"{date} 還沒有工時草稿，沒有東西可以改。")
+    return _worklog_day_view(saved)
+
+
+# --------------------------------------------------------------------------
 # 送出：把一天份的草稿逐筆寫進 ZPlanner
 #
 # 這一段的每個決定都繞著同一件事轉：**重複的工時在月結之後刪不掉**，
@@ -4278,7 +4479,7 @@ def _refuse_incomplete_worklog_entries(
 
     為什麼要擋在前面，而不是讓它們在迴圈裡各自變成 `failed`：兩種筆送到
     `create_worklog` 都會在**發出 HTTP 之前**被擋下（`_require_int`／
-    `_require_hours`），所以確實不會造成重複工時。但那樣做等於**部分送出**——
+    `require_hours`），所以確實不會造成重複工時。但那樣做等於**部分送出**——
     D-3 明文否決過：那天的工時會變成不完整，而畫面上沒有任何訊號說明少了什麼。
 
     帶 `entry_ids` 時只檢查選中的那幾筆（判斷在 `worklog_submit`，這裡只是
@@ -4331,6 +4532,9 @@ _worklog_submit_lock = threading.Lock()
 @contextmanager
 def _claim_worklog_submit(viewer_id: int, date: str) -> Generator[None, None, None]:
     """搶下「這個 Viewer 的這一天」的送出權；搶不到就**立刻**拋 409（AC-9／D-10）。
+
+    ⚠️ 持有者不一定是送出：`PUT /worklogs/{date}` 也搶同一把（D-14），所以撞到
+    409 的一方，對面可能是另一個送出，也可能是正在存檔的 PUT。
 
     🔴 **為什麼需要這道鎖。** 兩個重疊的送出會各自查一次「ZPlanner 這天已經有
     哪些工時」當去重底稿，而兩份底稿都是在對方寫入之前拍的——於是去重對兩邊

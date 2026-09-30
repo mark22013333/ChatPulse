@@ -665,6 +665,15 @@ export interface SseError {
   type: 'error'
   code: string
   message: string
+  /**
+   * 錯誤主體的 `error.detail`（結構化補充，只有拋的人刻意給時才有）。
+   *
+   * ⚠️ 只有**串流開始之前**就被擋下的 4xx 才帶得到它（例如重產守門的
+   * `assigned_count`）；串流中途才發生的錯誤走後端的 `to_sse_event`，
+   * 不帶 detail。所以讀它時一律要處理「不存在」——不要從 `message` 的
+   * 中文句子裡用正則挖數字，文案改一個字就會安靜地挖錯。
+   */
+  detail?: Record<string, unknown> | null
 }
 
 export type SseEvent = SseMeta | SseChunk | SseDone | SseError
@@ -815,4 +824,240 @@ export interface WorklogWeekResponse {
   days: WorklogWeekDay[]
   totals: WorklogWeekTotals
   zplanner: WorklogWeekZplanner
+}
+
+/**
+ * 草稿裡一筆工時的送出狀態。**只有這五個**（`core/db.py` 的
+ * `worklog_draft_entries.state`）。
+ *
+ * ⚠️ `unknown` 不是 `failed`：「不知道送進去沒有」（傳輸層斷線、或 ZPlanner
+ * 回成功卻沒給 worklog id）。畫成失敗會讓人按重送，ZPlanner 那側就可能多一筆
+ * 月結後刪不掉的重複工時。
+ */
+export type WorklogEntryState = 'pending' | 'skipped' | 'submitted' | 'failed' | 'unknown'
+
+/**
+ * 一個候選 issue（`generation_meta.clusters[].candidates[]`，也存進每筆 entry）。
+ *
+ * 🔴 **候選不是歸屬。** 系統只給候選與理由，選不選、選哪個由 Viewer 決定
+ * （ADR-0008）。`confidence` 只有三級並一律附 `reason`——要讓人讀理由，
+ * 不是讀名次，所以前端不做排名徽章或百分比。
+ */
+export interface WorklogCandidate {
+  issue_id: number
+  issue_key: string
+  title: string
+  project_id: number | null
+  project_key: string | null
+  source: string
+  confidence: 'strong' | 'medium' | 'weak'
+  reason: string
+  /** 查不到權限時是 `null`（不假裝有權限） */
+  can_worklog: boolean | null
+  permission_checked: boolean
+  permission_reason: string
+}
+
+/**
+ * `GET`／`PUT /api/v1/worklogs/{date}` 回應裡的一筆（contract §1）。
+ *
+ * 形狀＝repository 的 `_worklog_entry_row` 全部鍵，再加上 server 依
+ * `evidence_refs` 集合相等對回 `generation_meta.clusters[]` 取得的
+ * `cluster_key`／`label`／`reason`。
+ *
+ * ⚠️ **這三個補上的鍵可能是 `null`**：重產時 meta 與 entries 分兩個交易寫，
+ * 後者被拒時 meta 已經換新，對不到就給 null（D-9），刻意不退回用位置對——
+ * 用位置對會把新群的理由安靜地貼到舊的那筆上。畫面要能畫「沒有分群理由」。
+ *
+ * ⚠️ 時數欄位一律是字串，理由同 `WorklogWeekDraft.hours`。
+ */
+export interface WorklogDayEntry {
+  id: number
+  draft_id: number
+  seq: number
+  cluster_key: string | null
+  label: string | null
+  reason: string | null
+  /**
+   * 🔴 **產生時一律是 `null`**（ADR-0008 的唯一硬規則）。有值代表 Viewer
+   * 自己選過了。送出閘看的是 `issue_id`，重產守門看 `issue_id or issue_key`，
+   * 所以四個歸屬欄位一律一起寫（D-12），不要只寫一半。
+   */
+  issue_id: number | null
+  issue_key: string | null
+  project_id: number | null
+  project_key: string | null
+  /** 實際會送出的時數（人改過的值）。還沒輸入總時數時整份都是 `null`，那是正常狀態。 */
+  hours: string | null
+  note: string | null
+  /** 系統原始分配。與 `hours` 分開存才看得出人改過什麼。 */
+  allocated_hours: string | null
+  weight: number | null
+  /** 有沒有拿到湊整的那 0.5 小時 */
+  rounded_up: boolean
+  evidence_refs: string[]
+  candidates: WorklogCandidate[]
+  state: WorklogEntryState
+  /** 有值 ＝ 已經送進 ZPlanner。這是「這筆送過了」的唯一憑據，有值的筆 PUT 會 409（D-21）。 */
+  zplanner_worklog_id: number | null
+  zplanner_issue_key: string | null
+  is_locked: boolean
+  submitted_at: string | null
+  last_error_code: string | null
+  last_error_message: string | null
+  created_at: string
+  updated_at: string
+}
+
+/**
+ * `GET`／`PUT /api/v1/worklogs/{date}` 的回應（contract §1）：**扁平的草稿物件**，
+ * 不包外層（比照 submit 回應）。
+ *
+ * 這是前端 entries 的**唯一來源**（D-10）：PUT 用回應整份取代、done 與 submit
+ * 之後各重讀一次 GET。三種回應各寫一個 mapper 遲早會漂移。
+ */
+export interface WorklogDay {
+  id: number
+  work_date: string
+  status: WorklogDraftStatus
+  total_hours: string | null
+  tz_offset: string | null
+  generation_meta: Record<string, unknown> | null
+  generated_at: string | null
+  created_at: string
+  updated_at: string
+  entries: WorklogDayEntry[]
+}
+
+/**
+ * `PUT /api/v1/worklogs/{date}` 的單筆（contract §2）。
+ *
+ * ⚠️ **鍵沒帶＝不改，帶 `null`＝清除**——兩者語意不同，組 body 時不可以用
+ * `?? null` 把「沒帶」補成 `null`，那會把 Viewer 沒碰的欄位清掉。
+ * 歸屬四欄任一有帶就四個都要帶，否則 400（D-12）。
+ */
+export interface WorklogEntryUpdate {
+  id: number
+  hours?: string | null
+  note?: string | null
+  issue_id?: number | null
+  issue_key?: string | null
+  project_id?: number | null
+  project_key?: string | null
+}
+
+/** submit 回應 `summary.skipped_duplicates[]` 的一筆。 */
+export interface WorklogSkippedDuplicate {
+  entry_id: number
+  seq: number
+  issue_key: string | null
+  hours: string | null
+  /** 比對到的那一列遠端工時原文 */
+  existing: Record<string, unknown>
+  /** 可直接顯示的繁中句子 */
+  reason: string
+}
+
+/**
+ * submit 回應的 `summary`。
+ *
+ * 🔴 四個計數描述的是「重讀之後整份草稿」，不是「這一次送了幾筆」。
+ * `not_attempted_count` 一律都在（即使是 0），> 0 代表整批時間預算用完、
+ * 剩下的筆沒開始送——在 DB 裡它們與「從未送過」長得一樣，這個數字是
+ * Viewer 唯一看得出「這批沒跑完」的訊號。
+ */
+export interface WorklogSubmitSummary {
+  submitted_count: number
+  skipped_count: number
+  failed_count: number
+  unknown_count: number
+  skipped_duplicates: WorklogSkippedDuplicate[]
+  /** 工時已寫進 ZPlanner、卻寫不回草稿的筆（帶 `zplanner_worklog_id`）。正常是空的。 */
+  orphans: Record<string, unknown>[]
+  not_attempted_count: number
+}
+
+/**
+ * `POST /api/v1/worklogs/{date}/submit` 的回應。
+ *
+ * 🔴 **HTTP 200 不代表每一筆都成功**，逐筆看 `entries[].state`。
+ * `entries[]` 沒有 `cluster_key`／`label`／`reason`，所以前端不拿它重畫，
+ * 而是再讀一次 GET（D-10），這裡只留 `summary` 當暫態。
+ */
+export interface WorklogSubmitResponse {
+  work_date: string
+  status: WorklogDraftStatus
+  entries: Omit<WorklogDayEntry, 'cluster_key' | 'label' | 'reason'>[]
+  summary: WorklogSubmitSummary
+}
+
+/** submit 的 body。省略 `entry_ids` ＝ 送整天；空陣列會 400。 */
+export type WorklogSubmitBody = { entry_ids?: number[] }
+
+/** draft/stream `meta` 裡的一群（只列前端用得到的欄位）。 */
+export interface WorklogSseCluster {
+  key: string
+  kind: string
+  label: string
+  reason: string
+  weight: number
+  evidence_refs: string[]
+  candidates: WorklogCandidate[]
+}
+
+/**
+ * `POST /worklogs/{date}/draft/stream` 的 `meta` 事件（只列前端用得到的欄位）。
+ *
+ * 刻意另開型別、不併進 `SseMeta`（D-17）：兩者形狀完全不同，聯集進去會讓
+ * Draft Reply 那邊的每個欄位都變成「可能是工時的東西」。
+ */
+export interface WorklogSseMeta {
+  type: 'meta'
+  work_date: string
+  tz_offset: string
+  commits: Record<string, unknown>[]
+  chat: Record<string, unknown>[]
+  clusters: WorklogSseCluster[]
+  zplanner: { available: boolean; reason: string } & Record<string, unknown>
+  provider: string | null
+  model: string | null
+  note_source: string
+}
+
+/**
+ * draft/stream 的 `chunk`：每群一個。
+ *
+ * ⚠️ 這一階段的 `text` 不是 AI 寫的，是該群前兩筆 commit subject 相接。
+ */
+export interface WorklogSseChunk {
+  type: 'chunk'
+  index: number
+  cluster_key: string
+  text: string
+}
+
+/** done 事件的 `allocation`（`AllocationResult.to_dict()`）。省略總時數時整個是 `null`。 */
+export interface WorklogAllocation {
+  total_hours: string
+  entries: {
+    index: number
+    /** ⚠️ 分配演算法的 tie-break 依據，**不是歸屬**，前端不可拿它去預選。 */
+    issue_key: string | null
+    allocated_hours: string
+    rounded_up: boolean
+    merged_into: number | null
+  }[]
+  adjustments: Record<string, unknown>[]
+}
+
+/**
+ * draft/stream 的 `done`。
+ *
+ * `entries` 刻意不列進型別：前端 entries 的唯一來源是 GET（D-10），收到
+ * done 之後重讀一次，不從這裡組卡片——少一個 mapper 就少一條會漂移的路。
+ */
+export interface WorklogSseDone {
+  type: 'done'
+  draft_id: number
+  allocation: WorklogAllocation | null
 }

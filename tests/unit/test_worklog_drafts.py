@@ -29,7 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from core import config as cfg  # noqa: E402
 from core import db, repository as repo  # noqa: E402
-from core.errors import WorklogAlreadySubmitted  # noqa: E402
+from core.errors import InvalidParameter, WorklogAlreadySubmitted  # noqa: E402
 
 
 def days_ago(days: int) -> str:
@@ -302,6 +302,158 @@ class TestEntries(TempDbCase):
         repo.replace_worklog_entries(self.vid, self.draft["id"], [dict(ENTRY), dict(ENTRY)])
         repo.replace_worklog_entries(self.vid, other_draft["id"], [dict(ENTRY)])
         self.assertEqual(len(repo.get_worklog_draft(self.vid, "2026-09-14")["entries"]), 1)
+
+
+class TestUpdateEntries(TempDbCase):
+    """`update_worklog_entries`：PUT 的存取層（D-11）。
+
+    與 `replace_worklog_entries` 語意相反：**逐筆只改帶到的欄位**，不刪不增。
+    守的三件事：整批同一交易（全有或全無）、viewer 隔離、`UNSET` 與 `None`
+    是兩件事。
+    """
+
+    DATE = "2026-09-13"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.draft = repo.upsert_worklog_draft(self.vid, self.DATE, tz_offset="+08:00")
+        repo.replace_worklog_entries(
+            self.vid,
+            self.draft["id"],
+            [
+                dict(ENTRY, note="第一筆", issue_id=9, issue_key="PEI-133",
+                     project_id=42, project_key="PEI"),
+                dict(ENTRY, note="第二筆"),
+            ],
+        )
+        self.first_id, self.second_id = [
+            e["id"] for e in repo.get_worklog_draft(self.vid, self.DATE)["entries"]
+        ]
+        # 固定一個舊的 updated_at 當基準：被拒絕後它沒變，才證明交易真的回捲
+        db.execute(
+            "UPDATE worklog_drafts SET updated_at = ? WHERE id = ?",
+            ("2026-01-01T00:00:00+00:00", self.draft["id"]),
+        )
+
+    def update(self, updates, viewer_id=None):
+        return repo.update_worklog_entries(
+            self.vid if viewer_id is None else viewer_id, self.DATE, updates
+        )
+
+    def stored(self):
+        return repo.get_worklog_draft(self.vid, self.DATE)
+
+    def test_updates_only_the_given_fields(self):
+        saved = self.update([{"id": self.second_id, "hours": "1.50"}])
+        second = saved["entries"][1]
+        self.assertEqual(second["hours"], "1.50")
+        self.assertEqual(second["note"], "第二筆", "沒帶 note 就不准動 note")
+        # 回傳與 get_worklog_draft 同形狀、同內容
+        self.assertEqual(saved, self.stored())
+
+    def test_unset_versus_none(self):
+        """鍵不在 dict 裡＝不改；值是 None＝清除。兩者分不清就會一邊存一邊丟。"""
+        self.update([{"id": self.first_id, "note": None}])
+        first = self.stored()["entries"][0]
+        self.assertIsNone(first["note"])
+        self.assertEqual(first["issue_key"], "PEI-133", "沒帶的歸屬欄位被當成 None 清掉了")
+        self.assertEqual(first["hours"], ENTRY["hours"])
+
+    def test_non_editable_key_is_a_programming_error(self):
+        """server 之外的呼叫端帶了 state 之類的鍵：拋 ValueError，一行都不動。"""
+        before = self.stored()
+        with self.assertRaises(ValueError):
+            self.update([{"id": self.first_id, "note": "順便改", "state": "submitted"}])
+        self.assertEqual(self.stored(), before)
+
+    def test_does_not_add_or_remove_rows(self):
+        self.update([{"id": self.first_id, "note": "改"}])
+        self.assertEqual(
+            [e["id"] for e in self.stored()["entries"]], [self.first_id, self.second_id]
+        )
+
+    def test_touches_draft_updated_at(self):
+        """正對照：成功的更新會動 updated_at——否則下面「沒動」的斷言什麼都證明不了。"""
+        saved = self.update([{"id": self.first_id, "note": "改"}])
+        self.assertNotEqual(saved["updated_at"], "2026-01-01T00:00:00+00:00")
+
+    def test_other_viewer_gets_none_and_nothing_moves(self):
+        before = self.stored()
+        self.assertIsNone(self.update([{"id": self.first_id, "note": "偷改"}], viewer_id=self.other))
+        self.assertEqual(self.stored(), before)
+
+    def test_missing_day_is_none(self):
+        self.assertIsNone(
+            repo.update_worklog_entries(self.vid, "2026-09-14", [{"id": self.first_id, "note": "x"}])
+        )
+
+    def test_unknown_id_rolls_back_the_whole_batch(self):
+        """合法的那筆排在前面也不准寫進去（D-11 全有或全無）。"""
+        before = self.stored()
+        with self.assertRaises(InvalidParameter) as ctx:
+            self.update([{"id": self.first_id, "note": "前面這筆"}, {"id": 99999, "note": "x"}])
+        self.assertEqual(ctx.exception.detail["unknown_entry_ids"], [99999])
+        self.assertEqual(
+            sorted(ctx.exception.detail["draft_entry_ids"]), sorted([self.first_id, self.second_id])
+        )
+        self.assertEqual(self.stored(), before)
+
+    def test_submitted_entry_rolls_back_the_whole_batch(self):
+        """D-21：要改的筆中有已送出者 → 拋，同批未送出的那筆也不動。"""
+        db.execute(
+            "UPDATE worklog_draft_entries SET zplanner_worklog_id = 9931, state = 'submitted' "
+            "WHERE id = ?",
+            (self.first_id,),
+        )
+        before = self.stored()
+        with self.assertRaises(WorklogAlreadySubmitted) as ctx:
+            self.update([{"id": self.second_id, "note": "未送出"}, {"id": self.first_id, "note": "已送出"}])
+        self.assertEqual(ctx.exception.detail["submitted_count"], 1)
+        self.assertEqual(self.stored(), before)
+        self.assertEqual(self.stored()["updated_at"], "2026-01-01T00:00:00+00:00")
+
+    def test_submitted_sibling_does_not_block_other_entries(self):
+        """D-21 正對照：已送出的筆沒被點名，就不准擋。"""
+        db.execute(
+            "UPDATE worklog_draft_entries SET zplanner_worklog_id = 9931, state = 'submitted' "
+            "WHERE id = ?",
+            (self.first_id,),
+        )
+        saved = self.update([{"id": self.second_id, "note": "改得動"}])
+        self.assertEqual(saved["entries"][1]["note"], "改得動")
+        self.assertEqual(saved["entries"][0]["zplanner_worklog_id"], 9931)
+
+    def test_failure_midway_rolls_back_earlier_rows(self):
+        """🔴 守門都過了、寫到第二筆才失敗：第一筆也不准留下。
+
+        用一個只在測試 DB 裡存在的 trigger 讓第二筆的 UPDATE 失敗——這是
+        「逐筆 UPDATE 各自 commit」的實作唯一會露餡的地方，前面的守門測試
+        全部在寫入之前就拋了，驗不到這條。
+        """
+        db.execute(
+            "CREATE TRIGGER boom BEFORE UPDATE ON worklog_draft_entries "
+            "WHEN NEW.note = '炸' BEGIN SELECT RAISE(ABORT, 'boom'); END"
+        )
+        before = self.stored()
+        with self.assertRaises(sqlite3.DatabaseError):
+            self.update([{"id": self.first_id, "note": "先寫的"}, {"id": self.second_id, "note": "炸"}])
+        self.assertEqual(self.stored(), before)
+
+    def test_does_not_touch_submission_bookkeeping(self):
+        """AC-8：只 SET 可編輯欄位。"""
+        db.execute(
+            "UPDATE worklog_draft_entries SET state = 'failed', is_locked = 1, "
+            "last_error_code = 'X', last_error_message = 'm', submitted_at = 't' WHERE id = ?",
+            (self.second_id,),
+        )
+        before = self.stored()["entries"][1]
+        self.update([{"id": self.second_id, "hours": "0.50", "note": "改",
+                      "issue_id": 1, "issue_key": "A-1", "project_id": 2, "project_key": "A"}])
+        after = self.stored()["entries"][1]
+        for key in ("state", "is_locked", "last_error_code", "last_error_message",
+                    "submitted_at", "zplanner_worklog_id", "allocated_hours", "evidence_refs"):
+            self.assertEqual(after[key], before[key], key)
+        self.assertEqual(after["issue_key"], "A-1")
 
 
 class TestWeekRange(TempDbCase):

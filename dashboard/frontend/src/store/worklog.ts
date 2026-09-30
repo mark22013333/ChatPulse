@@ -14,13 +14,14 @@ import type { WorklogWeekDay, WorklogWeekResponse } from '@/lib/types'
  *
  * ### 目前的範圍
  *
- * 「在看哪一天」＋**週檢視**（`GET /worklogs/week`）。草稿產生的 SSE 串流、
- * 時數分配與送出是下一批，那時這裡會長出 `days: Record<ISODate, DayDraft>`，
- * 每一天帶一個明確的 status 聯集。
+ * 只有「在看哪一天」＋**週檢視**（`GET /worklogs/week`）。
  *
- * **刻意不沿用 `draft.ts` 的布林組合**（`streaming` + `raw` + `error` 湊出狀態）：
- * 那個 store 一次只裝一則 Mention，布林夠用；這個 store 一次裝七天，
- * 布林會讓「到底哪一天在串流」變成不可判定。
+ * 單日的草稿產生（SSE）、逐筆存檔（PUT）與送出**不在這裡**，在
+ * `store/worklogDay.ts`（D-15）：那些狀態每秒都在變，擴進來會讓週欄的
+ * selector 跟著重畫、兩邊欄位互相引用。依賴是**單向**的——worklogDay 寫入
+ * 成功後呼叫這裡的 `loadWeek()` 刷新週欄，這個檔永遠不 import worklogDay。
+ * （原本預想的 `days: Record<ISODate, DayDraft>` 多天並存已否決：Viewer 一次
+ * 只看一天，換日即中止串流，多天並存只會多出「哪一天在串流」要判斷。）
  */
 
 /**

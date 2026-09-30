@@ -1793,7 +1793,9 @@ def replace_worklog_entries(
     ⚠️ `refuse_submitted=True` 時，**已經有任何一筆帶著 `zplanner_worklog_id`
     就整筆拒絕**（拋 `WorklogAlreadySubmitted`，交易回捲，一行都不動）。
 
-    本模組的函式一律不拋業務錯誤——**這是唯一的例外，而且是刻意的**。呼叫端
+    本模組的函式一律不拋業務錯誤——**例外只有兩個，而且都是刻意的**：這支，與
+    `update_worklog_entries`（逐筆已送出守門與「id 不屬於此草稿」，理由相同：
+    守門要跟寫入在同一個交易裡才擋得住）。呼叫端
     自己在外面先查一次是不夠的：草稿產生要掃 git、要打 ZPlanner，守門與真正
     寫入之間隔得掉數十秒，那段時間另一條路徑把工時送出去，這裡的 DELETE 就會
     把剛拿到的 `zplanner_worklog_id` **安靜地抹掉**——正好是守門要防的事。
@@ -1872,6 +1874,144 @@ def replace_worklog_entries(
         # `updated_at` 已經在交易最前面寫過了（見 docstring：那一步同時是
         # 「拿 writer lock」）。這裡不再寫第二次。
     return get_worklog_draft_by_id(viewer_id, draft_id)
+
+
+#: `update_worklog_entries` 准許改寫的欄位——**只有 Viewer 自己決定的那幾個**
+#: （D-2）。state／zplanner_worklog_id／is_locked／last_error_*／submitted_at
+#: 是送出流程寫的，allocated_hours／weight／evidence／candidates 是產生流程寫的；
+#: 讓 PUT 碰得到它們，一次前端 bug 就能把「這筆已經送過」的紀錄抹掉。
+_WORKLOG_EDITABLE_FIELDS = (
+    "hours",
+    "note",
+    "issue_id",
+    "issue_key",
+    "project_id",
+    "project_key",
+)
+
+
+def update_worklog_entries(
+    viewer_id: int, work_date: str, updates: List[Dict[str, Any]]
+) -> Optional[Dict[str, Any]]:
+    """逐筆改寫某一天草稿裡的可編輯欄位，回傳更新後的整份草稿；沒有草稿回 None。
+
+    `updates` 每一項是 `{"id": <entry id>, <欄位>: <新值>, ...}`。**鍵沒出現 ＝
+    不改，出現且值為 `None` ＝ 清除**（沿用本檔 `UNSET` 哨兵的語意：清掉專案
+    歸屬是 Viewer 會主動做的事，必須存得下去）。可改的欄位只有
+    `_WORKLOG_EDITABLE_FIELDS`，出現別的鍵直接拋 `ValueError`——那是呼叫端的
+    程式錯誤，靜默略過的話「我以為改了 state」會變成查不出來的 bug。
+
+    🔴 **整批一個交易，全有或全無（D-11／AC-7）**，與旁邊
+    `update_worklog_entry_state` 的「一筆一交易」刻意相反：那支寫的是 ZPlanner
+    已經收下的結果，回捲會抹掉遠端 id；這支寫的是 Viewer 一次按下的「儲存」，
+    存一半的話畫面上改了三筆、實際只落地兩筆，而使用者沒有任何方法知道是哪兩筆。
+
+    交易內的順序是刻意的：
+
+    1. **先 `UPDATE worklog_drafts` 拿 writer lock**（理由同
+       `replace_worklog_entries`：SQLite 的 deferred transaction 在第一個寫入
+       語句前不持鎖，先查後鎖會留一條縫讓送出流程在中間寫入遠端 id）。
+    2. **要改的筆中有已送出者 → 拋 `WorklogAlreadySubmitted`**（D-21 逐筆）。
+       判準是「這次要改的筆」，**不是**「整份草稿有沒有任何一筆送過」：後者
+       （D-3，已被 D-21 取代）會讓部分送出的草稿無路可修——選錯專案而 failed
+       的那筆改不了、重產也被擋，只能拿錯的值重送。`failed`／`unknown` 沒有
+       遠端 id，所以可改；有遠端 id 的筆改本地值不會同步到 ZPlanner，本地與
+       遠端從此對不起來，那只能走 correction-request。
+    3. **有不屬於此草稿的 id → 拋 `InvalidParameter`**，`detail` 鍵名與送出
+       端點的 `_worklog_submit_targets` 相同（`unknown_entry_ids`／
+       `draft_entry_ids`），前端用同一段程式碼處理兩種 400。
+    4. **逐筆 `UPDATE`，`WHERE` 仍帶 `zplanner_worklog_id IS NULL`，`rowcount≠1`
+       就拋 `RuntimeError` 回捲整批。** 在 writer lock 底下、第 2、3 步也過了，
+       照理不會發生；真的發生代表有什麼繞過了這把鎖（例如另一條沒有先搶鎖的
+       寫入路徑），那是 bug，要以 500 炸出來，不能回成功。
+
+    PUT 不能新增或刪除 entry（D-4）：entry 只能由產生流程依證據造出來。
+    時數格式**不在這裡驗**（D-13）：驗證規則在 `zplanner_client.require_hours`，
+    存取層依賴會發 HTTP 的模組違反 core 內部界線，所以由 server 先驗好再傳進來。
+    """
+    draft = get_worklog_draft(viewer_id, work_date, with_entries=False)
+    if draft is None:
+        return None
+    draft_id = draft["id"]
+
+    for item in updates or []:
+        stray = set(item) - {"id", *_WORKLOG_EDITABLE_FIELDS}
+        if stray:
+            raise ValueError(
+                f"update_worklog_entries 不接受欄位 {sorted(stray)}；只能改 "
+                f"{list(_WORKLOG_EDITABLE_FIELDS)}（D-2）。"
+            )
+
+    now = _now()
+    conn = db.get_connection()
+    with conn:
+        # 1. writer lock（見 docstring 第 1 點；這一句同時是草稿的 updated_at）
+        conn.execute(
+            "UPDATE worklog_drafts SET updated_at = ? WHERE id = ? AND viewer_id = ?",
+            (now, draft_id, viewer_id),
+        )
+        remote_by_id = {
+            int(row[0]): row[1]
+            for row in conn.execute(
+                "SELECT id, zplanner_worklog_id FROM worklog_draft_entries "
+                "WHERE draft_id = ?",
+                (draft_id,),
+            ).fetchall()
+        }
+        wanted = [item["id"] for item in updates or []]
+
+        # 2. D-21：只看這次要改的筆
+        sent = sum(
+            1
+            for entry_id in wanted
+            if entry_id in remote_by_id and remote_by_id[entry_id] is not None
+        )
+        if sent:
+            raise WorklogAlreadySubmitted(
+                f"要改的筆中有 {sent} 筆已經送進 ZPlanner 了，這次一筆都沒有改。"
+                "改本地的值不會同步到 ZPlanner，兩邊從此對不起來；已送出的工時"
+                "要改只能走 correction-request。",
+                detail={"submitted_count": sent, "force_allowed": False},
+            )
+
+        # 3. 不屬於這份草稿的 id
+        missing = [entry_id for entry_id in wanted if entry_id not in remote_by_id]
+        if missing:
+            raise InvalidParameter(
+                f"entries 裡的 {', '.join(str(i) for i in missing)} 不屬於 "
+                f"{draft['work_date']} 的草稿，這次一筆都沒有改。",
+                detail={
+                    "unknown_entry_ids": missing,
+                    "draft_entry_ids": sorted(remote_by_id),
+                },
+            )
+
+        # 4. 逐筆寫入，只 SET 有帶的欄位
+        for item in updates or []:
+            sets: List[str] = []
+            params: List[Any] = []
+            for field in _WORKLOG_EDITABLE_FIELDS:
+                value = item.get(field, UNSET)
+                if isinstance(value, _Unset):
+                    continue
+                if field == "hours" and value is not None:
+                    value = str(value)  # DB 是 TEXT，理由見 `_hours_sum`
+                sets.append(f"{field} = ?")
+                params.append(value)
+            sets.append("updated_at = ?")
+            params.append(now)
+            cur = conn.execute(
+                f"UPDATE worklog_draft_entries SET {', '.join(sets)} "
+                "WHERE id = ? AND draft_id = ? AND zplanner_worklog_id IS NULL",
+                (*params, item["id"], draft_id),
+            )
+            if cur.rowcount != 1:
+                raise RuntimeError(
+                    f"entry {item['id']} 在 writer lock 底下仍然寫不進去"
+                    f"（rowcount={cur.rowcount}），整批回捲。前面的守門都過了卻"
+                    "寫不進去，代表有別的寫入路徑沒有先搶鎖——這是 bug，不是使用者錯誤。"
+                )
+    return get_worklog_draft(viewer_id, work_date)
 
 
 def update_worklog_entry_state(

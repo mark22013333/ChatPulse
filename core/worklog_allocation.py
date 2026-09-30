@@ -103,7 +103,12 @@ class AllocationResult:
     adjustments: Tuple[Dict[str, Any], ...]
 
     def to_dict(self) -> Dict[str, Any]:
-        """SSE `done` 事件與 `PUT /worklogs/{date}` 用的形狀。"""
+        """SSE `done` 事件的 `allocation` 形狀。
+
+        ⚠️ `PUT /worklogs/{date}` **不用**這個形狀（2026-09-25 更正舊說法）：PUT 是
+        逐筆欄位更新（D-2），回的是整份草稿重讀後的樣子，沒有「一次分配結果」
+        這個概念；分配結果是產生當下的暫態，只在 done 事件裡出現一次。
+        """
         return {
             "total_hours": self.total_hours,
             "entries": [
