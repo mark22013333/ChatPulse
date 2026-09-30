@@ -112,6 +112,12 @@ class GoogleChatClient:
         self.credentials = credentials or load_legacy_credentials(interactive=interactive)
         self._on_token_refresh = on_token_refresh
         self._session = AuthorizedSession(self.credentials)
+        # 這個 session 會被多個執行緒池共用，預設 10 條的連線池不夠，
+        # 理由與數字見 config.CHAT_HTTP_POOL_MAXSIZE
+        self._session.mount(
+            "https://",
+            requests.adapters.HTTPAdapter(pool_maxsize=cfg.CHAT_HTTP_POOL_MAXSIZE),
+        )
         self._token_at_start = self.credentials.token
 
     # ------------------------------------------------------------------
