@@ -222,7 +222,10 @@ export type SummaryStatus = 'fresh' | 'stale' | 'never' | 'unknown'
 export const SUMMARY_STATUS_LABELS: Record<SummaryStatus, string> = {
   fresh: '已是最新',
   stale: '有新活動',
-  never: '從未產生',
+  // ⚠️ 不寫「從未產生」：Summary 只保留 90 天（config.SUMMARY_RETENTION_DAYS），
+  // 查不到只證明 90 天內沒有，更早產生過的已被清掉。2026-10-01 決定改成資料
+  // 證明得了的說法。
+  never: '90 天內沒有',
   unknown: '—',
 }
 

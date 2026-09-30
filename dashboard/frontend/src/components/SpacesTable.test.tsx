@@ -294,10 +294,10 @@ describe('SpacesTable：Summary 欄', () => {
     const byName = Object.fromEntries(names().map((n, i) => [n, summaryCells()[i]]))
     expect(byName['最新']).toBe('已是最新')
     expect(byName['有新']).toBe('有新活動')
-    expect(byName['從未']).toBe('從未產生')
+    expect(byName['從未']).toBe('90 天內沒有')
     expect(byName['不明']).toMatch(/^—/)
-    // 不顯示則數：格子裡不該出現數字
-    expect(summaryCells().join('')).not.toMatch(/\d/)
+    // 不顯示則數：扣掉固定文案「90 天內沒有」裡的保留天數之後，格子裡不該出現數字
+    expect(summaryCells().join('').replaceAll('90 天內沒有', '')).not.toMatch(/\d/)
   })
 
   it('點表頭依 Summary 狀態排序：有新活動 → 從未產生 → 已是最新，「—」排最後；再點一次反轉但「—」仍在最後', async () => {

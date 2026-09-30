@@ -192,7 +192,7 @@ Summary 的時間（`summaries.created_at`，UTC、秒精度、`+00:00` 結尾�
 每次請求都即時查 DB（一次 `GROUP BY space_id`，不是每個 Space 一次），**不進** Space
 清單的 5 分鐘快取——否則剛產生的 Summary 要等快取過期才看得到。
 摘要工作台的「Summary」欄拿它跟 `lastActiveTime` 比（`lib/spaceTable.ts` 的
-`summaryStatusOf`）：`null`＝從未產生；活動較晚＝有新活動；否則＝已是最新；
+`summaryStatusOf`）：`null`＝90 天內沒有（Summary 只保留 90 天，更早的已清除）；活動較晚＝有新活動；否則＝已是最新；
 `lastActiveTime` 缺少或兩者任一沒有時區標記／解析不了＝顯示「—」，不猜成已是最新。
 ⚠️ 兩個時間的表示法不同（Google 是 `Z`＋微秒，DB 是 `+00:00`＋秒），比較一律換成
 時間點再比，不可比字串。Summary 保留 90 天（九節），過期後會回到 `null`。
