@@ -7,6 +7,7 @@ import { SmallScreenNotice } from '@/app/SmallScreenNotice'
 import { StreamLiveRegions } from '@/app/StreamLiveRegions'
 import { TopBar } from '@/app/TopBar'
 import { useBootstrap } from '@/app/useBootstrap'
+import { workbenchLayout } from '@/app/workbenchLayout'
 import { CommandPalette } from '@/components/CommandPalette'
 import { SkipLink } from '@/components/common/SkipLink'
 import { EvidenceColumn } from '@/components/evidence/EvidenceColumn'
@@ -18,7 +19,7 @@ import { DraftReplyWorkspace } from '@/components/draft/DraftReplyWorkspace'
 import { LoginScreen } from '@/components/LoginScreen'
 import { MentionInbox } from '@/components/MentionInbox'
 import { ShortcutHelp } from '@/components/ShortcutHelp'
-import { SpacesRail } from '@/components/SpacesRail'
+import { SpacesTable } from '@/components/SpacesTable'
 import { SummaryHistory } from '@/components/SummaryHistory'
 import { SummaryWorkspace } from '@/components/SummaryWorkspace'
 import { WorklogDayWorkspace } from '@/components/worklog/WorklogDayWorkspace'
@@ -60,7 +61,9 @@ export function AppShell() {
   const view = toWorkbench(route.section)
 
   /**
-   * 768–1024 的主從切換（設計規格 §12）：清單與工作區同時只顯示一個。
+   * 主從切換：清單與工作區同時只顯示一個。對話型工作台只在 768–1024
+   * （設計規格 §12）；表格型（摘要工作台，2026-10-01 改版 §4.1）在**所有寬度**
+   * ——表格獨占主體、點一列整頁切到詳情。哪些是表格型見 `app/workbenchLayout.ts`。
    *
    * **判準直接來自網址，沒有另外一個狀態**——`#/summary` 是清單、
    * `#/summary/:key` 是工作區，收件匣同理。規格 §12 稱這是「選 URL 路由的
@@ -80,9 +83,11 @@ export function AppShell() {
 
   // 版面斷點：≥1280 證據欄常駐，以下改成抽屜（設計規格 §12）
   const breakpoint = useBreakpoint()
-  const masterDetail = breakpoint === 'narrow' || breakpoint === 'tiny'
-  const listHidden = masterDetail && detail
-  const mainHidden = masterDetail && !detail
+  const { listHidden, mainHidden, listFullWidth, evidenceHidden } = workbenchLayout(
+    view,
+    detail,
+    breakpoint,
+  )
   const evidenceInline = breakpoint === 'wide'
   const drawerOpen = useUiStore((state) => state.drawer[breakpoint] === true)
   const toggleDrawer = useUiStore((state) => state.toggleDrawer)
@@ -196,16 +201,20 @@ export function AppShell() {
           aria-label={RAIL_LABEL[view]}
           inert={listHidden}
           className={cn(
-            // ≥1024 一律是固定寬度的左欄；以下走主從切換，所以寬度與右框線
-            // 都掛在 lg: 上——清單獨占畫面時右邊沒有東西，那條線是多的
-            'relative flex flex-col border-border outline-none lg:w-inbox lg:shrink-0 lg:border-r',
+            'relative flex flex-col border-border outline-none',
+            // 對話型：≥1024 是固定寬度的左欄，以下走主從切換，所以寬度與右框線
+            // 都掛在 lg: 上——清單獨占畫面時右邊沒有東西，那條線是多的。
+            // 表格型：所有寬度都是清單獨占，根本沒有「左欄」
+            listFullWidth ? 'w-full' : 'lg:w-inbox lg:shrink-0 lg:border-r max-lg:w-full max-lg:flex-1',
             listHidden
-              ? 'pointer-events-none absolute inset-0 -z-10 w-full opacity-0'
-              : 'max-lg:w-full max-lg:flex-1',
+              ? 'pointer-events-none absolute inset-0 -z-10 opacity-0'
+              : listFullWidth && 'flex-1',
           )}
         >
           <Pane active={view === 'summary'}>
-            <SpacesRail />
+            {/* 整頁表格（2026-10-01 改版 §4）。收起來時**不卸載**：tabs、篩選、
+                頁碼是它的元件 state，返回時要原樣還在（AppShell.test.tsx 守著） */}
+            <SpacesTable />
           </Pane>
           <Pane active={view === 'mentions'}>
             <MentionInbox
@@ -237,8 +246,9 @@ export function AppShell() {
             mainHidden && 'pointer-events-none absolute inset-0 -z-10 opacity-0',
           )}
         >
-          {/* 只有主從切換的寬度需要一條回得去的路（元件自己 lg:hidden）。
-              清單那一半顯示時整個 <main> 都收起來了，麵包屑也跟著不在。 */}
+          {/* 主從切換時需要一條回得去的路：表格型在所有寬度出現，對話型只在
+              768–1024（元件自己判斷 lg:hidden）。清單那一半顯示時整個 <main>
+              都收起來了，返回列也跟著不在。 */}
           {detail ? <MasterDetailBack view={view} /> : null}
 
           <Pane active={view === 'summary'}>
@@ -271,7 +281,14 @@ export function AppShell() {
             這次改版要修的功能性破洞之一。 */}
         <aside
           aria-label="證據"
-          className="relative hidden w-rail shrink-0 flex-col border-l border-border xl:flex"
+          // 表格獨占主體時證據欄收起來：它回答的是「這份產出建立在什麼之上」，
+          // 旁邊沒有任何一份產出時掛著它只是噪音。手法同左右兩半——留著掛載、
+          // inert ＋ 透明，**不用 display:none**（歷史 Summary 的捲動位置要留著）
+          inert={evidenceHidden}
+          className={cn(
+            'relative hidden w-rail shrink-0 flex-col border-l border-border xl:flex',
+            evidenceHidden && 'pointer-events-none absolute inset-y-0 right-0 -z-10 opacity-0',
+          )}
         >
           <Pane active={view === 'summary'}>
             <EvidenceColumn origin="summary" />

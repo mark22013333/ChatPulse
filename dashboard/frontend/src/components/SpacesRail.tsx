@@ -1,17 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { LayersIcon, Loader2Icon, RefreshCwIcon, SearchIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
 import {
   Select,
   SelectContent,
@@ -20,16 +11,20 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { SpaceList } from '@/components/SpaceList'
+import { useSpaceRename } from '@/components/SpaceRenameDialog'
 import { relativeTime } from '@/lib/format'
 import { SPACE_SORT_KEYS, SPACE_SORT_LABELS, sortSpaces, type SpaceSortKey } from '@/lib/listSort'
-import { onEnter } from '@/lib/keyboard'
 import { hashForSummary } from '@/lib/route'
 import { useRouter } from '@/router/useRouter'
 import { useViewerListSort } from '@/store/listSort'
 import { filterSpaces, useSpacesStore } from '@/store/spaces'
-import type { Space } from '@/lib/types'
 
-/** 左側 Space 導覽（搜尋 + 強制刷新 + 虛擬滾動清單）。 */
+/**
+ * 左側 Space 導覽（搜尋 + 強制刷新 + 虛擬滾動清單）。
+ *
+ * ⚠️ 2026-10-01 起摘要工作台改用 `SpacesTable`（整頁表格），這個元件已經
+ * 沒有任何地方掛載。檔案保留、是否移除由維護者決定。
+ */
 export function SpacesRail() {
   const items = useSpacesStore((state) => state.items)
   const total = useSpacesStore((state) => state.total)
@@ -42,15 +37,13 @@ export function SpacesRail() {
   const selectedId = useSpacesStore((state) => state.selectedId)
   const setSearch = useSpacesStore((state) => state.setSearch)
   const load = useSpacesStore((state) => state.load)
-  const rename = useSpacesStore((state) => state.rename)
 
   // 點清單走 navigate 而不是直接 select：這樣「點擊」與「貼網址」走同一條
   // 路徑，只有一種行為要維護（設計規格 §6.6）
   const { navigate } = useRouter()
 
-  // 正在改名的空間；null＝對話框關著
-  const [renaming, setRenaming] = useState<Space | null>(null)
-  const [aliasDraft, setAliasDraft] = useState('')
+  // 改名對話框與 SpacesTable 共用（見 SpaceRenameDialog.tsx）
+  const { openRename, dialog: renameDialog } = useSpaceRename()
 
   // 首次載入搬到 AppShell 的 bootstrap（設計規格 §7.4）：釘選、命令面板、
   // Reference Space 三處都要 spaces，不該由「哪個畫面剛好先掛載」決定何時載入。
@@ -66,19 +59,6 @@ export function SpacesRail() {
     () => sortSpaces(filterSpaces(items, search), spaceSort),
     [items, search, spaceSort],
   )
-
-  const openRename = (space: Space) => {
-    // 自動猜的名字不預填——那是猜的，讓使用者從空白開始比較清楚；
-    // 自己取過的才預填，方便微調。
-    setAliasDraft(space.nameSource === 'dm_manual' ? space.displayName : '')
-    setRenaming(space)
-  }
-
-  const submitRename = async () => {
-    if (!renaming) return
-    await rename(renaming.id, aliasDraft)
-    setRenaming(null)
-  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -155,43 +135,7 @@ export function SpacesRail() {
         onRename={openRename}
       />
 
-      <Dialog open={renaming !== null} onOpenChange={(open) => !open && setRenaming(null)}>
-        <DialogContent className="sm:max-w-sm">
-          <DialogHeader>
-            <DialogTitle>為這個空間取個名字</DialogTitle>
-            <DialogDescription>
-              私訊在 Google Chat 沒有名稱，我們只能從訊息裡認出對方是誰——
-              對方沒在任何群組被 @ 過就認不出來。你知道他是誰，直接取一個好認的名字。
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-2">
-            <Label htmlFor="space-alias">名字</Label>
-            <Input
-              id="space-alias"
-              value={aliasDraft}
-              autoFocus
-              maxLength={60}
-              placeholder="例如：王小明（某某廠商）"
-              onChange={(e) => setAliasDraft(e.target.value)}
-              // onEnter 會擋掉輸入法組字中的 Enter——注音選字時按 Enter
-              // 是「選這個字」，不是「儲存」。見 lib/keyboard.ts
-              onKeyDown={onEnter(() => void submitRename())}
-            />
-            <p className="text-xs text-muted-foreground">
-              清空後儲存＝取消自訂，回到自動辨識的結果。這個名字只有你看得到，
-              不會改動 Google Chat。
-            </p>
-          </div>
-
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setRenaming(null)}>
-              取消
-            </Button>
-            <Button onClick={() => void submitRename()}>儲存</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {renameDialog}
 
       <div className="shrink-0 border-t border-border px-3 py-1.5 text-2xs text-muted-foreground">
         <div className="flex items-center justify-between gap-2">

@@ -1,14 +1,20 @@
 import { ChevronLeftIcon } from 'lucide-react'
+import { TABLE_WORKBENCH } from '@/app/workbenchLayout'
 import type { WorkbenchView } from '@/lib/modules'
 import { hashForMentions, hashForSummary, hashForWorklog } from '@/lib/route'
+import { cn } from '@/lib/utils'
 import { useRouter } from '@/router/useRouter'
 
 /**
- * 768–1024 的主從切換的返回麵包屑（設計規格 §12）。
+ * 主從切換的返回列（設計規格 §12；2026-10-01 改版 §4.1）。
  *
- * 那個寬度下清單與工作區同時只顯示一個，所以工作區需要一條回得去的路。
- * **只在那個寬度出現**（`lg:hidden`）——兩欄並存時清單就在左邊，多一條麵包屑
- * 只是噪音。
+ * 清單與工作區同時只顯示一個的時候，工作區需要一條回得去的路。什麼時候是
+ * 「同時只顯示一個」由 `TABLE_WORKBENCH` 決定：
+ *
+ * - **表格型**（摘要工作台）：表格獨占整頁、點一列整頁切到詳情，**所有寬度**
+ *   都是主從切換，所以返回列在所有寬度都出現。
+ * - **對話型**（Mention 收件匣）：只有 768–1024 是主從切換，≥1024 清單就在
+ *   左邊，多一條麵包屑只是噪音，所以仍然 `lg:hidden`。
  *
  * ### 為什麼「顯示哪一半」不另外寫狀態
  *
@@ -38,7 +44,10 @@ export function MasterDetailBack({ view }: { view: WorkbenchView }) {
   const back = BACK[view]
 
   return (
-    <nav aria-label="麵包屑" className="border-border shrink-0 border-b px-4 py-1.5 lg:hidden">
+    <nav
+      aria-label="麵包屑"
+      className={cn('border-border shrink-0 border-b px-4 py-1.5', !TABLE_WORKBENCH[view] && 'lg:hidden')}
+    >
       <button
         type="button"
         onClick={() => navigate(back.hash())}
