@@ -36,7 +36,7 @@ import { useRouter } from '@/router/useRouter'
 const BACK: Record<WorkbenchView, { hash: () => string; label: string }> = {
   summary: { hash: () => hashForSummary(), label: '返回 Space 清單' },
   mentions: { hash: () => hashForMentions(), label: '返回 Mention 收件匣' },
-  worklog: { hash: () => hashForWorklog(), label: '返回週檢視' },
+  worklog: { hash: () => hashForWorklog(), label: '返回工時草稿清單' },
 }
 
 export function MasterDetailBack({ view }: { view: WorkbenchView }) {

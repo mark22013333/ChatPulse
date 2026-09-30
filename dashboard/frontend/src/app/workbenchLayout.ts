@@ -10,13 +10,14 @@ import type { WorkbenchView } from '@/lib/modules'
  * 並排，因為 Draft Reply 需要一邊看清單一邊寫。
  *
  * 用 `Record<WorkbenchView, boolean>` 而不是一個 Set：加第四個工作台時漏填
- * 是編譯錯誤，不會安靜地被當成對話型。S4（工時草稿）改表格只要把
- * `worklog` 改成 true，AppShell 與 MasterDetailBack 都從這裡讀。
+ * 是編譯錯誤，不會安靜地被當成對話型。AppShell、MasterDetailBack 與
+ * `router/useRouteSync.ts`（表格型的 `#/worklog` 不補回日期）都從這裡讀。
+ * 工時草稿在 S4 改成表格型（一列一天）。
  */
 export const TABLE_WORKBENCH: Record<WorkbenchView, boolean> = {
   summary: true,
   mentions: false,
-  worklog: false,
+  worklog: true,
 }
 
 export interface WorkbenchLayout {

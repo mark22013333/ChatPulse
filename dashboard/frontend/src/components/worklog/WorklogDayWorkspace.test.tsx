@@ -405,7 +405,12 @@ describe('AC-2 回歸：真的切 section（網址驅動）', () => {
     window.history.replaceState(null, '', `#/worklog/${D14}`)
   })
 
-  it('🔴 #/worklog/09-14 串流中 → #/mentions → #/worklog：不 abort，三處都是 09-14', async () => {
+  // S4 改寫：工時草稿改成表格型之後，`#/worklog` 是「整頁表格」這個真的位置，
+  // useRouteSync 不再把網址補回上次那一天（補了的話返回鍵永遠回不到表格）。
+  // 原本斷言「網址被補成 #/worklog/09-14、標題是 09-14」，現在改成：網址停在
+  // #/worklog，但串流仍不中止、單日 store 仍停在 09-14；再點回 09-14 那一列時
+  // 不重打、不中止——AC-2（切頁籤不中止串流）這條核心不變。
+  it('🔴 #/worklog/09-14 串流中 → #/mentions → #/worklog（表格）→ 再點回 09-14：全程不 abort、不重打', async () => {
     vi.spyOn(api, 'worklogDay').mockRejectedValue(notFound())
     const calls = hangingStream()
     render(
@@ -419,13 +424,18 @@ describe('AC-2 回歸：真的切 section（網址驅動）', () => {
     expect(signal.aborted).toBe(false)
 
     await go('#/worklog')
-    // 網址補回原本那一天（useRouteSync 以週欄選取日補）
-    await waitFor(() => expect(window.location.hash).toBe(`#/worklog/${D14}`))
     await flushEffects()
+    // 表格型：網址不被補回日期
+    expect(window.location.hash).toBe('#/worklog')
     expect(signal.aborted).toBe(false)
-    // 中欄日期、週欄選取日、網址三者一致
+    // 單日工作區收起來但沒丟東西：store 仍是 09-14、選取日也還在
     expect(useWorklogDayStore.getState().date).toBe(D14)
     expect(useWorklogStore.getState().selectedDate).toBe(D14)
+
+    // 從表格點回同一天
+    await go(`#/worklog/${D14}`)
+    await flushEffects()
+    expect(signal.aborted).toBe(false)
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(D14)
     expect(calls).toHaveLength(1)
     useWorklogDayStore.getState().reset()

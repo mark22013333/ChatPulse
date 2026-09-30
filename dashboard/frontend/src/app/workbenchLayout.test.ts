@@ -41,7 +41,20 @@ describe('workbenchLayout', () => {
     })
   })
 
-  it('工時草稿在 S4 之前仍是對話型', () => {
-    expect(workbenchLayout('worklog', true, 'wide').listHidden).toBe(false)
+  // S4 改寫：原本這條是「S4 之前仍是對話型」（listHidden=false），S4 把工時草稿
+  // 改成表格型之後那條斷言本來就該反過來。改成與摘要工作台同一組完整斷言
+  it('工時草稿（S4 起）是表格型：沒有日期顯示表格、有日期顯示單日工作區', () => {
+    expect(workbenchLayout('worklog', false, 'wide')).toEqual({
+      listHidden: false,
+      mainHidden: true,
+      listFullWidth: true,
+      evidenceHidden: true,
+      backEverywhere: true,
+    })
+    expect(workbenchLayout('worklog', true, 'wide')).toMatchObject({
+      listHidden: true,
+      mainHidden: false,
+      evidenceHidden: false,
+    })
   })
 })

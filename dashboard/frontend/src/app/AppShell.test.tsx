@@ -1,4 +1,4 @@
-import { act, render, screen, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -10,7 +10,9 @@ import { useMentionsStore } from '@/store/mentions'
 import { resetPageSizeForTest } from '@/store/pageSize'
 import { useSpacesStore } from '@/store/spaces'
 import { useSummaryStore } from '@/store/summary'
-import type { Me, Space } from '@/lib/types'
+import { mondayOf, addDays, useWorklogStore } from '@/store/worklog'
+import { api } from '@/lib/api'
+import type { Me, Space, WorklogWeekDay, WorklogWeekResponse } from '@/lib/types'
 
 /**
  * AppShell 的摘要工作台：表格 ↔ Summary 工作區的整頁切換（2026-10-01 改版 §4.1）。
@@ -45,7 +47,6 @@ vi.mock('@/components/evidence/EvidenceColumn', () => ({
 vi.mock('@/components/SummaryHistory', () => ({ SummaryHistory: () => null }))
 vi.mock('@/components/MentionInbox', () => ({ MentionInbox: () => <div>收件匣替身</div> }))
 vi.mock('@/components/draft/DraftReplyWorkspace', () => ({ DraftReplyWorkspace: () => null }))
-vi.mock('@/components/worklog/WorklogWeekRail', () => ({ WorklogWeekRail: () => null }))
 vi.mock('@/components/worklog/WorklogDayWorkspace', () => ({ WorklogDayWorkspace: () => null }))
 vi.mock('@/components/SummaryWorkspace', () => ({
   SummaryWorkspace: ({ space, active }: { space: Space | null; active?: boolean }) => {
@@ -236,5 +237,131 @@ describe('AppShell：摘要工作台是整頁表格', () => {
     expect(rail().className).toMatch(/lg:w-inbox/)
     const back = screen.getByRole('button', { name: '返回 Mention 收件匣' })
     expect(back.closest('nav')?.className).toMatch(/lg:hidden/)
+  })
+})
+
+// ── 工時草稿（S4）────────────────────────────────────────────────────
+
+/**
+ * 一週七天，每天都有一份未送出的草稿（時數 4.0），`big` 那天 9.5。
+ * 兩週就是 14 列：每頁 10 筆時才有第二頁可以翻。
+ */
+function worklogWeek(start: string, big = -1): WorklogWeekResponse {
+  const days: WorklogWeekDay[] = Array.from({ length: 7 }, (_, i) => {
+    const work_date = addDays(start, i)
+    return {
+      work_date,
+      weekday: i + 1,
+      draft: {
+        id: i + 1,
+        work_date,
+        status: 'draft',
+        total_hours: null,
+        tz_offset: '+08:00',
+        entry_count: 2,
+        hours: i === big ? '9.50' : '4.00',
+        allocated_hours: '4.00',
+        submitted_count: 0,
+        failed_count: 0,
+        unknown_count: 0,
+        unassigned_count: 2,
+      },
+      zplanner: null,
+    }
+  })
+  return {
+    week_start: start,
+    week_end: addDays(start, 6),
+    days,
+    totals: { draft_hours: '28.00', days_with_draft: 7, days_submitted: 0, entries_unassigned: 14 },
+    zplanner: { available: true, total_hours: '0.00', worklog_count: 0 },
+  }
+}
+
+describe('AppShell：工時草稿是整頁表格（S4）', () => {
+  const THIS = mondayOf()
+  const LAST = addDays(THIS, -7)
+  const worklogTable = () => screen.getByRole('table', { name: '工時草稿清單' })
+  const worklogPager = () => screen.getByRole('navigation', { name: '工時草稿清單分頁' })
+
+  beforeEach(() => {
+    useWorklogStore.getState().reset()
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('🔴 非工時視圖時不對 ZPlanner 發請求；切進工時才發（正對照）', async () => {
+    const spy = vi.spyOn(api, 'worklogWeek').mockImplementation(async (s: string) => worklogWeek(s))
+    mountAt('#/summary')
+    go('#/mentions/7')
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    // 工時表格一直都掛著（Pane 不卸載），但沒在看就一次都不打
+    expect([...document.querySelectorAll('caption')].map((c) => c.textContent)).toContain('工時草稿清單')
+    expect(spy).not.toHaveBeenCalled()
+
+    go('#/worklog')
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    expect(spy).toHaveBeenCalledWith(THIS)
+  })
+
+  it('#/worklog 顯示表格（工作區收起來、沒有返回列）；#/worklog/:date 顯示工作區與返回列', async () => {
+    vi.spyOn(api, 'worklogWeek').mockImplementation(async (s: string) => worklogWeek(s))
+    mountAt('#/worklog')
+    expect(rail()).not.toHaveAttribute('inert')
+    expect(within(rail()).getByRole('table', { name: '工時草稿清單' })).toBeInTheDocument()
+    expect(within(rail()).getByRole('navigation', { name: '工時草稿清單分頁' })).toBeInTheDocument()
+    expectTuckedAway(main())
+    expect(screen.queryByRole('button', { name: '返回工時草稿清單' })).toBeNull()
+
+    go(`#/worklog/${THIS}`)
+    expect(main()).not.toHaveAttribute('inert')
+    expectTuckedAway(rail())
+    const back = screen.getByRole('button', { name: '返回工時草稿清單' })
+    // 表格型的返回列在所有寬度都出現——沒有 lg:hidden
+    expect(back.closest('nav')?.className).not.toMatch(/lg:hidden/)
+  })
+
+  it('🔴 點列進當天、按返回：停在表格（網址不被補回日期），tab、排序、頁碼都還在，而且是同一張表', async () => {
+    try {
+      localStorage.setItem('chatpulse.pageSize.31', JSON.stringify({ worklog: 10 }))
+    } catch {
+      // jsdom 一定有
+    }
+    resetPageSizeForTest()
+    vi.spyOn(api, 'worklogWeek').mockImplementation(async (s: string) => worklogWeek(s, s === LAST ? 0 : -1))
+    mountAt('#/worklog')
+    await screen.findAllByText('歸屬尚未選擇（2 段）')
+    const before = worklogTable()
+
+    await userEvent.click(screen.getByRole('tab', { name: '未送出' }))
+    await waitFor(() => expect(within(worklogTable()).getAllByRole('row')).toHaveLength(11))
+    await userEvent.click(screen.getByRole('button', { name: /草稿時數/ }))
+    await userEvent.click(within(worklogPager()).getByRole('button', { name: '第 2 頁' }))
+    expect(within(worklogPager()).getByRole('button', { name: '第 2 頁' })).toHaveAttribute('aria-current', 'page')
+
+    // 第 2 頁第一列（依時數大→小、同時數依日期；第 1 列是上週一的 9.5）
+    const firstRow = within(worklogTable()).getAllByRole('row')[1]
+    await userEvent.click(within(firstRow).getAllByRole('cell')[0])
+    expect(window.location.hash).toMatch(/^#\/worklog\/\d{4}-\d{2}-\d{2}$/)
+    expectTuckedAway(rail())
+
+    await userEvent.click(screen.getByRole('button', { name: '返回工時草稿清單' }))
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    // 返回之後網址停在表格，沒有被 useRouteSync 補回剛才那一天
+    expect(window.location.hash).toBe('#/worklog')
+    expect(rail()).not.toHaveAttribute('inert')
+
+    expect(worklogTable()).toBe(before)
+    expect(screen.getByRole('tab', { name: '未送出' })).toHaveAttribute('aria-selected', 'true')
+    expect(within(worklogPager()).getByRole('button', { name: '第 2 頁' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('columnheader', { name: /草稿時數/ })).toHaveAttribute('aria-sort', 'descending')
   })
 })

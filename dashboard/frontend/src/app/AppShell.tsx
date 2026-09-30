@@ -23,7 +23,7 @@ import { SpacesTable } from '@/components/SpacesTable'
 import { SummaryHistory } from '@/components/SummaryHistory'
 import { SummaryWorkspace } from '@/components/SummaryWorkspace'
 import { WorklogDayWorkspace } from '@/components/worklog/WorklogDayWorkspace'
-import { WorklogWeekRail } from '@/components/worklog/WorklogWeekRail'
+import { WorklogTable } from '@/components/worklog/WorklogTable'
 import { evidenceOriginOf } from '@/lib/evidence'
 import { toWorkbench, type WorkbenchView } from '@/lib/modules'
 import { hasDetail, hashForMentions } from '@/lib/route'
@@ -46,7 +46,7 @@ import { useDraftStore } from '@/store/draft'
 const RAIL_LABEL: Record<WorkbenchView, string> = {
   summary: 'Space 清單',
   mentions: 'Mention 收件匣',
-  worklog: '本週',
+  worklog: '工時草稿清單',
 }
 
 export function AppShell() {
@@ -229,9 +229,10 @@ export function AppShell() {
             />
           </Pane>
           <Pane active={view === 'worklog'}>
-            {/* 傳 active：Pane 不卸載子元件，沒有這道閘的話光是打開 app
-                就會對 ZPlanner 發一次請求 */}
-            <WorklogWeekRail active={view === 'worklog'} />
+            {/* 整頁表格（2026-10-01 改版 §4.4），取代舊的週欄。傳 active：Pane
+                不卸載子元件，沒有這道閘的話光是打開 app 就會對 ZPlanner 發一次
+                請求（AppShell.test.tsx 守著）。收起來時同樣不卸載 */}
+            <WorklogTable active={view === 'worklog'} />
           </Pane>
         </aside>
 
