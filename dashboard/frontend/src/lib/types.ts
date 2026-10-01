@@ -253,6 +253,13 @@ export interface Space {
   renamable?: boolean
   /** 目前的名字是誰取的：dm_peer=自動認出、dm_manual=你自己取的 */
   nameSource?: 'dm_peer' | 'dm_manual' | null
+  /**
+   * 目前這位 Viewer 最近一次對這個 Space 產生 Summary 的時間（DB 的 created_at，
+   * UTC、`+00:00` 結尾）；沒產生過是 null。只算自己的（ADR-0002）。
+   * 狀態判定見 `lib/spaceTable.ts` 的 `summaryStatusOf`。可選：舊後端與測試
+   * fixture 沒有這個欄位，缺少時一律當成「無法判斷」，不當成「從未產生」。
+   */
+  lastSummaryAt?: string | null
 }
 
 export interface SpacesResponse {
@@ -856,6 +863,17 @@ export interface WorklogCandidate {
   can_worklog: boolean | null
   permission_checked: boolean
   permission_reason: string
+  /**
+   * 只有 `source === 'last_used'`（「這個來源上次記到 XXX」）才有：那次記憶的時間。
+   * 🔴 那一項同樣**只是候選**，四個歸屬欄位不會因此有值——要 Viewer 點了才算。
+   */
+  last_used_at?: string | null
+  /**
+   * 只有 `last_used` 那一項才有：同一張單這次也被系統搜到時，搜到的來源
+   * （`issue_key`／`default_project`／`search`）。有值時 `confidence`／`reason` 已併入
+   * 搜到那一邊（強訊號不被記憶的「中」降級），也代表這一段**有**系統命中。
+   */
+  matched_source?: string | null
 }
 
 /**
@@ -1060,4 +1078,42 @@ export interface WorklogSseDone {
   type: 'done'
   draft_id: number
   allocation: WorklogAllocation | null
+  /**
+   * 重產時因分段改變而清空的歸屬（2026-10-01 起）。`count` 是段數，`issue_keys` 是被清掉的
+   * 單號（去重、沒有單號的不列）。舊後端沒有這個鍵，所以是選填。
+   */
+  attributions_cleared?: { count: number; issue_keys: string[] }
+}
+
+/**
+ * `GET /api/v1/worklogs/issue-search?q=` 的一筆：與 `WorklogCandidate` 的前五個欄位同形。
+ *
+ * 搜尋結果**沒有**信心度、理由與權限預檢：worklogable 本身就是「能不能填」的權威
+ * 來源，逐專案的角色預檢是產草稿時的事（每專案 2 次 HTTP，打字時跑會慢到不能用）。
+ */
+export interface WorklogIssueSearchIssue {
+  issue_id: number
+  issue_key: string
+  title: string
+  project_id: number | null
+  project_key: string | null
+}
+
+/** 搜尋結果依專案分組。`project_key` 為 `null` 的組排最後。 */
+export interface WorklogIssueSearchGroup {
+  project_id: number | null
+  project_key: string | null
+  issues: WorklogIssueSearchIssue[]
+}
+
+/**
+ * `GET /api/v1/worklogs/issue-search` 的回應。
+ *
+ * ⚠️ `q` 不可為空白——後端直接 400，因為 ZPlanner 對空字串回 0 筆而不是全部；
+ * 前端也在送出前擋下（`normalizeIssueQuery`），不要依賴 400。
+ */
+export interface WorklogIssueSearchResponse {
+  q: string
+  count: number
+  groups: WorklogIssueSearchGroup[]
 }

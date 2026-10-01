@@ -672,16 +672,18 @@ class TestDraftStreamGuards(EndpointCase):
             self.stream_raw(DATE)
         self.assertIn("correction-request", str(ctx.exception))
         self.assertEqual(ctx.exception.detail["submitted_count"], 1)
-        # worklog id 弄丟就是永遠對不回來，force 不給過
+        # worklog id 弄丟就是永遠對不回來，沒有任何參數蓋得過
         self.assertIs(ctx.exception.detail["force_allowed"], False)
+        # 舊前端可能還帶著已移除的 force 鍵：被忽略，照樣擋
         with self.assertRaises(WorklogAlreadySubmitted):
             self.stream_raw(DATE, force=True)
 
-    def test_refuses_to_wipe_manually_chosen_issues(self):
-        """🔴 選專案是這個功能裡最花心力的一步，不准安靜清掉。
+    def test_unmatched_chosen_issues_are_cleared_and_reported(self):
+        """對不上新切段的已選單號：照規格留空，**不擋**，事後在 done 事件列出。
 
-        原本的守門只看 `zplanner_worklog_id`，於是「還沒送出、但人已經一筆一筆
-        挑好 issue」的草稿重產時會被整組 DELETE，事前沒有任何警告。
+        2026-10-01 以前這裡會整組清掉、而且要 force 才放行；之後一度改成「串流中擋下
+        來問」。Viewer 的決定是：重產照常完成，畫面事後說清楚清掉了哪幾張單。這裡的
+        兩筆沒有 evidence_refs、也沒有 meta 可以對，正是「對不上」的那種。
         """
         draft = repo.upsert_worklog_draft(self.vid, DATE, tz_offset=TZ)
         repo.replace_worklog_entries(
@@ -693,20 +695,19 @@ class TestDraftStreamGuards(EndpointCase):
                 {"hours": "1.00"},  # 這筆還沒選
             ],
         )
-        with self.assertRaises(InvalidParameter) as ctx:
-            self.stream_raw(DATE)
-        exc = ctx.exception
-        # 前端要說得出「你有 N 筆已經選好的專案會被清掉」——數字不能只寫在
-        # 中文句子裡，不然前端只能用正則去挖
-        self.assertEqual(exc.detail["assigned_count"], 2)
-        self.assertEqual(exc.detail["assigned_issue_keys"], ["PEI-133", "PEI-140"])
-        self.assertIs(exc.detail["force_allowed"], True)
-        self.assertIn("2 筆", exc.message)
-        # 擋下來＝真的一筆都沒動
-        after = repo.get_worklog_draft(self.vid, DATE)
+        events = self.stream(day_evidence(commit("a" * 40, "fix: PEI-133")))
+        self.assertEqual(events[-1]["type"], "done", "不擋：重產照常完成")
+        # 前端要說得出「N 段的歸屬已清空：…」——數字與單號是資料，不能只寫在句子裡
         self.assertEqual(
-            [e["issue_key"] for e in after["entries"]], ["PEI-133", "PEI-140", None]
+            events[-1]["attributions_cleared"], {"count": 2, "issue_keys": ["PEI-133", "PEI-140"]}
         )
+        after = repo.get_worklog_draft(self.vid, DATE)
+        self.assertEqual([e["issue_key"] for e in after["entries"]], [None])
+
+    def test_first_generation_reports_nothing_cleared(self):
+        """正對照：第一次產生沒有任何東西可以清，計數是 0 而不是缺欄位。"""
+        events = self.stream(day_evidence(commit("a" * 40, "fix: PEI-133")))
+        self.assertEqual(events[-1]["attributions_cleared"], {"count": 0, "issue_keys": []})
 
     def test_detail_reaches_the_http_body(self):
         """`error.detail` 要真的出現在回應主體裡，不是只進 log。"""
@@ -720,18 +721,6 @@ class TestDraftStreamGuards(EndpointCase):
             server.chatpulse_error_handler(mock.Mock(), InvalidParameter("壞掉了", detail="內部堆疊"))
         )
         self.assertNotIn("detail", json.loads(plain.body)["error"])
-
-    def test_force_true_accepts_wiping_chosen_issues(self):
-        """明示 force=true 就放行——擋的是「沒人講一聲」，不是「不准重來」。"""
-        draft = repo.upsert_worklog_draft(self.vid, DATE, tz_offset=TZ)
-        repo.replace_worklog_entries(
-            self.vid, draft["id"], [{"hours": "3.50", "issue_id": 501, "issue_key": "PEI-133"}]
-        )
-        events = self.stream(day_evidence(commit("a" * 40, "fix: PEI-133")), force=True)
-        self.assertEqual(events[-1]["type"], "done")
-        after = repo.get_worklog_draft(self.vid, DATE)
-        # ADR-0008：重產出來的一律沒有歸屬，人要重選一次
-        self.assertEqual([e["issue_key"] for e in after["entries"]], [None])
 
     def test_submission_between_the_gate_and_the_write_is_still_refused(self):
         """🔴 TOCTOU：守門通過 → 掃 git／打 ZPlanner（可達數十秒）→ 才寫入。
@@ -830,7 +819,7 @@ class TestDraftStreamGuards(EndpointCase):
         self.assertEqual([e["note"] for e in after["entries"]], ["既有"])
 
     def test_force_does_not_override_a_late_submission(self):
-        """`force=true` 能蓋過「已選專案」，但蓋不過「已送出」。"""
+        """舊前端帶著已移除的 `force` 鍵也蓋不過「已送出」（多出來的鍵被忽略）。"""
         draft = repo.upsert_worklog_draft(self.vid, DATE, tz_offset=TZ)
         repo.replace_worklog_entries(self.vid, draft["id"], [{"hours": "3.50"}])
 

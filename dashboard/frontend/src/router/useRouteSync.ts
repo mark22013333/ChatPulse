@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { TABLE_WORKBENCH } from '@/app/workbenchLayout'
 import { hashForWorklog } from '@/lib/route'
 import { useRouter } from '@/router/useRouter'
 import { useMentionsStore } from '@/store/mentions'
@@ -65,8 +66,17 @@ export function useRouteSync() {
      * 中欄還停在 09-14（草稿與串流都在），網址與週欄卻沒有選任何一天——三個地方
      * 講三種話，重新整理一次就變成「什麼都沒選」。補的是 Viewer 自己選過的值，
      * 不是猜的，所以不違反上一段。從來沒選過（null）就維持週檢視。
+     *
+     * 🔴 **表格型（2026-10-01 改版 S4 起）不補。** 那時 `#/worklog` 本身就是一個
+     * 真的位置——整頁表格——而「返回」就是導覽到它（`MasterDetailBack`）。
+     * 照舊補回日期的話，按返回的下一格就被 replace 回 `#/worklog/09-14`，
+     * 表格永遠回不去。上面那個「三個地方講三種話」在表格型不成立：網址說
+     * 「在看表格」、表格就在畫面上；中欄收起來但沒卸載，草稿與串流照舊留著
+     * （`WorklogDayWorkspace` 對 `date === null` 一律不動作）。摘要工作台的
+     * `#/summary` 從來不補，這裡對齊它。
      */
     if (target === null) {
+      if (TABLE_WORKBENCH.worklog) return
       const remembered = useWorklogStore.getState().selectedDate
       if (remembered) navigate(hashForWorklog(remembered), { replace: true })
       return

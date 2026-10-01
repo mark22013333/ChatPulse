@@ -11,7 +11,18 @@ import type { Mention, MentionCounts, Space } from '@/lib/types'
  * `sortByPinned` 仍留給設定頁（SpacePrefsPage）用，行為不變。
  */
 
-export type SpaceSortKey = 'activity-desc' | 'activity-asc' | 'name' | 'type'
+/**
+ * ⚠️ `name`／`type` 是升冪，降冪另立 `name-desc`／`type-desc`，**不把舊鍵改名成
+ * `name-asc`**：這些值原樣存在 Viewer 的 localStorage 裡，改名會讓每個選過
+ * 「名稱」的人在升級後被 `parseListSort` 默默退回預設排序。
+ */
+export type SpaceSortKey =
+  | 'activity-desc'
+  | 'activity-asc'
+  | 'name'
+  | 'name-desc'
+  | 'type'
+  | 'type-desc'
 export type MentionSortKey = 'time-desc' | 'time-asc' | 'space' | 'sender'
 
 export interface SpaceSortOptions {
@@ -24,7 +35,9 @@ export const SPACE_SORT_KEYS: readonly SpaceSortKey[] = [
   'activity-desc',
   'activity-asc',
   'name',
+  'name-desc',
   'type',
+  'type-desc',
 ]
 export const MENTION_SORT_KEYS: readonly MentionSortKey[] = [
   'time-desc',
@@ -40,7 +53,9 @@ export const SPACE_SORT_LABELS: Record<SpaceSortKey, string> = {
   'activity-desc': '最後活動（新→舊）',
   'activity-asc': '最後活動（舊→新）',
   name: '名稱',
+  'name-desc': '名稱（反序）',
   type: '類型',
+  'type-desc': '類型（反序）',
 }
 
 export const MENTION_SORT_LABELS: Record<MentionSortKey, string> = {
@@ -106,8 +121,12 @@ const SPACE_COMPARATORS: Record<SpaceSortKey, (a: Space, b: Space) => number> = 
   'activity-desc': newestFirst,
   'activity-asc': byActivity(1),
   name: byName,
+  'name-desc': (a, b) => byName(b, a),
   // 同類型之內依最新活動：選「類型」的人是想分組看，組內仍以「最近在動的」最有用
   type: (a, b) => typeRank(a.type) - typeRank(b.type) || newestFirst(a, b),
+  // ⚠️ 降冪只反轉「組的順序」，組內仍是新→舊。不能寫成 `type(b, a)`：那會連
+  // 組內一起翻成舊→新，Viewer 點的是「類型」欄，沒有要求改變組內順序
+  'type-desc': (a, b) => typeRank(b.type) - typeRank(a.type) || newestFirst(a, b),
 }
 
 /**
@@ -224,6 +243,10 @@ export interface MentionTruncation {
  * 判準：`counts` 來自 repository.count_mentions，算的是這位 Viewer 的**全部**
  * Mention（manual 併進 pending，與清單同一套歸類），所以
  * `pending + resolved > items.length` 就代表有東西沒載入。
+ * 🔴 這個判準的前提是「清單與 counts 來自同一個快照」。2026-10-01 以前並非如此：
+ * 後端先讀清單、補完內容（好幾秒）才讀 counts，採集器在中間寫入的新 Mention
+ * 只算進 counts，於是 90 筆的清單配上 91 的總數，跳出假的截斷提示。現在兩者在
+ * repository.list_mentions_with_counts 裡同一個讀取交易讀完；拆開它，這裡就會誤報。
  * ⚠️ 反方向不成立：count_mentions 會丟掉 pending／manual／resolved 以外的
  * 狀態，所以「沒偵測到」只是「沒有證據說被截斷」。
  *

@@ -11,10 +11,11 @@ import type { WorklogDay } from '@/lib/types'
  * ### ⚠️ 「重新分配」其實是整次重新產生
  *
  * 後端沒有「只重算時數」的端點，所以這顆鈕走的是 draft/stream：重掃 git 與
- * Chat、重打 ZPlanner、重新分群。份量比名字重得多，**已選好的專案會被清掉**
- * ——有選過任何一筆時後端會先擋下（400 `assigned_count`），由容器跳二次確認
- * 講清楚會清掉幾筆。文案必須把這件事寫在鈕旁邊，不能只靠確認框：Viewer 若以為
- * 只是「重算數字」，看到確認框時已經先入為主，很容易按下去。
+ * Chat、重打 ZPlanner、重新分群。份量比名字重得多：改過的時數、備註會換成新產生
+ * 的值；已選好的單**同一段還在就保留**，對不到新分段的照規格留空、不擋，重產完成後
+ * 由容器在上方列出清掉了哪幾張單（done 事件的 `attributions_cleared`）。正因為不再有
+ * 確認框，文案必須把這件事寫在鈕旁邊：Viewer 若以為只是「重算數字」，不會想到要回頭
+ * 檢查哪幾段被清空了。
  *
  * 輸入框預填目前的 `total_hours`。它與各筆時數之和**不保證相等**（湊 0.5 倍數
  * 必然有餘數），真正會送出的數字在送出區。
@@ -89,7 +90,7 @@ export function WorklogHoursBar({
       ) : null}
       <p className="text-fg-subtle mt-2 max-w-prose text-xs leading-relaxed">
         重新分配＝<strong className="font-medium">重新產生整份草稿</strong>：會重掃 git 與 Chat、重新分群與分配時數，
-        你已經選好的專案與改過的時數、備註都會被清掉（有選過專案的話會先問你）。已送進 ZPlanner 的草稿不能重新產生。
+        改過的時數與備註會換成新產生的值；已選好的單，同一段還在就會保留，對不到新分段的會清空，產生完會列出是哪幾張單。已送進 ZPlanner 的草稿不能重新產生。
       </p>
     </section>
   )

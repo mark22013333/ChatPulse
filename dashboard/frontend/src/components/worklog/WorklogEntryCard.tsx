@@ -1,20 +1,14 @@
 import { useEffect, useId, useState } from 'react'
 import type { KeyboardEvent } from 'react'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { WorklogIssuePicker } from '@/components/worklog/WorklogIssuePicker'
+import { issueLookupStatus, splitCandidates } from '@/components/worklog/issueChoice'
 import { cn } from '@/lib/utils'
 import { formatHours } from '@/store/worklog'
-import {
-  UNASSIGNED,
-  assignmentValue,
-  entryStateText,
-  isEntryLocked,
-  selectToAssignment,
-  type WorklogEntryPatch,
-  type WorklogEntryTone,
-} from '@/store/worklogDay'
-import type { WorklogDayEntry } from '@/lib/types'
+import { entryStateText, isEntryLocked, type WorklogEntryPatch, type WorklogEntryTone } from '@/store/worklogDay'
+import type { WorklogDayEntry, WorklogIssueSearchResponse } from '@/lib/types'
 
 const TONE_CLASS: Record<WorklogEntryTone, string> = {
   neutral: 'text-fg-dim',
@@ -23,17 +17,23 @@ const TONE_CLASS: Record<WorklogEntryTone, string> = {
   danger: 'text-destructive',
 }
 
-const CONFIDENCE_LABEL: Record<string, string> = { strong: '強', medium: '中', weak: '弱' }
-
 /**
  * 一張草稿卡＝草稿裡的一筆工時（AC-3、D-16）。
  *
- * ### 🔴 歸屬一律從「未指派」開始（ADR-0008）
+ * ### 🔴 「記到哪張單」一律從「未指派」開始（ADR-0008）
  *
- * `issue_id` 是 `null` 就顯示「未指派」，**候選排第一的那個也不准預選**。
+ * `issue_id` 是 `null` 就顯示「未指派」，**候選排第一的、「上次記到」的都不准預選**。
  * 一份看起來合理的自動歸屬，代價由一個月後發現填錯的人支付（月結後要走
- * correction-request）。值的換算全在 `assignmentValue`／`selectToAssignment`，
- * 那裡也處理了 Base UI 清除選擇時給 `null` 的陷阱。
+ * correction-request）。選單本身在 `WorklogIssuePicker`，那裡也處理了 Base UI
+ * 清除選擇時給 `null` 的陷阱。
+ *
+ * 欄位以前叫「專案歸屬」，但能選的其實是 ZPlanner 的**單**（issue），專案只是單的
+ * 所屬——Viewer 讀到「專案」會以為選一個專案就好，2026-10-01 改名。
+ *
+ * ### 候選為什麼是空的，要講清楚是哪一種（`issueLookupStatus`）
+ *
+ * ZPlanner 不可用、這一段的查詢失敗、有查但沒命中——三種情況 Viewer 的下一步
+ * 不同（找管理者／重試／自己搜），以前共用同一句話。
  *
  * ### 存檔時機「確認就存」（D-16）
  *
@@ -49,12 +49,19 @@ const CONFIDENCE_LABEL: Record<string, string> = { strong: '強', medium: '中',
  */
 export function WorklogEntryCard({
   entry,
+  generationMeta = null,
   saving = false,
   error = null,
   onSave,
   onDirtyChange,
+  searchIssues,
 }: {
   entry: WorklogDayEntry
+  /**
+   * 這份草稿的 `generation_meta`（GET 回應原樣）。卡片從裡面的 `zplanner` 段分辨
+   * 「不可用／查詢失敗／沒命中」；給 `null` 時不說是哪一種，搜尋框照常可用。
+   */
+  generationMeta?: unknown
   saving?: boolean
   error?: string | null
   /**
@@ -64,12 +71,14 @@ export function WorklogEntryCard({
   onSave: (id: number, patch: WorklogEntryPatch) => Promise<boolean> | void
   /** 同上，可直接傳 store 的 `setDirty`。 */
   onDirtyChange?: (id: number, dirty: boolean) => void
+  /** 測試注入用；省略時打 `GET /worklogs/issue-search` */
+  searchIssues?: (q: string, signal?: AbortSignal) => Promise<WorklogIssueSearchResponse>
 }) {
   const locked = isEntryLocked(entry)
   const status = entryStateText(entry)
   const hoursId = useId()
   const noteId = useId()
-  const assignId = useId()
+  const [retryRequest, setRetryRequest] = useState(0)
 
   const [hours, setHours] = useState(entry.hours ?? '')
   const [note, setNote] = useState(entry.note ?? '')
@@ -119,12 +128,8 @@ export function WorklogEntryCard({
     event.currentTarget.blur()
   }
 
-  // Select 的選項。目前的選擇若不在候選裡（例如之後的搜尋選的），也要列出來，
-  // 否則 Select 顯示不出目前的值，看起來像「未指派」——那是在說謊。
-  const items: Record<string, string> = { [UNASSIGNED]: '未指派' }
-  for (const c of entry.candidates) items[String(c.issue_id)] = `${c.issue_key}　${c.title}`
-  const current = assignmentValue(entry)
-  if (!(current in items)) items[current] = `${entry.issue_key ?? `#${entry.issue_id}`}（目前的選擇）`
+  const lookup = issueLookupStatus(generationMeta, entry.cluster_key, entry.candidates)
+  const hasLastUsed = splitCandidates(entry.candidates).lastUsed !== null
 
   return (
     <article
@@ -152,48 +157,19 @@ export function WorklogEntryCard({
 
       <div className="mt-3 grid gap-3 sm:grid-cols-[1fr_7rem]">
         <div className="flex min-w-0 flex-col gap-1">
-          <label htmlFor={assignId} className="text-fg-dim text-xs">
-            專案歸屬
-          </label>
-          <Select
-            items={items}
-            value={current}
-            onValueChange={(value) => {
-              const patch = selectToAssignment(value as string | null, entry.candidates)
-              if (patch !== undefined) void onSave(entry.id, patch)
-            }}
-          >
-            <SelectTrigger id={assignId} aria-label="專案歸屬" size="sm" className="w-full" disabled={locked}>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent className="w-auto max-w-96 min-w-72">
-              <SelectItem value={UNASSIGNED}>
-                <span className="text-xs">未指派</span>
-              </SelectItem>
-              {entry.candidates.map((candidate) => (
-                <SelectItem key={candidate.issue_id} value={String(candidate.issue_id)}>
-                  <span className="flex w-full flex-col gap-0.5 whitespace-normal">
-                    <span className="font-medium">
-                      {candidate.issue_key}　{candidate.title}
-                    </span>
-                    {/* 信心度只有三級並一律附理由：讓人讀理由，不是讀名次 */}
-                    <span className="text-2xs text-muted-foreground leading-snug">
-                      信心{CONFIDENCE_LABEL[candidate.confidence] ?? candidate.confidence}：{candidate.reason}
-                      {candidate.can_worklog === false ? '（可能沒有填工時的權限）' : ''}
-                    </span>
-                  </span>
-                </SelectItem>
-              ))}
-              {current !== UNASSIGNED && !entry.candidates.some((c) => String(c.issue_id) === current) ? (
-                <SelectItem value={current}>
-                  <span className="text-xs">{items[current]}</span>
-                </SelectItem>
-              ) : null}
-            </SelectContent>
-          </Select>
-          {entry.candidates.length === 0 && !locked ? (
-            <p className="text-fg-subtle text-2xs">沒有候選 issue（ZPlanner 不可用或沒有相符的單）。</p>
-          ) : null}
+          {/* 觸發鈕自帶可及名稱「記到哪張單」，這裡的字只是視覺標籤 */}
+          <span className="text-fg-dim text-xs" aria-hidden>
+            記到哪張單
+          </span>
+          <WorklogIssuePicker
+            entry={entry}
+            status={lookup}
+            disabled={locked}
+            onPick={(assignment) => void onSave(entry.id, assignment)}
+            search={searchIssues}
+            retryRequest={retryRequest}
+          />
+          {!locked ? <LookupHint status={lookup} hasLastUsed={hasLastUsed} onRetry={() => setRetryRequest((n) => n + 1)} /> : null}
         </div>
 
         <div className="flex flex-col gap-1">
@@ -251,4 +227,49 @@ export function WorklogEntryCard({
       ) : null}
     </article>
   )
+}
+
+/**
+ * 候選清單下方那一行：為什麼候選是這個樣子、下一步可以做什麼。
+ *
+ * 三種「沒有系統候選」各講各的（見 `issueLookupStatus`）。有候選時不說話——
+ * 理由已經寫在每一個選項裡了。
+ */
+function LookupHint({
+  status,
+  hasLastUsed,
+  onRetry,
+}: {
+  status: ReturnType<typeof issueLookupStatus>
+  hasLastUsed: boolean
+  onRetry: () => void
+}) {
+  if (status.kind === 'unavailable') {
+    return (
+      <p role="note" data-lookup="unavailable" className="text-caution text-2xs leading-relaxed">
+        ZPlanner 目前不可用{status.reason ? `：${status.reason}` : ''}。搜尋已停用
+        {hasLastUsed ? '，「上次記到」仍可點選' : ''}；這不是你設定錯了，請找部署這個服務的人處理。
+      </p>
+    )
+  }
+  if (status.kind === 'query-failed') {
+    return (
+      <div role="note" data-lookup="query-failed" className="text-destructive text-2xs leading-relaxed">
+        <span>
+          這一段的候選查詢失敗了{status.reason ? `：${status.reason}` : ''}。這不代表沒有相符的單。
+        </span>
+        <Button size="xs" variant="outline" className="ml-2" onClick={onRetry}>
+          重試查詢
+        </Button>
+      </div>
+    )
+  }
+  if (status.kind === 'no-match') {
+    return (
+      <p role="note" data-lookup="no-match" className="text-fg-subtle text-2xs leading-relaxed">
+        系統用這一段的關鍵字沒有搜到相符的單。點開選單，輸入關鍵字或單號自己搜。
+      </p>
+    )
+  }
+  return null
 }

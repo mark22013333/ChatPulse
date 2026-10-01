@@ -1,5 +1,5 @@
 import { useMemo, useRef } from 'react'
-import { AlertCircleIcon, InboxIcon, Loader2Icon, RefreshCwIcon } from 'lucide-react'
+import { AlertCircleIcon, Loader2Icon, RefreshCwIcon } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import {
@@ -27,6 +27,7 @@ import { useRouter } from '@/router/useRouter'
 import { useViewerListSort } from '@/store/listSort'
 import { selectMentionsByState, useMentionsStore } from '@/store/mentions'
 import { useSpacesStore } from '@/store/spaces'
+import { cn } from '@/lib/utils'
 import type { MentionState } from '@/lib/types'
 
 interface MentionInboxProps {
@@ -40,6 +41,7 @@ export function MentionInbox({ onSelect, onMergedGenerate }: MentionInboxProps) 
   const counts = useMentionsStore((state) => state.counts)
   const tab = useMentionsStore((state) => state.tab)
   const loading = useMentionsStore((state) => state.loading)
+  const loaded = useMentionsStore((state) => state.loaded)
   const checking = useMentionsStore((state) => state.checking)
   const error = useMentionsStore((state) => state.error)
   const selectedId = useMentionsStore((state) => state.selectedId)
@@ -140,10 +142,43 @@ export function MentionInbox({ onSelect, onMergedGenerate }: MentionInboxProps) 
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="shrink-0 space-y-2 border-b border-border px-3 py-2.5">
-        <div className="flex items-center gap-2">
-          <InboxIcon className="size-3.5 text-muted-foreground" />
-          <h2 className="text-xs font-semibold tracking-wide">Mention 收件匣</h2>
+      {/*
+        2026-10-01 改版 S5：tabs 與「立即檢查」同一列、線型 tabs，與摘要工作台
+        （SpacesTable）、工時草稿（WorklogTable）的頂部同一個語法。
+        模組標題已經在 TopBar 的 h1，這裡的 h2 只留給螢幕報讀的標題導覽——
+        拿掉它會讓用標題跳段的人找不到清單的起點。
+
+        ⚠️ 規格的第三個 tab「已有 Draft Reply」刻意沒做：資料有（Mention 的
+        `has_draft`），但分頁的歸類同時被 `[`／`]` 快捷鍵（useGlobalHotkeys）拿來
+        算「下一則」，只在這裡多一個篩選，按 `]` 就會跳到畫面上看不到的那則。
+        要做就得一起改 store 的 `tab` 型別與 selectMentionsByState，這次不在範圍內。
+      */}
+      <div className="shrink-0 space-y-2.5 px-3 pt-2 pb-2.5">
+        <h2 className="sr-only">Mention 收件匣</h2>
+        <div className="flex flex-wrap items-center gap-2 border-b border-line">
+          <Tabs
+            value={tab}
+            onValueChange={(value) => {
+              // setTab 會清掉勾選（已處理那頁勾起來合併沒有意義），網址要跟上
+              setTab(value as MentionState)
+              syncMergeToUrl()
+            }}
+          >
+            <TabsList variant="line" aria-label="Mention 子視圖">
+              <TabsTrigger value="pending">
+                待處理
+                {counts.pending > 0 ? (
+                  <span className="metric ml-1 inline-flex min-w-4 items-center justify-center rounded-full bg-signal px-1 text-2xs font-semibold text-signal-on">
+                    {counts.pending}
+                  </span>
+                ) : null}
+              </TabsTrigger>
+              <TabsTrigger value="resolved">
+                已處理
+                <span className="metric ml-1 text-2xs text-fg-dim">{counts.resolved}</span>
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
           <Button
             size="xs"
             variant="ghost"
@@ -155,30 +190,6 @@ export function MentionInbox({ onSelect, onMergedGenerate }: MentionInboxProps) 
             立即檢查
           </Button>
         </div>
-
-        <Tabs
-          value={tab}
-          onValueChange={(value) => {
-            // setTab 會清掉勾選（已處理那頁勾起來合併沒有意義），網址要跟上
-            setTab(value as MentionState)
-            syncMergeToUrl()
-          }}
-        >
-          <TabsList className="w-full">
-            <TabsTrigger value="pending">
-              待處理
-              {counts.pending > 0 ? (
-                <span className="ml-1 inline-flex min-w-4 items-center justify-center rounded-full bg-signal px-1 text-2xs font-semibold text-signal-on">
-                  {counts.pending}
-                </span>
-              ) : null}
-            </TabsTrigger>
-            <TabsTrigger value="resolved">
-              已處理
-              <span className="ml-1 text-2xs text-muted-foreground">{counts.resolved}</span>
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
 
         <Select
           items={MENTION_SORT_LABELS}
@@ -225,7 +236,9 @@ export function MentionInbox({ onSelect, onMergedGenerate }: MentionInboxProps) 
       </div>
 
       {error ? (
-        <div className="flex shrink-0 items-start gap-2 border-b border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+        // 與 SpacesTable／WorklogTable 的錯誤框同一個樣式：清單改成內縮的卡片之後，
+        // 滿版的色帶會變成版面上唯一一條貼邊的東西
+        <div className="mx-3 mb-2.5 flex shrink-0 items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
           <AlertCircleIcon className="mt-0.5 size-3 shrink-0" />
           <span>{error}</span>
         </div>
@@ -244,21 +257,35 @@ export function MentionInbox({ onSelect, onMergedGenerate }: MentionInboxProps) 
         />
       ) : null}
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-2">
-        {loading && items.length === 0 ? (
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
+        {/* ⚠️ 「從未載入過」要當成載入中，不是「沒有」：第一次 load() 在
+            useBootstrap 的 effect 裡才發出，收件匣第一次 render 時 loading 還是
+            false（見 store 的 `loaded`）。載入失敗而從未載入過時兩個都不畫，
+            只留上面的錯誤框——不知道就說不知道。 */}
+        {(loading && items.length === 0) || (!loaded && !error && visible.length === 0) ? (
           <div className="flex items-center justify-center gap-2 py-8 text-xs text-muted-foreground">
             <Loader2Icon className="size-3.5 animate-spin" />
             正在載入…
           </div>
         ) : null}
 
-        {!loading && visible.length === 0 ? (
+        {!loading && loaded && visible.length === 0 ? (
           <p className="px-2 py-8 text-center text-xs text-muted-foreground">
             {tab === 'pending' ? '沒有待處理的 Mention。' : '還沒有已處理的 Mention。'}
           </p>
         ) : null}
 
-        <ul ref={listRef} onKeyDown={onListKeyDown} className="space-y-1.5">
+        {/* 一張卡片裝整份清單、列與列之間用分隔線（設計稿的主從式收件匣），
+            不再是一則一張浮起來的卡片：幾十張各自帶框的卡片疊在一起，
+            讀起來是一堆碎片，而不是「一份清單」。清單空的時候不畫這張空框 */}
+        <ul
+          ref={listRef}
+          onKeyDown={onListKeyDown}
+          className={cn(
+            'divide-y divide-line overflow-hidden rounded-xl border-line bg-surface',
+            visible.length > 0 && 'border',
+          )}
+        >
           {visible.map((mention, index) => {
             // 已處理那一頁不提供合併（回過的東西沒有「一起回」可言）
             const blocked =

@@ -17,7 +17,7 @@ import { useRouteSync } from '@/router/useRouteSync'
  * 守的 AC：
  * - AC-1：尚無草稿時有「產生草稿」入口；讀取失敗時**沒有**（那會引導 Viewer 去重產）。
  * - AC-2：換日期中止串流（元件不卸載，只換 `date` prop）。
- * - AC-4：重產被已指派守門擋下 → 二次確認，確認才帶 force。
+ * - 重產清空的歸屬事後列出（2026-10-01 取代原本 AC-4 的「擋下→二次確認→帶 force」）。
  * - AC-10：送出前二次確認。
  * - AC-11：409 正在送出中有提示且不自動重試；not_attempted_count > 0 有提示。
  *
@@ -119,7 +119,7 @@ describe('WorklogDayWorkspace：入口（AC-1）', () => {
     const button = await screen.findByRole('button', { name: '產生草稿' })
     await userEvent.click(button)
     await waitFor(() => expect(calls).toHaveLength(1))
-    expect(calls[0].body.force).toBe(false)
+    expect('force' in calls[0].body).toBe(false) // force 流程已移除，不再送這個鍵
     expect(await screen.findByRole('status', { name: '正在產生草稿' })).toBeInTheDocument()
   })
 
@@ -196,25 +196,33 @@ describe('WorklogDayWorkspace：換日期中止串流（AC-2）', () => {
   })
 })
 
-describe('WorklogDayWorkspace：重產的二次確認（AC-4）', () => {
-  it('pendingForce 有值 → 對話框出現；確認後以 force:true 與同一個總時數重送', async () => {
-    seedReady({ pendingForce: { assignedCount: 2, assignedIssueKeys: ['PEI-133', 'PEI-140'], totalHours: 8 } })
-    const calls = hangingStream()
-    render(<WorklogDayWorkspace date={DATE} />)
-    const dialog = await screen.findByRole('dialog')
-    // 筆數是資料，不是文案：數字一定要出現在說明裡
-    expect(dialog).toHaveTextContent('2')
-    await userEvent.click(within(dialog).getByRole('button', { name: '清空並重新產生' }))
-    await waitFor(() => expect(calls).toHaveLength(1))
-    expect(calls[0].body.force).toBe(true)
-    expect(calls[0].body.total_hours).toBe(8)
-    useWorklogDayStore.getState().reset()
+describe('WorklogDayWorkspace：重產清空的歸屬事後列出（2026-10-01，取代原本的二次確認）', () => {
+  const notice = (container: HTMLElement) => container.querySelector('[data-notice="attributions-cleared"]')
+
+  it('有清空 → 上方列出段數與每一張被清掉的單號，而且沒有任何確認框', () => {
+    seedReady({ clearedAttributions: { count: 2, issueKeys: ['PEI-133', 'PEI-140'] } })
+    const { container } = render(<WorklogDayWorkspace date={DATE} />)
+    const el = notice(container)
+    expect(el).not.toBeNull()
+    // 段數與單號是資料，不是文案：一定要出現
+    expect(el).toHaveTextContent('2')
+    expect(el).toHaveTextContent('PEI-133')
+    expect(el).toHaveTextContent('PEI-140')
+    expect(screen.queryByRole('dialog')).toBeNull()
   })
 
-  it('正對照：沒有 pendingForce 就沒有對話框', () => {
+  it('通知列在草稿卡之前（畫面上方），Viewer 先看到才知道要回頭補選', () => {
+    seedReady({ clearedAttributions: { count: 1, issueKeys: ['PEI-133'] } })
+    const { container } = render(<WorklogDayWorkspace date={DATE} />)
+    const el = notice(container)
+    const cards = screen.getByRole('list', { name: '草稿卡' })
+    expect(el && el.compareDocumentPosition(cards) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('正對照：沒有清空就沒有這段通知', () => {
     seedReady()
-    render(<WorklogDayWorkspace date={DATE} />)
-    expect(screen.queryByRole('dialog')).toBeNull()
+    const { container } = render(<WorklogDayWorkspace date={DATE} />)
+    expect(notice(container)).toBeNull()
   })
 })
 
@@ -405,7 +413,12 @@ describe('AC-2 回歸：真的切 section（網址驅動）', () => {
     window.history.replaceState(null, '', `#/worklog/${D14}`)
   })
 
-  it('🔴 #/worklog/09-14 串流中 → #/mentions → #/worklog：不 abort，三處都是 09-14', async () => {
+  // S4 改寫：工時草稿改成表格型之後，`#/worklog` 是「整頁表格」這個真的位置，
+  // useRouteSync 不再把網址補回上次那一天（補了的話返回鍵永遠回不到表格）。
+  // 原本斷言「網址被補成 #/worklog/09-14、標題是 09-14」，現在改成：網址停在
+  // #/worklog，但串流仍不中止、單日 store 仍停在 09-14；再點回 09-14 那一列時
+  // 不重打、不中止——AC-2（切頁籤不中止串流）這條核心不變。
+  it('🔴 #/worklog/09-14 串流中 → #/mentions → #/worklog（表格）→ 再點回 09-14：全程不 abort、不重打', async () => {
     vi.spyOn(api, 'worklogDay').mockRejectedValue(notFound())
     const calls = hangingStream()
     render(
@@ -419,13 +432,18 @@ describe('AC-2 回歸：真的切 section（網址驅動）', () => {
     expect(signal.aborted).toBe(false)
 
     await go('#/worklog')
-    // 網址補回原本那一天（useRouteSync 以週欄選取日補）
-    await waitFor(() => expect(window.location.hash).toBe(`#/worklog/${D14}`))
     await flushEffects()
+    // 表格型：網址不被補回日期
+    expect(window.location.hash).toBe('#/worklog')
     expect(signal.aborted).toBe(false)
-    // 中欄日期、週欄選取日、網址三者一致
+    // 單日工作區收起來但沒丟東西：store 仍是 09-14、選取日也還在
     expect(useWorklogDayStore.getState().date).toBe(D14)
     expect(useWorklogStore.getState().selectedDate).toBe(D14)
+
+    // 從表格點回同一天
+    await go(`#/worklog/${D14}`)
+    await flushEffects()
+    expect(signal.aborted).toBe(false)
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(D14)
     expect(calls).toHaveLength(1)
     useWorklogDayStore.getState().reset()

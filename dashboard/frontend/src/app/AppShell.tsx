@@ -7,22 +7,23 @@ import { SmallScreenNotice } from '@/app/SmallScreenNotice'
 import { StreamLiveRegions } from '@/app/StreamLiveRegions'
 import { TopBar } from '@/app/TopBar'
 import { useBootstrap } from '@/app/useBootstrap'
+import { workbenchLayout } from '@/app/workbenchLayout'
 import { CommandPalette } from '@/components/CommandPalette'
 import { SkipLink } from '@/components/common/SkipLink'
 import { EvidenceColumn } from '@/components/evidence/EvidenceColumn'
 import { EvidenceDrawer } from '@/components/evidence/EvidenceDrawer'
 import { DiagnosticsPage } from '@/components/settings/DiagnosticsPage'
 import { TokenSheet } from '@/dev/TokenSheet'
-import { SettingsOverlay } from '@/components/settings/SettingsOverlay'
+import { SETTINGS_MAIN_ID, SettingsOverlay } from '@/components/settings/SettingsOverlay'
 import { DraftReplyWorkspace } from '@/components/draft/DraftReplyWorkspace'
 import { LoginScreen } from '@/components/LoginScreen'
 import { MentionInbox } from '@/components/MentionInbox'
 import { ShortcutHelp } from '@/components/ShortcutHelp'
-import { SpacesRail } from '@/components/SpacesRail'
+import { SpacesTable } from '@/components/SpacesTable'
 import { SummaryHistory } from '@/components/SummaryHistory'
 import { SummaryWorkspace } from '@/components/SummaryWorkspace'
 import { WorklogDayWorkspace } from '@/components/worklog/WorklogDayWorkspace'
-import { WorklogWeekRail } from '@/components/worklog/WorklogWeekRail'
+import { WorklogTable } from '@/components/worklog/WorklogTable'
 import { evidenceOriginOf } from '@/lib/evidence'
 import { toWorkbench, type WorkbenchView } from '@/lib/modules'
 import { hasDetail, hashForMentions } from '@/lib/route'
@@ -45,7 +46,7 @@ import { useDraftStore } from '@/store/draft'
 const RAIL_LABEL: Record<WorkbenchView, string> = {
   summary: 'Space 清單',
   mentions: 'Mention 收件匣',
-  worklog: '本週',
+  worklog: '工時草稿清單',
 }
 
 export function AppShell() {
@@ -60,7 +61,9 @@ export function AppShell() {
   const view = toWorkbench(route.section)
 
   /**
-   * 768–1024 的主從切換（設計規格 §12）：清單與工作區同時只顯示一個。
+   * 主從切換：清單與工作區同時只顯示一個。對話型工作台只在 768–1024
+   * （設計規格 §12）；表格型（摘要工作台，2026-10-01 改版 §4.1）在**所有寬度**
+   * ——表格獨占主體、點一列整頁切到詳情。哪些是表格型見 `app/workbenchLayout.ts`。
    *
    * **判準直接來自網址，沒有另外一個狀態**——`#/summary` 是清單、
    * `#/summary/:key` 是工作區，收件匣同理。規格 §12 稱這是「選 URL 路由的
@@ -78,11 +81,17 @@ export function AppShell() {
    */
   const detail = hasDetail(route)
 
+  // 設定是主體區域裡的一頁（蓋在工作台上方），不是另一個工作台：`view` 在設定
+  // 時維持 toWorkbench 給的既有值，底下的工作台照常掛著（設計規格 §7.2）
+  const settingsOpen = route.section === 'settings'
+
   // 版面斷點：≥1280 證據欄常駐，以下改成抽屜（設計規格 §12）
   const breakpoint = useBreakpoint()
-  const masterDetail = breakpoint === 'narrow' || breakpoint === 'tiny'
-  const listHidden = masterDetail && detail
-  const mainHidden = masterDetail && !detail
+  const { listHidden, mainHidden, listFullWidth, evidenceHidden } = workbenchLayout(
+    view,
+    detail,
+    breakpoint,
+  )
   const evidenceInline = breakpoint === 'wide'
   const drawerOpen = useUiStore((state) => state.drawer[breakpoint] === true)
   const toggleDrawer = useUiStore((state) => state.toggleDrawer)
@@ -159,7 +168,7 @@ export function AppShell() {
     <div className="flex h-full overflow-clip bg-background text-foreground">
       {/* 「主要內容」會變：主從切換顯示清單那一半時 `<main>` 是 inert 的，
           那時清單本身就是主要內容 */}
-      <SkipLink href={mainHidden ? '#rail' : '#main'} />
+      <SkipLink href={settingsOpen ? `#${SETTINGS_MAIN_ID}` : mainHidden ? '#rail' : '#main'} />
 
       <StreamLiveRegions />
 
@@ -187,25 +196,47 @@ export function AppShell() {
         reset() 把還在串流的內容清光。現在改成保留掛載，那些條件式 reset 也就
         退化成第二道防線。
       */}
+      {/*
+        主體那一格。設定頁 absolute 蓋在這一格裡，所以側欄與頂列在設定時仍然可見
+        （2026-10-01：設定原本是 fixed inset-0 的全螢幕對話框，使用者回報「側欄
+        不見了，像跳到另一個 app」）。
+
+        🔴 工作台在設定開著時**不卸載**，只 inert ＋ 透明收起來——與 Pane、主從
+        切換同一套手法。被否決：`settingsOpen ? <設定/> : <工作台/>`，那會讓還在
+        串流的工作區在開設定的那一刻卸載，掛載時的 reset() 把內容清光。
+        `AppShell.settings.test.tsx` 守著這件事。
+      */}
+      <div className="relative flex min-h-0 flex-1">
       {/* relative 是主從切換要的：收起來的那一半用 absolute inset-0 移出
           版面流，定位基準就是這個容器 */}
-      <div className="relative flex min-h-0 flex-1">
+      <div
+        id="workbench"
+        inert={settingsOpen}
+        className={cn(
+          'relative flex min-h-0 min-w-0 flex-1',
+          settingsOpen && 'pointer-events-none opacity-0',
+        )}
+      >
         <aside
           id="rail"
           tabIndex={-1}
           aria-label={RAIL_LABEL[view]}
           inert={listHidden}
           className={cn(
-            // ≥1024 一律是固定寬度的左欄；以下走主從切換，所以寬度與右框線
-            // 都掛在 lg: 上——清單獨占畫面時右邊沒有東西，那條線是多的
-            'relative flex flex-col border-border outline-none lg:w-inbox lg:shrink-0 lg:border-r',
+            'relative flex flex-col border-border outline-none',
+            // 對話型：≥1024 是固定寬度的左欄，以下走主從切換，所以寬度與右框線
+            // 都掛在 lg: 上——清單獨占畫面時右邊沒有東西，那條線是多的。
+            // 表格型：所有寬度都是清單獨占，根本沒有「左欄」
+            listFullWidth ? 'w-full' : 'lg:w-inbox lg:shrink-0 lg:border-r max-lg:w-full max-lg:flex-1',
             listHidden
-              ? 'pointer-events-none absolute inset-0 -z-10 w-full opacity-0'
-              : 'max-lg:w-full max-lg:flex-1',
+              ? 'pointer-events-none absolute inset-0 -z-10 opacity-0'
+              : listFullWidth && 'flex-1',
           )}
         >
           <Pane active={view === 'summary'}>
-            <SpacesRail />
+            {/* 整頁表格（2026-10-01 改版 §4）。收起來時**不卸載**：tabs、篩選、
+                頁碼是它的元件 state，返回時要原樣還在（AppShell.test.tsx 守著） */}
+            <SpacesTable />
           </Pane>
           <Pane active={view === 'mentions'}>
             <MentionInbox
@@ -220,9 +251,10 @@ export function AppShell() {
             />
           </Pane>
           <Pane active={view === 'worklog'}>
-            {/* 傳 active：Pane 不卸載子元件，沒有這道閘的話光是打開 app
-                就會對 ZPlanner 發一次請求 */}
-            <WorklogWeekRail active={view === 'worklog'} />
+            {/* 整頁表格（2026-10-01 改版 §4.4），取代舊的週欄。傳 active：Pane
+                不卸載子元件，沒有這道閘的話光是打開 app 就會對 ZPlanner 發一次
+                請求（AppShell.test.tsx 守著）。收起來時同樣不卸載 */}
+            <WorklogTable active={view === 'worklog'} />
           </Pane>
         </aside>
 
@@ -237,8 +269,9 @@ export function AppShell() {
             mainHidden && 'pointer-events-none absolute inset-0 -z-10 opacity-0',
           )}
         >
-          {/* 只有主從切換的寬度需要一條回得去的路（元件自己 lg:hidden）。
-              清單那一半顯示時整個 <main> 都收起來了，麵包屑也跟著不在。 */}
+          {/* 主從切換時需要一條回得去的路：表格型在所有寬度出現，對話型只在
+              768–1024（元件自己判斷 lg:hidden）。清單那一半顯示時整個 <main>
+              都收起來了，返回列也跟著不在。 */}
           {detail ? <MasterDetailBack view={view} /> : null}
 
           <Pane active={view === 'summary'}>
@@ -271,7 +304,14 @@ export function AppShell() {
             這次改版要修的功能性破洞之一。 */}
         <aside
           aria-label="證據"
-          className="relative hidden w-rail shrink-0 flex-col border-l border-border xl:flex"
+          // 表格獨占主體時證據欄收起來：它回答的是「這份產出建立在什麼之上」，
+          // 旁邊沒有任何一份產出時掛著它只是噪音。手法同左右兩半——留著掛載、
+          // inert ＋ 透明，**不用 display:none**（歷史 Summary 的捲動位置要留著）
+          inert={evidenceHidden}
+          className={cn(
+            'relative hidden w-rail shrink-0 flex-col border-l border-border xl:flex',
+            evidenceHidden && 'pointer-events-none absolute inset-y-0 right-0 -z-10 opacity-0',
+          )}
         >
           <Pane active={view === 'summary'}>
             <EvidenceColumn origin="summary" />
@@ -286,24 +326,29 @@ export function AppShell() {
             <EvidenceColumn origin="worklog" />
           </Pane>
         </aside>
+      </div>
+
+      {settingsOpen ? (
+        <div className="absolute inset-0 z-10 flex">
+          <SettingsOverlay />
         </div>
+      ) : null}
+      </div>
       </div>
 
       <CommandPalette />
 
-      {/* `?` 的快捷鍵說明。放在設定覆蓋層**之前**沒有影響——它自己是
-          fixed z-50，而 Esc 的層次由 store 的 isOverlayOpen() 決定，
-          不靠 DOM 順序 */}
+      {/* `?` 的快捷鍵說明。它自己是 fixed z-50，蓋得過主體裡的設定頁；
+          Esc 的層次由 store 的 isOverlayOpen() 決定，不靠 DOM 順序 */}
       <ShortcutHelp />
 
       <EvidenceDrawer
-        open={!evidenceInline && drawerOpen}
+        // 設定頁沒有「產出」，證據抽屜在這裡沒有東西可回答；而它是 fixed 的，
+        // 不收起來會蓋在設定頁上面
+        open={!evidenceInline && drawerOpen && !settingsOpen}
         origin={evidenceOriginOf(route.section)}
         onClose={() => closeDrawer(breakpoint)}
       />
-
-      {/* 設定中心是覆蓋層：工作台仍掛在後面，串流不中斷、狀態不掉 */}
-      {route.section === 'settings' ? <SettingsOverlay /> : null}
     </div>
     </SmallScreenNotice>
   )

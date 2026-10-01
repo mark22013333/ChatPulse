@@ -11,7 +11,8 @@ if (!container) throw new Error('找不到 #root 掛載點')
 
 createRoot(container).render(
   <StrictMode>
-    <ThemeProvider attribute="class" defaultTheme="dark" enableSystem={false} disableTransitionOnChange>
+    {/* 預設深色、但允許跟隨系統：理由見 ThemeToggle.tsx 的 NEXT 註解 */}
+    <ThemeProvider attribute="class" defaultTheme="dark" enableSystem disableTransitionOnChange>
       <RouterProvider>
         <AppShell />
       </RouterProvider>

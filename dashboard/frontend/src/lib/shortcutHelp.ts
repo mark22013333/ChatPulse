@@ -83,7 +83,9 @@ export const SHORTCUT_HELP: ShortcutHelpRow[] = [
   },
   {
     keys: ['/'],
-    label: '焦點跳到左欄搜尋框',
+    // 2026-10-01 改版後摘要工作台與工時草稿是整頁表格，已經沒有「左欄」；
+    // 解析器找的是清單區（`aside#rail`）裡的搜尋框，所以說「清單的」
+    label: '焦點跳到清單的搜尋框',
     scope: 'global',
     probe: { key: '/' },
     action: 'focus-search',
@@ -95,8 +97,10 @@ export const SHORTCUT_HELP: ShortcutHelpRow[] = [
     probe: { key: 'j', mod: true },
     action: 'toggle-evidence',
   },
-  { keys: ['↑', '↓'], label: '在左欄清單上下移動', scope: 'list' },
-  { keys: ['Enter'], label: '開啟左欄清單上高亮的那一項', scope: 'list' },
+  // ↑↓／Enter 由兩種元件各自處理：表格型模組是 DataTable 的列（只在當頁內移動，
+  // 規格 2026-10-01 §4.2），Mention 收件匣是主從式的清單。說明要兩者都涵蓋
+  { keys: ['↑', '↓'], label: '在清單或表格上下移動', scope: 'list' },
+  { keys: ['Enter'], label: '開啟清單或表格上高亮的那一項', scope: 'list' },
   {
     keys: ['⌘', 'Enter'],
     label: '開始摘要／產生 Draft Reply',

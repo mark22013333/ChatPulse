@@ -9,8 +9,8 @@ import { useSummaryStore } from '@/store/summary'
 /**
  * 資料層的 bootstrap（設計規格 §7.4）。
  *
- * Space 清單與 Mention 輪詢本來各自住在 `SpacesRail` 與 `MentionInbox` 的
- * useEffect 裡，於是「什麼時候載入」由「哪個畫面剛好先掛載」決定：人在摘要
+ * Space 清單與 Mention 輪詢本來各自住在舊的 Space 導覽欄（已移除，現由
+ * `SpacesTable` 取代）與 `MentionInbox` 的 useEffect 裡，於是「什麼時候載入」由「哪個畫面剛好先掛載」決定：人在摘要
  * 工作台時頂列的未處理數字不會動，而切一次頁籤就重新開始計時。**它們屬於
  * 資料，不屬於畫面**——所以搬到這裡，由 AppShell 在登入後啟動一次。
  *

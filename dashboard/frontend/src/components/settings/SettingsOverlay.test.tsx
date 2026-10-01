@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { SettingsOverlay } from './SettingsOverlay'
+import { SETTINGS_MAIN_ID, SettingsOverlay } from './SettingsOverlay'
 import { CommandPalette } from '@/components/CommandPalette'
 import { hashForSettings } from '@/lib/route'
 import { RouterProvider, useRouter } from '@/router/useRouter'
@@ -28,7 +28,7 @@ vi.mock('@/components/settings/DataPage', () => ({
   DataPage: () => <div>資料內容</div>,
 }))
 
-/** 照 App.tsx 的方式掛：設定是覆蓋層，路由落在 settings 時才渲染。 */
+/** 照 AppShell 的方式掛：路由落在 settings 時才渲染（工作台的保留掛載由 AppShell.settings.test 守）。 */
 function Harness() {
   const { route, navigate } = useRouter()
   return (
@@ -85,6 +85,26 @@ beforeEach(() => {
   window.history.replaceState(null, '', '#/summary')
 })
 
+describe('設定頁的語意', () => {
+  it('是頁面地標，不是 modal：沒有 dialog 角色、沒有 aria-modal', () => {
+    const { container } = mount('#/settings/reply')
+    expect(screen.getByRole('region', { name: '設定' }).tagName).toBe('SECTION')
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(container.querySelector('[aria-modal]')).toBeNull()
+  })
+
+  it('開啟時焦點移到設定的內容區', () => {
+    mount('#/settings/reply')
+    expect(document.activeElement).toBe(document.getElementById(SETTINGS_MAIN_ID))
+    expect(document.activeElement).toHaveTextContent('回覆預設值內容')
+  })
+
+  it('頁首保留「以後每次的預設值」說明', () => {
+    mount('#/settings/reply')
+    expect(screen.getByRole('region', { name: '設定' })).toHaveTextContent('這裡改的是「以後每次」的預設值')
+  })
+})
+
 describe('設定覆蓋層的關閉路徑', () => {
   it('**正對照：一次 push 導覽會讓 history.length +1**', async () => {
     mount('#/mentions/65')
@@ -116,7 +136,7 @@ describe('設定覆蓋層的關閉路徑', () => {
     await userEvent.click(screen.getByRole('button', { name: '關閉' }))
 
     await waitFor(() => expect(window.location.hash).toBe('#/mentions/65'))
-    expect(screen.queryByRole('dialog', { name: '設定' })).toBeNull()
+    expect(screen.queryByRole('region', { name: '設定' })).toBeNull()
   })
 
   it('關閉用 replace，整段設定操作在歷史上只留一筆', async () => {
@@ -136,7 +156,7 @@ describe('設定覆蓋層的關閉路徑', () => {
 
   it('直接貼設定連結進來，關閉落到 #/summary（不是白畫面）', async () => {
     mount('#/settings/personas')
-    expect(screen.getByRole('dialog', { name: '設定' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: '設定' })).toBeInTheDocument()
 
     await userEvent.click(screen.getByRole('button', { name: '關閉' }))
 
@@ -166,7 +186,7 @@ describe('設定覆蓋層的關閉路徑', () => {
     await userEvent.keyboard('{Escape}')
 
     expect(screen.queryByRole('dialog', { name: '命令面板' })).toBeNull()
-    expect(screen.getByRole('dialog', { name: '設定' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: '設定' })).toBeInTheDocument()
     expect(window.location.hash).toBe('#/settings/reply')
 
     // 正對照：面板關掉之後同一個按鍵確實關得掉設定
@@ -186,7 +206,7 @@ describe('設定覆蓋層的關閉路徑', () => {
     })
 
     expect(window.location.hash).toBe('#/settings/reply')
-    expect(screen.getByRole('dialog', { name: '設定' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: '設定' })).toBeInTheDocument()
   })
 
   it('⌘＋點擊分頁不攔截，交還瀏覽器原生行為（開新分頁）', () => {

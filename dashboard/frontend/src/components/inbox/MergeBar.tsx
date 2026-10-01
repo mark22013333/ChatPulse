@@ -24,7 +24,8 @@ export function MergeBar({ selected, onCancel, onGenerate }: MergeBarProps) {
     // `bg-signal-wash` 同時承載「現在有東西被選中了」這個狀態訊號，而 raised
     // 只說得出「這是操作面」。設計原則§2.2 第 2 條說顏色只給「可互動與當前選取」
     // ——合併列正是選取的結果，這裡用 accent 底是它該有的位置。
-    <div className="shrink-0 space-y-1.5 border-b border-signal-line bg-signal-wash px-3 py-2">
+    // 2026-10-01 改版 S5：從滿版色帶改成與清單卡片同寬的圓角卡片（清單內縮了 px-3）
+    <div className="mx-3 mb-2.5 shrink-0 space-y-1.5 rounded-xl border border-signal-line bg-signal-wash px-3 py-2">
       <div className="flex items-center gap-2">
         <span className="text-xs font-medium">已選 {selected.length} 則，一起回成一則</span>
         <Button size="xs" variant="ghost" className="ml-auto" onClick={onCancel}>

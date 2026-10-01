@@ -12,7 +12,7 @@ import logging
 import secrets
 import sqlite3
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import config as cfg
 from . import crypto, db, providers
@@ -412,6 +412,42 @@ def get_summary(owner_viewer_id: int, summary_id: int) -> Optional[Dict[str, Any
     )
 
 
+def latest_summary_times(owner_viewer_id: int) -> Dict[str, str]:
+    """這位 Viewer 在每個 Space 最近一次產生 Summary 的時間：`{space_id: created_at}`。
+
+    沒產生過的 Space **不在回傳裡**（不是對應到 None）——呼叫端用 `.get()`
+    取到 None 就是「從未產生」。給 `GET /spaces` 的 Summary 狀態欄用。
+
+    🔴 ADR-0002：只看 `owner_viewer_id` 自己的。別人對同一個 Space 產過 Summary，
+    不能讓這位 Viewer 看到「已是最新」——那等於洩漏「有人在看這個 Space」，
+    而且那份 Summary 他根本讀不到。
+
+    ⚠️ 一次 GROUP BY 查完所有 Space，**不要改成逐 Space 查**：Space 清單常見
+    四百多個，逐一查就是四百多次往返，而這支每次打開摘要工作台都會跑。
+
+    ⚠️ `MAX(created_at)` 比的是**字串**。它之所以等於「時間最晚」，是因為
+    created_at 一律由 `_now()` 寫入——固定寬度、UTC、`+00:00` 結尾
+    （2026-10-01 查 git 歷史：自 ad4cfed 建立以來格式未變）。哪天有人改了
+    `_now()` 的格式或讓別的路徑寫入不同時區，這裡會**靜默**挑錯那一筆。
+
+    ⚠️ 索引：`idx_summaries_owner(owner_viewer_id, created_at DESC)` 讓
+    WHERE 走得到索引，但 GROUP BY space_id 仍需暫存排序。每位 Viewer 的
+    Summary 有 90 天保留上限，量級小，目前不值得為它加 DDL；若要加，
+    `(owner_viewer_id, space_id, created_at)` 可讓這支變成純索引掃描。
+    （未驗證推論：未對真實資料量量測過。）
+    """
+    rows = db.query_all(
+        """
+        SELECT space_id, MAX(created_at) AS last_created_at
+          FROM summaries
+         WHERE owner_viewer_id = ?
+         GROUP BY space_id
+        """,
+        (owner_viewer_id,),
+    )
+    return {row["space_id"]: row["last_created_at"] for row in rows}
+
+
 # --------------------------------------------------------------------------
 # Mention
 # --------------------------------------------------------------------------
@@ -564,6 +600,41 @@ def count_mentions(viewer_id: int) -> Dict[str, int]:
         if key in out:
             out[key] += r["n"]
     return out
+
+
+def list_mentions_with_counts(
+    viewer_id: int, state: Optional[str] = None, limit: int = 200
+) -> tuple:
+    """在**同一個讀取快照**裡取清單與計數，回傳 `(rows, counts)`。
+
+    🔴 不要拆回兩次獨立呼叫。`db.query_all` 在 sqlite3 的 legacy 交易模式下
+    每個 SELECT 各自 autocommit，WAL 模式下等於兩個不同的快照；中間只要
+    隔一段時間（`GET /mentions` 中間隔的是逐則打 Chat API 補內容，好幾秒），
+    背景採集器（45 秒一輪）寫入的新 Mention 就只會出現在其中一邊。
+    2026-10-01 實際發生：清單 90 則已處理、counts 卻是 pending 1／resolved 90，
+    前端徽章說有 1 則待處理、清單卻說「沒有待處理的 Mention」，還跳出假的
+    「共 91 筆」截斷提示——畫面說有，Viewer 卻看不到。
+
+    用 SAVEPOINT 而不是 BEGIN：連線若已經在交易裡（別處的 DML 開了隱含
+    交易還沒結束），BEGIN 會直接拋「cannot start a transaction within a
+    transaction」；SAVEPOINT 在交易外等同 BEGIN DEFERRED，在交易內則沿用
+    那筆交易的快照，兩種情況都拿得到一致的讀取（2026-10-01 實測 Python 3.12：
+    交易內 BEGIN 照上述訊息拋錯、SAVEPOINT 正常；最外層 RELEASE 後
+    `in_transaction` 回到 False）。
+    被否決的做法：把計數寫成清單 SELECT 的子查詢欄位——清單為空時就拿不到
+    計數，還得再補一次查詢，又回到兩個快照。
+    """
+    conn = db.get_connection()
+    conn.execute("SAVEPOINT mentions_snapshot")
+    try:
+        rows = list_mentions(viewer_id, state=state, limit=limit)
+        counts = count_mentions(viewer_id)
+    finally:
+        # 只有讀取，RELEASE 不會寫任何東西；在最外層時它會結束交易、放掉
+        # 讀取快照。不放的話這條 thread-local 連線會一直卡著舊快照，
+        # 之後的讀取全部看不到新資料，WAL 也無法 checkpoint。
+        conn.execute("RELEASE mentions_snapshot")
+    return rows, counts
 
 
 # --------------------------------------------------------------------------
@@ -1891,7 +1962,11 @@ _WORKLOG_EDITABLE_FIELDS = (
 
 
 def update_worklog_entries(
-    viewer_id: int, work_date: str, updates: List[Dict[str, Any]]
+    viewer_id: int,
+    work_date: str,
+    updates: List[Dict[str, Any]],
+    *,
+    remember: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[Dict[str, Any]]:
     """逐筆改寫某一天草稿裡的可編輯欄位，回傳更新後的整份草稿；沒有草稿回 None。
 
@@ -1928,6 +2003,11 @@ def update_worklog_entries(
     PUT 不能新增或刪除 entry（D-4）：entry 只能由產生流程依證據造出來。
     時數格式**不在這裡驗**（D-13）：驗證規則在 `zplanner_client.require_hours`，
     存取層依賴會發 HTTP 的模組違反 core 內部界線，所以由 server 先驗好再傳進來。
+
+    `remember`：這次選定歸屬的筆所屬的來源，要順手記成「這個來源上次記到哪張單」
+    （每項的形狀見 `_remember_rows`）。**寫在同一個交易的最後**：整批被守門擋下時
+    記憶也不准動——否則 Viewer 收到「一筆都沒有改」，下一次產草稿卻冒出一個
+    「上次記到 XXX」，指的是一個從來沒有存成功的選擇。
     """
     draft = get_worklog_draft(viewer_id, work_date, with_entries=False)
     if draft is None:
@@ -1941,6 +2021,7 @@ def update_worklog_entries(
                 f"update_worklog_entries 不接受欄位 {sorted(stray)}；只能改 "
                 f"{list(_WORKLOG_EDITABLE_FIELDS)}（D-2）。"
             )
+    memory_rows = _remember_rows(remember)
 
     now = _now()
     conn = db.get_connection()
@@ -2011,7 +2092,148 @@ def update_worklog_entries(
                     f"（rowcount={cur.rowcount}），整批回捲。前面的守門都過了卻"
                     "寫不進去，代表有別的寫入路徑沒有先搶鎖——這是 bug，不是使用者錯誤。"
                 )
+        # 5. 記住「這個來源上次記到哪張單」（見 docstring 的 `remember`）
+        for mem in memory_rows:
+            _upsert_source_memory(conn, viewer_id, mem, now)
     return get_worklog_draft(viewer_id, work_date)
+
+
+# --------------------------------------------------------------------------
+# 「這個來源上次記到哪張單」（worklog_source_issue_memory）
+#
+# 🔴 只當建議，絕不預選（ADR-0008 的唯一硬規則，見 core/db.py 的表註解）。
+# 這一層只負責存取；「什麼時候寫」由 server 決定：Viewer 在 PUT 裡選定歸屬時。
+# --------------------------------------------------------------------------
+
+#: 來源的種類。與 `worklog_clustering` 的 `KIND_REPO`／`KIND_SPACE` 同值，
+#: 但**刻意不 import 它**：存取層不依賴分群邏輯，兩者各自守自己的值域。
+WORKLOG_SOURCE_KINDS = ("space", "repo")
+
+
+def _check_source(source_kind: Any, source_id: Any) -> Tuple[str, str]:
+    """來源的兩個欄位認不出來就拋 `ValueError`（呼叫端的程式錯誤，不是使用者錯誤）。
+
+    不認得的 kind 若照存，讀取端用 'space'／'repo' 去查永遠查不到，那筆記憶就
+    變成一列沒有人讀得到、也不會被覆寫的死資料——錯誤的樣子是「什麼都沒發生」。
+    """
+    if source_kind not in WORKLOG_SOURCE_KINDS:
+        raise ValueError(f"source_kind 只能是 {WORKLOG_SOURCE_KINDS}，收到 {source_kind!r}")
+    text = str(source_id or "").strip()
+    if not text:
+        raise ValueError("source_id 不能是空的")
+    return source_kind, text
+
+
+def _remember_rows(remember: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """把 `remember` 驗成可以直接寫的列。**驗在交易開始之前**，壞值不留半套。
+
+    每項：`{source_kind, source_id, issue_id, issue_key, project_id, project_key}`。
+    `issue_id`／`issue_key` 必填：「上次記到哪張單」沒有單就不是一筆記憶，
+    清除歸屬（四欄 null）的那種 PUT 不該出現在這裡。
+    """
+    out: List[Dict[str, Any]] = []
+    for item in remember or []:
+        kind, sid = _check_source(item.get("source_kind"), item.get("source_id"))
+        issue_id = item.get("issue_id")
+        issue_key = item.get("issue_key")
+        if not isinstance(issue_id, int) or isinstance(issue_id, bool) or not issue_key:
+            raise ValueError(f"記憶的 issue_id／issue_key 必須有值，收到 {issue_id!r}／{issue_key!r}")
+        out.append(
+            {
+                "source_kind": kind,
+                "source_id": sid,
+                "issue_id": issue_id,
+                "issue_key": str(issue_key),
+                "project_id": item.get("project_id"),
+                "project_key": item.get("project_key"),
+            }
+        )
+    return out
+
+
+def _upsert_source_memory(conn: Any, viewer_id: int, mem: Dict[str, Any], now: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO worklog_source_issue_memory(
+            viewer_id, source_kind, source_id, issue_id, issue_key,
+            project_id, project_key, updated_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(viewer_id, source_kind, source_id) DO UPDATE SET
+            issue_id    = excluded.issue_id,
+            issue_key   = excluded.issue_key,
+            project_id  = excluded.project_id,
+            project_key = excluded.project_key,
+            updated_at  = excluded.updated_at
+        """,
+        (
+            viewer_id,
+            mem["source_kind"],
+            mem["source_id"],
+            mem["issue_id"],
+            mem["issue_key"],
+            mem["project_id"],
+            mem["project_key"],
+            now,
+        ),
+    )
+
+
+def remember_worklog_source_issue(
+    viewer_id: int,
+    source_kind: str,
+    source_id: str,
+    *,
+    issue_id: int,
+    issue_key: str,
+    project_id: Optional[int] = None,
+    project_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """單獨寫一筆記憶（同一來源再寫一次是覆寫），回傳寫完的那一列。
+
+    正式流程走 `update_worklog_entries(remember=…)`（與歸屬同一個交易）；這支
+    給測試與日後「不經 PUT 的寫入路徑」用。
+    """
+    rows = _remember_rows(
+        [
+            {
+                "source_kind": source_kind,
+                "source_id": source_id,
+                "issue_id": issue_id,
+                "issue_key": issue_key,
+                "project_id": project_id,
+                "project_key": project_key,
+            }
+        ]
+    )
+    conn = db.get_connection()
+    with conn:
+        _upsert_source_memory(conn, viewer_id, rows[0], _now())
+    found = get_worklog_source_memory(viewer_id, [(rows[0]["source_kind"], rows[0]["source_id"])])
+    return found[(rows[0]["source_kind"], rows[0]["source_id"])]
+
+
+def get_worklog_source_memory(
+    viewer_id: int, sources: List[Tuple[str, str]]
+) -> Dict[Tuple[str, str], Dict[str, Any]]:
+    """一次查多個來源的記憶，回 `{(kind, id): 那一列}`；沒有記憶的來源不出現在結果裡。
+
+    「沒有出現」是正常狀態（第一次碰這個來源），不是錯誤。一次查完而不是逐一查，
+    理由同 `_entries_for`：一天有十幾個來源時不要變成十幾次查詢。
+    """
+    wanted = []
+    for kind, sid in sources or []:
+        wanted.append(_check_source(kind, sid))
+    if not wanted:
+        return {}
+    clauses = " OR ".join("(source_kind = ? AND source_id = ?)" for _ in wanted)
+    params: List[Any] = [viewer_id]
+    for kind, sid in wanted:
+        params.extend([kind, sid])
+    rows = db.query_all(
+        f"SELECT * FROM worklog_source_issue_memory WHERE viewer_id = ? AND ({clauses})",
+        params,
+    )
+    return {(r["source_kind"], r["source_id"]): r for r in rows}
 
 
 def update_worklog_entry_state(

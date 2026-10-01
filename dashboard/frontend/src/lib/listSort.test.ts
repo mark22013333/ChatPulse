@@ -83,6 +83,30 @@ describe('sortSpaces', () => {
     expect(ids(sortSpaces(items, opts('type')))).toEqual(['g2', 'g1', 'd', 'm', 'x'])
   })
 
+  it('名稱降冪：與升冪恰好相反（同名時依 id 決勝，所以整份可逆）', () => {
+    const items = [
+      space('c', '第10組', null),
+      space('a', '第2組', '2026-09-01T00:00:00Z'),
+      space('b', 'alpha', '2026-09-02T00:00:00Z'),
+      space('d', 'Beta', '2026-09-03T00:00:00Z'),
+      space('e', 'alpha', '2026-09-04T00:00:00Z'),
+    ]
+    const asc = ids(sortSpaces(items, opts('name')))
+    expect(ids(sortSpaces(items, opts('name-desc')))).toEqual([...asc].reverse())
+  })
+
+  it('類型降冪：組的順序反過來，組內仍是新→舊（不是整份反轉）', () => {
+    const items = [
+      space('x', '怪', '2026-09-30T12:00:00Z', { type: 'SOMETHING_NEW' }),
+      space('m', '多人', '2026-09-30T11:00:00Z', { type: 'GROUP_CHAT' }),
+      space('d', '私訊', '2026-09-30T10:00:00Z', { type: 'DIRECT_MESSAGE' }),
+      space('g1', '群組舊', '2026-09-01T00:00:00Z'),
+      space('g2', '群組新', '2026-09-30T09:00:00Z'),
+    ]
+    // 整份反轉會得到 g1 在 g2 前；正確的是組內仍 g2（新）在前
+    expect(ids(sortSpaces(items, opts('type-desc')))).toEqual(['x', 'm', 'd', 'g2', 'g1'])
+  })
+
   it('釘選置頂開啟：釘選的在前，兩組內仍套用所選排序', () => {
     expect(ids(sortSpaces(SCREENSHOT, opts('activity-desc', true)))).toEqual([
       'multi',
@@ -209,6 +233,28 @@ describe('parseListSort', () => {
   it('合法內容原樣還原', () => {
     const saved = { space: { sort: 'name', pinnedFirst: true }, mention: 'sender' }
     expect(parseListSort(JSON.stringify(saved))).toEqual(saved)
+  })
+
+  it('向下相容：S5 之前存的四個排序鍵都原樣讀得回來', () => {
+    for (const sort of ['activity-desc', 'activity-asc', 'name', 'type']) {
+      const saved = { space: { sort, pinnedFirst: false }, mention: 'time-desc' }
+      expect(parseListSort(JSON.stringify(saved)).space.sort).toBe(sort)
+    }
+  })
+
+  it('新增的降冪鍵存進去讀得回來', () => {
+    for (const sort of ['name-desc', 'type-desc']) {
+      const saved = { space: { sort, pinnedFirst: true }, mention: 'space' }
+      expect(parseListSort(JSON.stringify(saved))).toEqual(saved)
+    }
+  })
+
+  it('認不得的方向寫法（例如 name-asc）照舊退回預設排序', () => {
+    const saved = { space: { sort: 'name-asc', pinnedFirst: true }, mention: 'sender' }
+    expect(parseListSort(JSON.stringify(saved))).toEqual({
+      space: { sort: 'activity-desc', pinnedFirst: true },
+      mention: 'sender',
+    })
   })
 
   it('一欄壞掉只退那一欄，其他欄保留', () => {

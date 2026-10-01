@@ -18,7 +18,7 @@ from . import config as cfg
 
 _local = threading.local()
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -402,6 +402,33 @@ CREATE TABLE IF NOT EXISTS worklog_draft_entries (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_worklog_entry_remote
     ON worklog_draft_entries(zplanner_worklog_id)
     WHERE zplanner_worklog_id IS NOT NULL;
+
+-- 「這個來源上次記到哪張單」（ADR-0008 的 2026-10-01 補充）
+--
+-- 一位 Viewer、一個來源（Space 或工作 repo）一列：Viewer 每次在草稿卡上選定
+-- 「記到哪張單」就覆寫這一列。
+--
+-- 🔴 **這只是建議，絕不拿來預選。** 產草稿時它只會變成候選清單最上面那一項
+-- 「上次記到 XXX」，四個歸屬欄位照樣是 NULL，要 Viewer 點了才算數
+-- （ADR-0008 的唯一硬規則）。理由與 work_repos.default_zplanner_project_id
+-- 同一條：上次記到 A 不代表這次也是 A，而猜錯的那次長得跟猜對的一模一樣，
+-- 月結之後要走 correction-request 才改得回來。
+--
+-- source_id 存 space_id（`spaces/AAA`）或 repo 的**絕對路徑**，不存 work_repos.id：
+-- repo 刪掉重新登錄會拿到新的 id，記憶就無聲地斷了；路徑才是「同一個 repo」
+-- 真正的身分（work_repos 也是用 UNIQUE(viewer_id, repo_path) 防重複登錄）。
+-- 不設外鍵指向 work_repos 也是同一個理由。
+CREATE TABLE IF NOT EXISTS worklog_source_issue_memory (
+    viewer_id    INTEGER NOT NULL REFERENCES viewers(id) ON DELETE CASCADE,
+    source_kind  TEXT NOT NULL,   -- 'space' | 'repo'
+    source_id    TEXT NOT NULL,   -- space_id 或 repo 的絕對路徑
+    issue_id     INTEGER NOT NULL,
+    issue_key    TEXT NOT NULL,
+    project_id   INTEGER,
+    project_key  TEXT,
+    updated_at   TEXT NOT NULL,
+    PRIMARY KEY (viewer_id, source_kind, source_id)
+);
 """
 
 

@@ -3,7 +3,6 @@ import { ApiError, api, errorMessage, streamUrls } from '@/lib/api'
 import { streamSse } from '@/lib/sse'
 import type {
   WorklogAllocation,
-  WorklogCandidate,
   WorklogDay,
   WorklogDayEntry,
   WorklogEntryUpdate,
@@ -41,20 +40,8 @@ import { useWorklogStore } from '@/store/worklog'
  *
  * `streaming` + `error` + `raw` 湊出狀態的寫法，在這裡會出現「串流中又同時
  * 載入失敗」這種不存在的組合。`phase` 是互斥的聯集；會與 phase 並存的事
- * （某幾張卡存檔中、送出中、等 Viewer 確認清空）另外用
- * `savingIds`／`submitting`／`pendingForce` 表達。
+ * （某幾張卡存檔中、送出中）另外用 `savingIds`／`submitting` 表達。
  */
-
-/**
- * 「未指派」在 Select 裡的值。
- *
- * ⚠️ **必須是非數字字串。** Base UI 的 Select 清除選擇時給 `null`，而
- * `Number(null)` 是 `0`、`Number('')` 也是 `0`——若「未指派」用 `'0'` 或空字串
- * 表示，一次意外的清除就會被當成「選了 id 0」或與未指派混在一起。
- * 同構的既有解法見 `store/replySettings.ts` 的 `selectToId`；刻意不共用那邊的
- * `NONE`／`INHERIT`：那是回覆設定的語意，import 錯了不會編譯失敗。
- */
-export const UNASSIGNED = '__unassigned__'
 
 /** 中欄這一天現在是什麼狀態。互斥：同一時間只會是其中一種。 */
 export type WorklogDayPhase =
@@ -68,7 +55,7 @@ export type WorklogDayPhase =
    * 讀取失敗，**不知道**有沒有草稿。
    *
    * 🔴 不可以併進 `absent`：把網路錯誤畫成「還沒有草稿」，Viewer 會按下產生，
-   * 輕則被重產守門擋下，重則（帶 force）清掉他已經選好的專案。
+   * 而重產會把對不上新分段的已選單號清空。
    */
   | { kind: 'load-failed'; message: string }
   /** 產生草稿的串流進行中 */
@@ -83,16 +70,15 @@ export interface WorklogStreamProgress {
 }
 
 /**
- * 重產被守門擋下、等 Viewer 決定要不要清空重來。
+ * 重產時因分段改變而清空的歸屬（done 事件的 `attributions_cleared`）。
  *
- * 數字一律來自錯誤的 `detail.assigned_count`；認不出 detail 的形狀時**不建立**
- * 這個物件，改走一般錯誤——寧可不說筆數，也不要講一個猜的數字。
+ * 2026-10-01 Viewer 決定：對不上新分段的已選單號**照規格留空、不擋**，重產照常完成，
+ * 事後在畫面上方列出清掉了哪幾張單。以前的「先擋下來、確認後帶 force 重送」整段已移除。
+ * 只在那次回應出現、不落地（同 `allocation`）：重新選好之後就不該再說「已清空」。
  */
-export interface WorklogPendingForce {
-  assignedCount: number
-  assignedIssueKeys: string[]
-  /** 被擋下的那次請求帶的總時數，確認後原樣重送 */
-  totalHours: number | null
+export interface WorklogClearedAttributions {
+  count: number
+  issueKeys: string[]
 }
 
 /** 帶 code 與 detail 的錯誤，畫面要依 code 分支（例如「正在送出中」）。 */
@@ -121,7 +107,8 @@ interface WorklogDayState {
   stream: WorklogStreamProgress
   /** 產生草稿失敗（`NO_EVIDENCE`、已送出守門的 409…） */
   generateError: WorklogDayError | null
-  pendingForce: WorklogPendingForce | null
+  /** 最近一次重產清空了哪些歸屬。`null`＝這次沒有清空任何一筆（或還沒重產過） */
+  clearedAttributions: WorklogClearedAttributions | null
   /** done 事件的 `allocation`，只在那次回應出現，所以另存暫態（D-10） */
   allocation: WorklogAllocation | null
   /** PUT 排隊中或在飛的 entry id。同一筆排了兩次就出現兩次。 */
@@ -143,13 +130,10 @@ interface WorklogDayState {
    * 產生（或重新產生）這一天的草稿。
    *
    * ⚠️ 「重新分配時數」走的也是這支：後端沒有「只重算時數」的端點，所以
-   * 它其實是**整次重產**——重掃 git、重打 ZPlanner、帶 force 時清掉全部歸屬。
-   * 畫面文案必須講清楚這件事（plan.md 風險段）。
+   * 它其實是**整次重產**——重掃 git、重打 ZPlanner。同一段的歸屬會保留；對不到
+   * 新分段的照規格留空，清掉了哪些記在 `clearedAttributions`（畫面文案要講清楚）。
    */
-  generate: (options: { totalHours: number | null; force?: boolean }) => Promise<void>
-  /** Viewer 在二次確認裡按下「清空並重新產生」 */
-  confirmForce: () => Promise<void>
-  cancelForce: () => void
+  generate: (options: { totalHours: number | null }) => Promise<void>
   /** 中止串流（元件卸載時）。 */
   abort: () => void
   /** 存一筆的某幾個欄位。回傳是否成功，讓卡片決定要不要保留輸入。 */
@@ -197,7 +181,7 @@ const initialDayState = {
   reloadError: null,
   stream: emptyStream(),
   generateError: null,
-  pendingForce: null,
+  clearedAttributions: null as WorklogClearedAttributions | null,
   allocation: null,
   savingIds: [] as number[],
   dirtyIds: [] as number[],
@@ -223,23 +207,16 @@ function removeOne(ids: number[], id: number): number[] {
 }
 
 /**
- * 從重產守門的 400 `detail` 讀出「會清掉幾筆」。認不出來回 `null`。
+ * done 事件的 `attributions_cleared` → 畫面要列的東西。認不出形狀、或 0 筆 → `null`。
  *
- * 判準刻意寫死三個條件：`force_allowed === true`、`assigned_count` 是非負整數。
- * 少任何一個就不是我們認得的守門錯誤（例如 `tz_offset` 格式錯也是 400
- * `INVALID_PARAMETER`），那時把它當成「會清掉 undefined 筆」問 Viewer 要不要
- * 強制重來，按下去帶 force 送出，是在替他做一個他沒看懂的決定。
+ * 認不出來時**不顯示**而不是顯示「0 段」：寧可不說，也不要講一個猜的數字。
  */
-export function readForceDetail(
-  detail: Record<string, unknown> | null | undefined,
-): { assignedCount: number; assignedIssueKeys: string[] } | null {
-  if (!detail || detail.force_allowed !== true) return null
-  const count = detail.assigned_count
-  if (typeof count !== 'number' || !Number.isInteger(count) || count < 0) return null
-  const keys = Array.isArray(detail.assigned_issue_keys)
-    ? detail.assigned_issue_keys.filter((k): k is string => typeof k === 'string')
-    : []
-  return { assignedCount: count, assignedIssueKeys: keys }
+export function readClearedAttributions(raw: unknown): WorklogClearedAttributions | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const { count, issue_keys: keys } = raw as Record<string, unknown>
+  if (typeof count !== 'number' || !Number.isInteger(count) || count < 1) return null
+  const issueKeys = Array.isArray(keys) ? keys.filter((k): k is string => typeof k === 'string') : []
+  return { count, issueKeys }
 }
 
 export const useWorklogDayStore = create<WorklogDayState>((set, get) => {
@@ -293,7 +270,7 @@ export const useWorklogDayStore = create<WorklogDayState>((set, get) => {
       await loadDay(target)
     },
 
-    generate: async ({ totalHours, force = false }) => {
+    generate: async ({ totalHours }) => {
       const target = get().date
       if (!target) return
       controller?.abort()
@@ -305,7 +282,7 @@ export const useWorklogDayStore = create<WorklogDayState>((set, get) => {
         phase: { kind: 'streaming' },
         stream: emptyStream(),
         generateError: null,
-        pendingForce: null,
+        clearedAttributions: null,
         allocation: null,
         submitSummary: null,
         submitError: null,
@@ -315,7 +292,7 @@ export const useWorklogDayStore = create<WorklogDayState>((set, get) => {
       const alive = () => !mine.signal.aborted && get().date === target
       let outcome: 'done' | 'error' | null = null
 
-      const body: Record<string, unknown> = { tz_offset: tzOffsetFor(target), force }
+      const body: Record<string, unknown> = { tz_offset: tzOffsetFor(target) }
       // 省略＝不分配。刻意不送 `null`：省略與 null 在後端同義，但「沒帶」
       // 才是契約寫的語意，少一個要解釋的組合。
       if (totalHours !== null) body.total_hours = totalHours
@@ -333,17 +310,15 @@ export const useWorklogDayStore = create<WorklogDayState>((set, get) => {
           onDone: (done) => {
             if (!alive()) return
             outcome = 'done'
-            set({ allocation: done.allocation ?? null })
+            set({
+              allocation: done.allocation ?? null,
+              clearedAttributions: readClearedAttributions(done.attributions_cleared),
+            })
           },
           onError: (event) => {
             if (!alive()) return
             outcome = 'error'
-            const forceDetail = readForceDetail(event.detail)
-            if (event.code === 'INVALID_PARAMETER' && forceDetail && !force) {
-              set({ pendingForce: { ...forceDetail, totalHours } })
-            } else {
-              set({ generateError: { code: event.code, message: event.message, detail: event.detail ?? null } })
-            }
+            set({ generateError: { code: event.code, message: event.message, detail: event.detail ?? null } })
           },
         },
         mine.signal,
@@ -378,15 +353,6 @@ export const useWorklogDayStore = create<WorklogDayState>((set, get) => {
       // 可能已經換掉了 meta，只有 GET 講得出現在 DB 裡是什麼。
       await loadDay(target)
     },
-
-    confirmForce: async () => {
-      const pending = get().pendingForce
-      if (!pending) return
-      set({ pendingForce: null })
-      await get().generate({ totalHours: pending.totalHours, force: true })
-    },
-
-    cancelForce: () => set({ pendingForce: null }),
 
     abort: () => {
       const wasStreaming = get().phase.kind === 'streaming'
@@ -527,43 +493,6 @@ export function isEntryAssigned(entry: WorklogDayEntry): boolean {
   return entry.issue_id !== null || entry.issue_key !== null
 }
 
-/**
- * 一筆 entry → 歸屬 Select 的值。
- *
- * 🔴 `issue_id` 是 `null` 就是 `UNASSIGNED`，**不看 candidates**——候選排第一
- * 的那個也不准預選（ADR-0008）。
- */
-export function assignmentValue(entry: WorklogDayEntry): string {
-  return entry.issue_id === null ? UNASSIGNED : String(entry.issue_id)
-}
-
-/**
- * Select 的 `onValueChange` 值 → 要 PUT 的歸屬四欄。`undefined` ＝不要動。
- *
- * - `null`／空字串（Base UI 清除選擇時給的）→ `undefined`。**不是「清成未指派」**：
- *   Viewer 沒有做任何選擇，把它當成清除會安靜地抹掉他選好的專案。
- * - `UNASSIGNED` → 四欄全 `null`（明確選了「未指派」）。
- * - 其餘找對應的候選；找不到 → `undefined`。認不出來就不動，絕不猜。
- *
- * 四欄一律一起給（D-12）：只寫一半的話，送出閘看 `issue_id`、重產守門看
- * `issue_id or issue_key`，兩道閘對「這筆指派了沒」會給出不同答案。
- */
-export function selectToAssignment(
-  value: string | null | undefined,
-  candidates: WorklogCandidate[],
-): Pick<WorklogEntryUpdate, 'issue_id' | 'issue_key' | 'project_id' | 'project_key'> | undefined {
-  if (!value) return undefined
-  if (value === UNASSIGNED) return { issue_id: null, issue_key: null, project_id: null, project_key: null }
-  const picked = candidates.find((c) => String(c.issue_id) === value)
-  if (!picked) return undefined
-  return {
-    issue_id: picked.issue_id,
-    issue_key: picked.issue_key,
-    project_id: picked.project_id ?? null,
-    project_key: picked.project_key ?? null,
-  }
-}
-
 export type WorklogEntryTone = 'neutral' | 'ok' | 'caution' | 'danger'
 
 /**
@@ -656,13 +585,10 @@ export function submitBlockReason(state: {
   return null
 }
 
-/** 重產二次確認的說明句。數字只來自 `detail`，見 `readForceDetail`。 */
-export function forceConfirmText(pending: WorklogPendingForce): string {
-  const keys = pending.assignedIssueKeys.length > 0 ? `（${pending.assignedIssueKeys.join('、')}）` : ''
-  return (
-    `這一天已經有 ${pending.assignedCount} 筆選好了專案${keys}。` +
-    '重新產生會重掃 git 與 Chat、重新分群與分配時數，並把這些選擇全部清掉，你得再選一次。'
-  )
+/** 「有 N 段因分段改變，歸屬已清空：PEI-133、…」。單號是資料，原樣列出。 */
+export function clearedAttributionsText(cleared: WorklogClearedAttributions): string {
+  const keys = cleared.issueKeys.length > 0 ? `：${cleared.issueKeys.join('、')}` : ''
+  return `有 ${cleared.count} 段因分段改變，歸屬已清空${keys}`
 }
 
 /**
@@ -679,7 +605,7 @@ export function submitErrorText(error: WorklogDayError): string {
   const d = error.detail
   if (d && typeof d.unassigned_count === 'number' && typeof d.missing_hours_count === 'number') {
     const parts: string[] = []
-    if (d.unassigned_count > 0) parts.push(`${d.unassigned_count} 筆還沒選專案`)
+    if (d.unassigned_count > 0) parts.push(`${d.unassigned_count} 筆還沒選要記到哪張單`)
     if (d.missing_hours_count > 0) parts.push(`${d.missing_hours_count} 筆沒有時數`)
     if (parts.length > 0) return `${parts.join('、')}，整批一筆都沒有送出。補齊後再送。`
   }

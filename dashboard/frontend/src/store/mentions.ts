@@ -13,6 +13,18 @@ interface MentionsState {
   counts: MentionCounts
   tab: MentionState
   loading: boolean
+  /**
+   * 至少成功載入過一次清單。
+   *
+   * ⚠️ 不能拿 `loading` 代替：它的初值是 false，而第一次 `load()` 要等
+   * `useBootstrap` 的 useEffect 才呼叫——effect 在 commit 之後才跑，所以收件匣
+   * 第一次 render 看到的是「沒在載入、清單是空的」，會畫出「沒有待處理的
+   * Mention」，而頂列 badge 可能已經被 /me 的 mention_counts 填成 1
+   * （2026-10-01 修正）。也不把 `loading` 初值改成 true：其他元件
+   * （SpacesTable 的 mentionsKnown）把它讀成「有請求在路上」，沒有請求時
+   * 說有，一樣是錯的。
+   */
+  loaded: boolean
   /** 「立即檢查」進行中 */
   checking: boolean
   lastCheckStats: CollectorRunStats | null
@@ -79,6 +91,7 @@ export const useMentionsStore = create<MentionsState>((set, get) => ({
   counts: { pending: 0, resolved: 0 },
   tab: 'pending',
   loading: false,
+  loaded: false,
   checking: false,
   lastCheckStats: null,
   error: null,
@@ -133,6 +146,7 @@ export const useMentionsStore = create<MentionsState>((set, get) => ({
       set({
         items: data.mentions ?? [],
         counts: data.counts ?? { pending: 0, resolved: 0 },
+        loaded: true,
       })
     } catch (err) {
       set({ error: errorMessage(err) })

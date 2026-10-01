@@ -51,7 +51,7 @@ export function ReplyDefaultsPage() {
 
   return (
     <div className="space-y-4">
-      <h2 className="text-sm font-semibold">我的預設值</h2>
+      <h2 className="text-md font-semibold">我的預設值</h2>
 
       {/* ── 口氣 ── */}
       <section className="overflow-hidden rounded-xl border border-border bg-surface">
