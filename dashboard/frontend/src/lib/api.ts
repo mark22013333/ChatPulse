@@ -29,6 +29,7 @@ import type {
   WorkRepo,
   WorklogDay,
   WorklogEntryUpdate,
+  WorklogIssueSearchResponse,
   WorklogSubmitBody,
   WorklogSubmitResponse,
   WorklogWeekResponse,
@@ -440,6 +441,22 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+  /**
+   * 在全部可記工時（worklogable）的 issue 裡搜尋，結果依專案分組。
+   *
+   * 🔴 **空白關鍵字在這裡就擋下，不送出**：ZPlanner 對空字串回 0 筆而不是全部，
+   * 送出去畫面就會說「沒有可記工時的單」——錯得很合理。後端也會 400，但不要
+   * 依賴它：被擋下的那一下仍然是一次多餘的往返，而且錯誤訊息會蓋掉「請輸入關鍵字」。
+   */
+  searchWorklogIssues: (q: string, signal?: AbortSignal) => {
+    const keyword = q.trim()
+    if (keyword === '') {
+      return Promise.reject(
+        new ApiError(400, 'INVALID_PARAMETER', '請輸入關鍵字或單號再搜尋（空白不會送出）。'),
+      )
+    }
+    return request<WorklogIssueSearchResponse>(`/worklogs/issue-search${query({ q: keyword })}`, { signal })
+  },
 
   // ── 維運 ────────────────────────────────────────────────
   usage: (days = 14) => request<UsageResponse>(`/usage${query({ days })}`),

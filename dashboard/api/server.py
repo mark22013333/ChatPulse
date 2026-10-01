@@ -91,6 +91,7 @@ from core.errors import (
     WorklogAlreadySubmitted,
     WorklogDraftNotFound,
     WorklogSubmitInProgress,
+    ZPlannerApiError,
 )
 from core.mentions import CollectorRunner
 from core.polishers import sepia as sepia_polisher
@@ -3441,6 +3442,8 @@ def reply_to_mention(
 
 #: 一群最多列幾個候選。計畫 §7 第 5 條：**最多顯示 3 筆＋常駐搜尋框**，
 #: 清單永不封閉。列太多會讓人從「讀理由」退化成「掃清單挑一個看起來像的」。
+#: ⚠️ 這是**系統候選**的上限；「上次記到」另外排在最前面，所以一段最多 4 項
+#: （同一張單時合併成一筆，見 `_merge_memory`）。
 WORKLOG_MAX_CANDIDATES = 3
 
 #: 權限預檢最多查幾個專案。每個專案是 **2 次** HTTP（role-permissions ＋
@@ -3701,6 +3704,86 @@ def get_worklog_week(
     }
 
 
+#: 搜尋關鍵字的長度上限。單號或幾個字就夠了；長到這個程度多半是貼錯東西
+#: （整段 commit 訊息），送出去只會換來 0 筆，讓人以為「沒有這張單」。
+WORKLOG_ISSUE_SEARCH_MAX_CHARS = 100
+
+
+@app.get("/api/v1/worklogs/issue-search")
+def search_worklog_issues(
+    q: str = Query("", description="關鍵字或單號（必填，不可為空白）"),
+    viewer: Dict[str, Any] = ViewerDep,
+):
+    """在**全部可記工時（worklogable）**的 issue 裡搜尋，結果依專案分組。
+
+    草稿卡的「記到哪張單」搜尋框用它：系統候選只是用一個關鍵字自動搜出來的，
+    純 Chat 的段經常一筆都沒有，Viewer 必須能自己搜。
+
+    ⚠️ **空查詢在這裡就擋下（400），不送 ZPlanner。** ZPlanner 的 `q` 傳空字串
+    會回 0 筆而不是全部（見 `ZPlannerClient.list_worklogable_issues`），照送的話
+    畫面會說「沒有任何可記工時的單」——一個完全錯誤、而且看起來很合理的結論。
+    client 那層也會擋，這裡先擋是為了回一句講得出原因的 400，而不是讓 client 的
+    例外在別的路徑上被包成別的東西。
+
+    ⚠️ 必須宣告在 `GET /worklogs/{work_date}` **之前**：FastAPI 依宣告順序比對，
+    寫在後面的話 `issue-search` 會被當成日期，回一句「日期格式不對」。
+
+    ZPlanner 沒設定時回 `500 CONFIGURATION_ERROR`（原因在 message），**不回空結果**：
+    空的 `groups` 與「真的搜不到」長得一模一樣。查詢失敗照 `core/zplanner_client`
+    的分類往上拋（`ZPLANNER_UNAVAILABLE`＝可以直接重試）。
+
+    搜尋結果**不做權限預檢**：worklogable 本身就是「能不能填」的權威來源；草稿
+    產生時那份逐專案的角色預檢是另一件事（每專案 2 次 HTTP），搜尋框每打幾個字
+    就跑一次會慢到不能用。
+    """
+    keyword = (q or "").strip()
+    if not keyword:
+        raise InvalidParameter(
+            "搜尋關鍵字不能是空的：ZPlanner 對空字串會回 0 筆而不是全部，"
+            "送出去只會得到一個錯誤的「沒有可記工時的單」。"
+        )
+    if len(keyword) > WORKLOG_ISSUE_SEARCH_MAX_CHARS:
+        raise InvalidParameter(
+            f"搜尋關鍵字最多 {WORKLOG_ISSUE_SEARCH_MAX_CHARS} 個字，收到 {len(keyword)} 個。"
+        )
+
+    client = zplanner_client()
+    ok, reason = client.available()
+    if not ok:
+        raise ConfigurationError(f"ZPlanner 目前不可用：{reason}")
+
+    issues = client.list_worklogable_issues(keyword)
+    groups: Dict[Tuple[Any, Any], Dict[str, Any]] = {}
+    count = 0
+    for raw in issues:
+        candidate = _candidate_shape(raw)
+        if candidate is None:
+            # 🔴 認不出來就拋。草稿候選那邊會跳過壞掉的項目（那裡是建議），
+            # 這裡是 Viewer 主動搜尋的結果：靜默少一筆，他就會以為「沒有這張單」。
+            raise ZPlannerApiError(
+                "ZPlanner 的可記工時 issue 清單裡有認不出 id 的項目",
+                detail=repr(raw)[:400],
+            )
+        bucket = groups.setdefault(
+            (candidate["project_id"], candidate["project_key"]),
+            {
+                "project_id": candidate["project_id"],
+                "project_key": candidate["project_key"],
+                "issues": [],
+            },
+        )
+        bucket["issues"].append(candidate)
+        count += 1
+
+    ordered = sorted(
+        groups.values(),
+        key=lambda g: (g["project_key"] is None, str(g["project_key"] or g["project_id"] or "")),
+    )
+    for group in ordered:
+        group["issues"].sort(key=lambda c: str(c["issue_key"] or ""))
+    return {"q": keyword, "count": count, "groups": ordered}
+
+
 class WorklogDraftRequest(BaseModel):
     """產生某一天的工時草稿。
 
@@ -3724,13 +3807,11 @@ class WorklogDraftRequest(BaseModel):
     #: 這個端點這一階段不接 AI（見下方 meta：note 來自 commit subject，
     #: `meta.model` 固定 null），收下一個保證無效的參數比不收更糟——呼叫端會
     #: 以為自己選的模型生效了。等這裡接上 AI 再加，連同 `resolve_model()` 一起。
-    #: 明示「我知道重產會清掉已經選好的專案，還是要重來」。
-    #:
-    #: 預設 `False`，因為選專案是這個功能裡最花心力的一步（ADR-0008：系統只
-    #: 給候選，一律由 Viewer 選），而重產是整組 DELETE——安靜地清掉那些決定
-    #: 跟弄丟它們沒有差別。`force=true` **不能**用來蓋過「已經送進 ZPlanner」
-    #: 那條線：worklog id 弄丟了就是永遠對不回來。
-    force: bool = False
+    #: ⚠️ 2026-10-01 起**沒有 `force` 欄位**。以前它用來明示「我知道重產會清掉已選的
+    #: 專案」；現在重產保留同一段的歸屬，對不上的照規格留空、事後在 done 事件列出
+    #: （Viewer 已決定不擋），沒有東西需要確認了。舊前端若還帶著它，pydantic 預設
+    #: 忽略多出來的鍵——而它本來就**蓋不過「已經送進 ZPlanner」那條線**，忽略它不會
+    #: 讓任何原本擋得住的事變成擋不住。
 
 
 def _worklog_chat_space_ids(
@@ -3874,17 +3955,132 @@ def _worklog_permissions(
     return out
 
 
+def _worklog_cluster_sources(
+    clusters: List[Any], by_ref: Dict[str, Any], repos: List[Dict[str, Any]]
+) -> Dict[str, Dict[str, Any]]:
+    """每一段（群）來自哪裡：`{cluster.key: {"source": …, "repos": […]}}`。
+
+    - `repos`：這一段的 commit 屬於哪幾個工作 repo（純 Chat 的段是空的）。
+      **預設 ZPlanner 專案加權只看這幾個**——2026-10-01 以前比對的是「所有啟用
+      repo 的預設專案聯集」，理由文字卻寫「該 repo」：A repo 的段會因為 B repo
+      設了預設專案而被加權，畫面上的理由同時在說謊。
+    - `source`：記憶的鍵 `{"kind", "id", "label"}`。**只有整段的證據都來自同一個
+      來源時才有值**，否則是 None。跨兩個 repo 的 issue 段沒有「它的來源」可言，
+      硬挑一個的話，記憶會寫到 Viewer 沒意識到的那個 repo 上。
+
+    commit 證據只帶 repo **名**（`source_label`），所以用名字回查 `repos`：名字在
+    同一位 Viewer 底下是唯一的（`UNIQUE(viewer_id, name)`）。對不到時這一筆當作
+    來源不明——整段就沒有 source，**不猜**。
+    """
+    repo_by_name = {
+        str(r.get("name") or r.get("repo_path") or ""): r for r in repos
+    }
+    out: Dict[str, Dict[str, Any]] = {}
+    for cluster in clusters:
+        seen_repos: List[Dict[str, Any]] = []
+        keys: List[Optional[Tuple[str, str]]] = []
+        label = ""
+        for ref in cluster.evidence_refs:
+            item = by_ref.get(ref)
+            if item is None:
+                keys.append(None)
+                continue
+            if item.kind == "commit":
+                row = repo_by_name.get(item.source_label)
+                if row is None or not row.get("repo_path"):
+                    keys.append(None)
+                    continue
+                if row not in seen_repos:
+                    seen_repos.append(row)
+                keys.append(("repo", str(row["repo_path"])))
+                label = row.get("name") or label
+            else:
+                if not item.space_id:
+                    keys.append(None)
+                    continue
+                keys.append(("space", item.space_id))
+                label = item.source_label or item.space_id
+        distinct = set(keys)
+        source = None
+        if len(distinct) == 1 and None not in distinct:
+            kind, sid = next(iter(distinct))
+            source = {"kind": kind, "id": sid, "label": label}
+        out[cluster.key] = {"source": source, "repos": seen_repos}
+    return out
+
+
+def _memory_candidate(memory: Dict[str, Any], label: str) -> Dict[str, Any]:
+    """把一筆「這個來源上次記到哪張單」變成候選清單最上面那一項。
+
+    🔴 **它只是候選，不是歸屬**——entries 的四個歸屬欄位照樣是 NULL，Viewer 點了
+    才算數（ADR-0008）。`source: "last_used"` 讓前端把它畫成「上次記到 XXX」，
+    與系統搜出來的候選分開。
+
+    `title` 可能是空字串：記憶表只存單號不存標題（標題會改，存了也會過期）。
+    呼叫端若在這次的搜尋結果裡找得到同一張單，會用那邊的標題補上。
+    """
+    return {
+        "issue_id": memory["issue_id"],
+        "issue_key": memory["issue_key"],
+        "title": "",
+        "project_id": memory.get("project_id"),
+        "project_key": memory.get("project_key"),
+        "source": "last_used",
+        # 與「預設專案」同一級：是 Viewer 自己給過的訊號，但可能已經過期
+        # （上次記到 A 不代表這次也是 A）。
+        "confidence": "medium",
+        "reason": f"「{memory.get('source_label') or label}」上次記到 {memory['issue_key']}",
+        "last_used_at": memory.get("updated_at"),
+    }
+
+
+def _merge_memory(
+    memory: Dict[str, Any], label: str, matched: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """「上次記到」那一項；同一張單這次也被搜到時，兩邊合併成**一筆**。
+
+    合併後：位置與 `source: "last_used"` 照舊（前端靠它把這項放最上面、標成「上次記到」），
+    **信心度取搜到那一邊的**（記憶本身只是「中」，搜到的若是 commit 直接寫了單號就是
+    「強」，不准被降級），理由兩句都留，`matched_source` 記下搜到的來源（`issue_key`／
+    `default_project`／`search`），標題也借搜到的那份。沒搜到時 `matched_source` 是 null。
+    """
+    first = _memory_candidate(memory, label)
+    first["matched_source"] = None
+    if matched is not None:
+        first.update(
+            {
+                "title": matched["title"],
+                "confidence": matched["confidence"],
+                "reason": f"{first['reason']}；{matched['reason']}",
+                "matched_source": matched["source"],
+            }
+        )
+    return first
+
+
 def _worklog_candidates(
-    clusters: List[Any], *, default_project_ids: set, viewer_email: str
+    clusters: List[Any],
+    *,
+    default_projects: Dict[str, Dict[Any, str]],
+    viewer_email: str,
+    memories: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Tuple[Dict[str, List[Dict[str, Any]]], Dict[str, Any]]:
     """對每一群撈候選 issue，並把 `can_worklog` 的預檢結果帶上。
 
     回 `(每群的候選, meta 的 zplanner 段)`。**ZPlanner 不可用時回空候選而不是
     拋錯**：沒設 ZPlanner 的人仍然該產得出草稿，他只是暫時挑不了 issue。
 
+    - `default_projects`：`{cluster.key: {project_id: 設定它的 repo 名}}`，**只含
+      這一段所屬 repo 的預設專案**（見 `_worklog_cluster_sources`）。純 Chat 的段
+      沒有所屬 repo，就沒有預設專案加權。
+    - `memories`：`{cluster.key: 記憶列}`。有的話放在該段候選的**第一項**
+      （`source: "last_used"`），同一張單若也被搜到就不重複列。ZPlanner 不可用時
+      照樣放——記憶是本地資料，與 ZPlanner 通不通無關。
+
     信心度分三級，而且**一律附一句可見的理由**（計畫 §7 第 3 條）：不做排名
     徽章、不做百分比、不做進度條——要讓人讀理由而不是讀名次。
     """
+    memories = memories or {}
     meta: Dict[str, Any] = {
         "available": False,
         "reason": "",
@@ -3902,6 +4098,18 @@ def _worklog_candidates(
         "errors": [],
     }
     by_cluster: Dict[str, List[Dict[str, Any]]] = {c.key: [] for c in clusters}
+    labels = {c.key: c.label for c in clusters}
+
+    def with_memory_only() -> Dict[str, List[Dict[str, Any]]]:
+        # ZPlanner 不可用：沒有任何一項查得到權限，照實標「不知道」
+        for key, memory in memories.items():
+            if key in by_cluster:
+                candidate = _merge_memory(memory, labels[key], None)
+                candidate.update(
+                    {"can_worklog": None, "permission_checked": False, "permission_reason": ""}
+                )
+                by_cluster[key] = [candidate]
+        return by_cluster
 
     try:
         client = zplanner_client()
@@ -3909,10 +4117,10 @@ def _worklog_candidates(
     except Exception as exc:  # noqa: BLE001
         log.exception("建立 ZPlanner client 失敗（候選 issue 降級）")
         meta["reason"] = f"ZPlanner client 無法建立：{exc}"
-        return by_cluster, meta
+        return with_memory_only(), meta
     if not ok:
         meta["reason"] = reason
-        return by_cluster, meta
+        return with_memory_only(), meta
     meta["available"] = True
 
     seen_issue_ids = set()
@@ -3932,6 +4140,9 @@ def _worklog_candidates(
             )
             continue
 
+        own_defaults = default_projects.get(cluster.key) or {}
+        memory = memories.get(cluster.key)
+        matched: Optional[Dict[str, Any]] = None
         ranked: List[Tuple[int, Dict[str, Any]]] = []
         for raw in issues:
             candidate = _candidate_shape(raw)
@@ -3942,9 +4153,12 @@ def _worklog_candidates(
                 rank, source = 0, "issue_key"
                 why = f"你在 commit 訊息裡直接寫了 {cluster.issue_key}"
                 confidence = "strong"
-            elif candidate["project_id"] in default_project_ids:
+            elif candidate["project_id"] in own_defaults:
                 rank, source = 1, "default_project"
-                why = "這是你替該 repo 設定的預設 ZPlanner 專案底下的 issue"
+                why = (
+                    f"這是你替 {own_defaults[candidate['project_id']]} 設定的"
+                    "預設 ZPlanner 專案底下的 issue"
+                )
                 confidence = "medium"
             else:
                 rank, source = 2, "search"
@@ -3953,10 +4167,26 @@ def _worklog_candidates(
             candidate.update(
                 {"source": source, "confidence": confidence, "reason": why}
             )
+            if memory is not None and candidate["issue_id"] == memory["issue_id"]:
+                # 同一張單已經以「上次記到」列在最上面，不重複列——但**它這次被搜到的
+                # 理由與信心度要併進去**，不能吞掉。2026-10-01 審查發現：commit 裡直接
+                # 寫了 PEI-133（強）而記憶也是 PEI-133 時，原本只剩「上次記到」（中），
+                # 最強的那個證據從畫面上消失了。
+                matched = candidate
+                continue
             ranked.append((rank, candidate))
 
         ranked.sort(key=lambda pair: (pair[0], str(pair[1]["issue_key"] or "")))
         by_cluster[cluster.key] = [c for _, c in ranked[:WORKLOG_MAX_CANDIDATES]]
+        if memory is not None:
+            by_cluster[cluster.key].insert(0, _merge_memory(memory, cluster.label, matched))
+
+    # 查詢失敗的段沒走到上面那段，記憶照樣要放（它與 ZPlanner 通不通無關）
+    for key, memory in memories.items():
+        if key in by_cluster and not any(
+            c.get("source") == "last_used" for c in by_cluster[key]
+        ):
+            by_cluster[key].insert(0, _merge_memory(memory, labels[key], None))
 
     meta["worklogable_count"] = len(seen_issue_ids)
 
@@ -3983,22 +4213,18 @@ def _worklog_candidates(
     return by_cluster, meta
 
 
-def _refuse_destructive_regeneration(
-    date: str, entries: List[Dict[str, Any]], *, force: bool
-) -> None:
-    """重產前的守門。重產 ＝ `replace_worklog_entries` 整組 DELETE 再 INSERT。
+def _refuse_destructive_regeneration(date: str, entries: List[Dict[str, Any]]) -> None:
+    """重產前的守門：**有任何一筆送進 ZPlanner 就不准重產**，沒有任何參數蓋得過。
 
-    那次 DELETE 會帶走兩種東西，性質完全不同，所以擋法也不同：
+    重產 ＝ `replace_worklog_entries` 整組 DELETE 再 INSERT，那次 DELETE 會帶走
+    `zplanner_worklog_id`——修改／刪除遠端工時的唯一入口。本地刪掉不會讓 ZPlanner
+    那側跟著消失，只會讓兩邊永遠對不回來，之後只剩 correction-request。
 
-      1. **`zplanner_worklog_id`**——修改／刪除遠端工時的唯一入口。本地刪掉
-         不會讓 ZPlanner 那側跟著消失，只會讓兩邊永遠對不回來，之後只剩
-         correction-request。這條線 **`force` 也不給過**。
-      2. **Viewer 已經選好的 issue**——ADR-0008 的唯一硬規則是「系統只給候選，
-         一律由人選」，所以這是整個功能裡最花心力的一步。它可以重選，但
-         **不可以沒人講一聲就清掉**：擋下來，說清楚會影響幾筆，由呼叫端帶
-         `force=true` 明示。
+    ⚠️ 2026-10-01 以前這裡還有第二道：「有任何一筆已經選好 issue 就擋，要 force」。
+    那道已移除：重產現在會**保留同一段的歸屬**（`_worklog_preserved_attributions`），
+    對不上的照規格留空、事後在 done 事件列出（Viewer 已決定不擋、不問）。
 
-    兩種都把筆數放進 `detail`（dict → 會進回應的 `error.detail`，見
+    筆數放進 `detail`（dict → 會進回應的 `error.detail`，見
     `chatpulse_error_handler`），前端才不必從中文句子裡用正則挖數字。
     """
     sent = [e for e in entries if e["zplanner_worklog_id"]]
@@ -4009,19 +4235,105 @@ def _refuse_destructive_regeneration(
             detail={"submitted_count": len(sent), "force_allowed": False},
         )
 
-    assigned = [e for e in entries if e["issue_id"] or e["issue_key"]]
-    if assigned and not force:
-        keys = [str(e["issue_key"]) for e in assigned if e["issue_key"]]
-        shown = ("（" + "、".join(keys[:5]) + "）") if keys else ""
-        raise InvalidParameter(
-            f"{date} 的草稿裡有 {len(assigned)} 筆已經選好專案了{shown}，"
-            "重產會把那些選擇整組清掉。確定要重來請帶 force=true。",
-            detail={
-                "assigned_count": len(assigned),
-                "assigned_issue_keys": keys,
-                "force_allowed": True,
-            },
+
+def _worklog_entry_clusters(draft: Dict[str, Any]) -> List[Optional[Dict[str, Any]]]:
+    """草稿的每一筆 entry 對到 `generation_meta.clusters[]` 的哪一群（與 entries 同序）。
+
+    🔴 **用 `evidence_refs` 集合相等去對，對不到給 None，不退回用 seq 位置對（D-9）。**
+    重產時 meta 與 entries 分兩個交易寫，後者被已送出守門拒絕時，meta 已經換成新的
+    那一批——用位置對會把新群的 reason 靜默貼到舊 entry 上，畫面上看起來完全正常。
+
+    同一組 evidence_refs 對到兩個以上 cluster、或 entry 的 evidence_refs 是空的，
+    一律當對不到：兩種情況都分不出該用哪一群，挑一個就是猜。
+
+    畫面組裝（`_worklog_day_view`）、重產時保留歸屬、PUT 時記住來源都靠這一份對應
+    ——三處各寫一份的話，遲早有一處對法不同，而對錯群的後果是把歸屬套到別的段上。
+    """
+    meta = draft.get("generation_meta") or {}
+    clusters = meta.get("clusters") if isinstance(meta, dict) else None
+    by_refs: Dict[frozenset, Optional[Dict[str, Any]]] = {}
+    if isinstance(clusters, list):
+        for cluster in clusters:
+            if not isinstance(cluster, dict) or not isinstance(
+                cluster.get("evidence_refs"), list
+            ):
+                continue
+            refs = frozenset(cluster["evidence_refs"])
+            by_refs[refs] = None if refs in by_refs else cluster
+    elif clusters is not None:
+        log.warning(
+            "工時草稿 %s 的 generation_meta.clusters 不是陣列，cluster 欄位一律給 null",
+            draft.get("id"),
         )
+
+    out: List[Optional[Dict[str, Any]]] = []
+    for entry in draft.get("entries") or []:
+        refs = frozenset(entry.get("evidence_refs") or [])
+        out.append(by_refs.get(refs) if refs else None)
+    return out
+
+
+def _worklog_preserved_attributions(
+    draft: Optional[Dict[str, Any]], clusters: List[Any]
+) -> Tuple[Dict[str, Dict[str, Any]], List[Dict[str, Any]]]:
+    """重產時哪些歸屬留得住：回 `(保留, 被清空)`。
+
+    「同一段」要**兩個條件同時成立**：
+
+      1. 舊 entry 對回的舊群（`_worklog_entry_clusters`）的 `key`，也出現在這次的切段裡；
+      2. 舊 entry 的 `evidence_refs` 與新那一段的 `evidence_refs` **至少有一筆交集**。
+
+    🔴 只看 key 會錯配（2026-10-01 審查發現）：repo 段的 key 是 `repo:<名稱>`、Space
+    段的 key 是整天的 `space:<id>`，**都與內容無關**。實際例子：舊的 cs-backend 段含
+    commit A、B，Viewer 選了 OPS-7；重產時 A、B 改歸到 issue 段，新的 commit C 落進
+    cs-backend 段——只看 key，OPS-7 就被原樣貼到 C 上，而畫面上看不出任何異狀。
+    要求交集之後，這種情況算「對不上」，照規格留空。
+
+    為什麼交集靠得住：ref 是 `commit:<sha>`／`chat:<message_name>`，兩者都是來源系統給的
+    永久識別，重產前後不會變（見 `worklog_evidence.Evidence.ref`）。為什麼不要求「完全
+    相等」：重產多半是因為那天多了幾個 commit，refs 一定不同，但仍是同一段的延續。
+
+    對不上的不擋、不問，**照規格留空**，由呼叫端在 done 事件裡列出被清掉的單號
+    （Viewer 已決定：重產照常完成，事後告知）。
+
+    🔴 保留的是 **Viewer 自己選過的值**，不是系統猜的——這與 ADR-0008「產生時
+    歸屬一律留空」不衝突：那條防的是系統替人決定，這裡是不准系統把人的決定丟掉。
+    """
+    if not draft:
+        return {}, []
+    new_refs = {c.key: set(c.evidence_refs) for c in clusters}
+    preserved: Dict[str, Dict[str, Any]] = {}
+    cleared: List[Dict[str, Any]] = []
+    entries = draft.get("entries") or []
+    for entry, cluster in zip(entries, _worklog_entry_clusters(draft)):
+        if not (entry.get("issue_id") or entry.get("issue_key")):
+            continue
+        key = cluster.get("key") if cluster else None
+        overlap = new_refs.get(key, set()) & set(entry.get("evidence_refs") or [])
+        if key in new_refs and overlap and key not in preserved:
+            preserved[key] = {
+                "issue_id": entry["issue_id"],
+                "issue_key": entry["issue_key"],
+                "project_id": entry["project_id"],
+                "project_key": entry["project_key"],
+            }
+        else:
+            cleared.append(entry)
+    return preserved, cleared
+
+
+def _cleared_attributions_summary(cleared: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """done 事件的 `attributions_cleared`：重產時因分段改變而清空的筆數與單號。
+
+    單號照舊 entry 的順序、去重；沒有 `issue_key` 的（只有 id）不列，但照樣計數——
+    數字是「幾段被清空」，不是「列得出幾個單號」。
+    """
+    keys: List[str] = []
+    for entry in cleared:
+        key = entry.get("issue_key")
+        if key and str(key) not in keys:
+            keys.append(str(key))
+    return {"count": len(cleared), "issue_keys": keys}
 
 
 @app.post("/api/v1/worklogs/{work_date}/draft/stream")
@@ -4037,9 +4349,13 @@ def worklog_draft_stream(
     `meta` 是證據欄的唯一來源：任何無法回溯到 meta 某個欄位的東西，都不准
     進證據欄（設計紅線）。所以這裡漏掉什麼，前端就永遠顯示不出來。
 
-    ⚠️ `done` 的 `entries[]` 裡 **`issue_id`／`issue_key` 一律是 null**。
+    ⚠️ `done` 的 `entries[]` 裡 **`issue_id`／`issue_key` 不會是系統選的**。
     系統只給候選，選擇權在 Viewer——ADR-0008 的唯一硬規則。一份看起來合理的
     自動歸屬，代價由一個月後發現填錯的人支付（月結後要走 correction-request）。
+    第一次產生一律是 null；重產時，Viewer 在**同一段**選過的值會原樣保留
+    （`_worklog_preserved_attributions`）——那是人的決定，不是系統的猜測。
+    對不上的段照規格留空，清掉了哪幾張單列在 done 的 `attributions_cleared`。
+    「這個來源上次記到哪張單」的記憶**只進候選**，不進這四欄。
     """
     viewer_id = viewer["id"]
     # 以下全部擋在 SSE 開始之前：串流一旦開始就是 HTTP 200，之後的錯誤只能
@@ -4063,7 +4379,7 @@ def worklog_draft_stream(
 
     existing = repo.get_worklog_draft(viewer_id, date)
     if existing:
-        _refuse_destructive_regeneration(date, existing["entries"], force=req.force)
+        _refuse_destructive_regeneration(date, existing["entries"])
 
     def generate() -> Generator[str, None, None]:
         try:
@@ -4092,19 +4408,46 @@ def worklog_draft_stream(
 
             clusters = worklog_clustering.build_clusters(evidence.evidence)
             by_ref = {e.ref: e for e in evidence.evidence}
+
+            sources = _worklog_cluster_sources(clusters, by_ref, repos)
+            source_keys = {
+                key: (info["source"]["kind"], info["source"]["id"])
+                for key, info in sources.items()
+                if info["source"] is not None
+            }
+            remembered = repo.get_worklog_source_memory(
+                viewer_id, list(dict.fromkeys(source_keys.values()))
+            )
             candidates, zplanner_meta = _worklog_candidates(
                 clusters,
-                default_project_ids={
-                    r["default_zplanner_project_id"]
-                    for r in repos
-                    if r["default_zplanner_project_id"] is not None
+                # 🔴 只比對**這一段所屬 repo** 的預設專案，見 `_worklog_cluster_sources`
+                default_projects={
+                    key: {
+                        r["default_zplanner_project_id"]: r["name"]
+                        for r in info["repos"]
+                        if r.get("default_zplanner_project_id") is not None
+                    }
+                    for key, info in sources.items()
                 },
                 viewer_email=viewer.get("email") or "",
+                # 帶上來源的名字：理由要說「cs-backend 上次記到」，不是段的 label
+                # （issue 段的 label 就是單號，會變成「PEI-133 上次記到 PEI-133」）
+                memories={
+                    key: {**remembered[pair], "source_label": sources[key]["source"]["label"]}
+                    for key, pair in source_keys.items()
+                    if pair in remembered
+                },
             )
 
             meta_event: Dict[str, Any] = {"type": "meta", **evidence.to_meta()}
             meta_event["clusters"] = [
-                {**c.to_meta(), "candidates": candidates.get(c.key, [])}
+                {
+                    **c.to_meta(),
+                    # 記憶的鍵。PUT 選定歸屬時靠它知道要記到哪個來源上
+                    # （entries 表沒有來源欄位，meta 是唯一記得住的地方）。
+                    "source": sources[c.key]["source"],
+                    "candidates": candidates.get(c.key, []),
+                }
                 for c in clusters
             ]
             meta_event["zplanner"] = zplanner_meta
@@ -4147,9 +4490,11 @@ def worklog_draft_stream(
             # 被拒絕的操作不該留下任何痕跡，這是那一道的全部理由。
             current = repo.get_worklog_draft(viewer_id, date)
             if current:
-                _refuse_destructive_regeneration(
-                    date, current["entries"], force=req.force
-                )
+                _refuse_destructive_regeneration(date, current["entries"])
+            # 保留哪些歸屬，以**寫入前最新的草稿**為準：掃 git／打 ZPlanner 的那段時間，
+            # Viewer 可能在另一個分頁又選了幾筆（PUT 不受產生流程阻擋）。
+            # 對不上的照規格留空、不擋，清掉了哪幾張單由 done 事件告訴前端。
+            preserved, cleared = _worklog_preserved_attributions(current, clusters)
 
             draft = repo.upsert_worklog_draft(
                 viewer_id,
@@ -4165,13 +4510,16 @@ def worklog_draft_stream(
             rows = []
             for index, cluster in enumerate(clusters):
                 entry = allocated.get(index)
+                # 🔴 ADR-0008 的唯一硬規則：**系統**不替人選歸屬——新的段一律留空，
+                # 「上次記到」的記憶也只進候選。唯一的例外是 Viewer 自己在這一段
+                # 選過的值（重產前就存在 DB 裡的），那不是系統的猜測，丟掉它才是錯。
+                kept_attribution = preserved.get(cluster.key) or {}
                 rows.append(
                     {
-                        # 🔴 ADR-0008 的唯一硬規則：產生時歸屬一律留空。
-                        "issue_id": None,
-                        "issue_key": None,
-                        "project_id": None,
-                        "project_key": None,
+                        "issue_id": kept_attribution.get("issue_id"),
+                        "issue_key": kept_attribution.get("issue_key"),
+                        "project_id": kept_attribution.get("project_id"),
+                        "project_key": kept_attribution.get("project_key"),
                         "hours": entry.allocated_hours if entry else None,
                         "allocated_hours": entry.allocated_hours if entry else None,
                         "note": notes[cluster.key],
@@ -4216,6 +4564,10 @@ def worklog_draft_stream(
                         for i, row in enumerate(saved["entries"])
                     ],
                     "allocation": allocation.to_dict() if allocation else None,
+                    # 重產時因分段改變而清空的歸屬（第一次產生一律是 0 筆）。只在這次
+                    # 回應出現、不落地：它描述的是「這次重產做了什麼」，存進 meta 的話
+                    # Viewer 重新選好之後，畫面仍會一直說「已清空」。
+                    "attributions_cleared": _cleared_attributions_summary(cleared),
                 }
             )
         except ChatPulseError as exc:
@@ -4352,28 +4704,10 @@ def _worklog_day_view(draft: Dict[str, Any]) -> Dict[str, Any]:
     一律當對不到：兩種情況都分不出該用哪一群，挑一個就是猜。
 
     放在 dashboard 不放 repository：這是畫面組裝，存取層不該解讀 SSE 的 meta。
+    對法本身在 `_worklog_entry_clusters`（重產保留歸屬與 PUT 記憶也用同一份）。
     """
-    meta = draft.get("generation_meta") or {}
-    clusters = meta.get("clusters") if isinstance(meta, dict) else None
-    by_refs: Dict[frozenset, Optional[Dict[str, Any]]] = {}
-    if isinstance(clusters, list):
-        for cluster in clusters:
-            if not isinstance(cluster, dict) or not isinstance(
-                cluster.get("evidence_refs"), list
-            ):
-                continue
-            refs = frozenset(cluster["evidence_refs"])
-            by_refs[refs] = None if refs in by_refs else cluster
-    elif clusters is not None:
-        log.warning(
-            "工時草稿 %s 的 generation_meta.clusters 不是陣列，cluster 欄位一律給 null",
-            draft.get("id"),
-        )
-
     entries = []
-    for entry in draft.get("entries") or []:
-        refs = frozenset(entry.get("evidence_refs") or [])
-        cluster = by_refs.get(refs) if refs else None
+    for entry, cluster in zip(draft.get("entries") or [], _worklog_entry_clusters(draft)):
         entries.append(
             {
                 **entry,
@@ -4383,6 +4717,45 @@ def _worklog_day_view(draft: Dict[str, Any]) -> Dict[str, Any]:
             }
         )
     return {**draft, "entries": entries}
+
+
+def _worklog_memory_updates(
+    draft: Dict[str, Any], items: List["WorklogEntryUpdateItem"]
+) -> List[Dict[str, Any]]:
+    """這次 PUT 裡「選定了一張單」的筆 → 要記成「這個來源上次記到哪張單」的列。
+
+    只記**選定**（`issue_id` 有值），不記清除：Viewer 把某筆改回「未指派」不代表
+    他否定了上次的選擇，可能只是這一天這一段不該記工時。
+
+    來源取自這筆所屬那一群的 `generation_meta.clusters[].source`（產草稿時算好的）。
+    對不到群、或那一群沒有單一來源（跨 repo 的 issue 段、2026-10-01 以前產的
+    舊草稿）就不記——**不猜**，記錯來源比不記更糟：它會在別的 repo 的段上冒出
+    一個毫不相干的「上次記到」。
+    """
+    entry_source: Dict[int, Dict[str, Any]] = {}
+    for entry, cluster in zip(draft.get("entries") or [], _worklog_entry_clusters(draft)):
+        source = cluster.get("source") if cluster else None
+        if isinstance(source, dict) and source.get("kind") in repo.WORKLOG_SOURCE_KINDS and source.get("id"):
+            entry_source[entry["id"]] = source
+
+    out: List[Dict[str, Any]] = []
+    for item in items:
+        if "issue_id" not in item.model_fields_set or item.issue_id is None:
+            continue
+        source = entry_source.get(item.id)
+        if source is None:
+            continue
+        out.append(
+            {
+                "source_kind": source["kind"],
+                "source_id": source["id"],
+                "issue_id": item.issue_id,
+                "issue_key": item.issue_key,
+                "project_id": item.project_id,
+                "project_key": item.project_key,
+            }
+        )
+    return out
 
 
 @app.get("/api/v1/worklogs/{work_date}")
@@ -4418,8 +4791,12 @@ def update_worklog_day(
     viewer_id = viewer["id"]
     date = worklog_evidence.parse_work_date(work_date).strftime("%Y-%m-%d")
     with _claim_worklog_submit(viewer_id, date):
+        current = repo.get_worklog_draft(viewer_id, date)
         saved = repo.update_worklog_entries(
-            viewer_id, date, [item.to_update() for item in body.entries]
+            viewer_id,
+            date,
+            [item.to_update() for item in body.entries],
+            remember=_worklog_memory_updates(current, body.entries) if current else None,
         )
     if saved is None:
         raise WorklogDraftNotFound(f"{date} 還沒有工時草稿，沒有東西可以改。")

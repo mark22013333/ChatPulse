@@ -750,8 +750,9 @@ GitHub 未認證每小時只有 60 次呼叫，前端不要拿它做輸入即時
 - **後端完成**：「我的工作 repo」登錄、**週檢視**（`GET /worklogs/week`）、**草稿產生**
   （`POST /worklogs/{date}/draft/stream`）、**單日讀寫**（`GET`／`PUT /worklogs/{date}`，
   `PUT` 是逐筆欄位更新）、**送出**（`POST /worklogs/{date}/submit`）。
-  **尚未實作**：`GET /zplanner/issues/search`、`GET /zplanner/permissions`（候選與
-  權限目前只在草稿的 SSE `meta` 裡一次帶回，沒有獨立的搜尋端點）。
+  **搜尋**（`GET /worklogs/issue-search`，2026-10-01；早期規劃的路徑是
+  `/zplanner/issues/search`，實作時放進 `/worklogs/` 底下與其他工時端點同組）。
+  **尚未實作**：`GET /zplanner/permissions`（權限預檢目前只在草稿的 SSE `meta` 裡一次帶回）。
 - **前端完成**：工時工作台的導航與路由骨架、「我的工作 repo」設定頁、週檢視；
   本任務完成：單日工作區的產生／分配／歸屬確認／送出。
 
@@ -791,8 +792,8 @@ GitHub 未認證每小時只有 60 次呼叫，前端不要拿它做輸入即時
   ⚠️ 這與 `/code-projects` 的「環境→釘死一個分支」**相反**，不是疏忽：那邊拿錯
   環境等於給出錯的答案，這邊漏掉一個還沒合併的 feature 分支就等於漏掉那天的工作。
 - `default_zplanner_project_id` / `_key` **只用來把該專案的 issue 排進候選清單並
-  標示來源，絕不自動填**（ADR-0008 的唯一硬規則：專案歸屬一律由 Viewer 在確認
-  畫面選）。猜錯的那次長得跟猜對的一模一樣，而 ZPlanner 的工時會進月結，
+  標示來源，絕不自動填**（ADR-0008 的唯一硬規則：記到哪張單一律由 Viewer 在確認
+  畫面選）。⚠️ 只對**這個 repo 的 commit 切出來的段**生效，不套到別的 repo 或純 Chat 的段。猜錯的那次長得跟猜對的一模一樣，而 ZPlanner 的工時會進月結，
   月結後不能直接改、要走 correction-request。
 
 **兩條唯一性限制**，違反時回 `400 INVALID_PARAMETER`（先查一次才回得出看得懂的
@@ -905,12 +906,43 @@ POST／PATCH／verify 都回帶 `verification` 的單筆：
   ZPlanner 回應沒有 `week_start`／`week_end`（舊版或裸清單）時不判定錯開——
   沒有東西可以比對，就只靠逐日資料的日期自然過濾。
 
+### `GET /api/v1/worklogs/issue-search`
+
+需登入。`?q=<關鍵字或單號>`。在**全部可記工時（worklogable）**的 issue 裡搜尋，
+結果依專案分組——草稿卡「記到哪張單」搜尋框用的。系統候選只是用一個關鍵字自動搜出來
+的，純 Chat 的段經常一筆都沒有，Viewer 必須能自己搜。
+
+```json
+{ "q": "備份", "count": 2,
+  "groups": [ { "project_id": 77, "project_key": "OPS",
+                "issues": [ { "issue_id": 20, "issue_key": "OPS-7", "title": "設定備份",
+                              "project_id": 77, "project_key": "OPS" } ] },
+              { "project_id": 42, "project_key": "PEI",
+                "issues": [ { "issue_id": 30, "issue_key": "PEI-300", "title": "備份排程",
+                              "project_id": 42, "project_key": "PEI" } ] } ] }
+```
+
+- 組依 `project_key` 排序（`null` 排最後），組內依 `issue_key` 排序。`issues[]` 的五個
+  欄位與 `candidates[]` 的前五個同形，直接拿去 `PUT` 的歸屬四欄。
+- **沒有**信心度、理由與權限預檢：worklogable 本身就是「能不能填」的權威來源；逐專案的
+  角色預檢是產草稿時的事（每專案 2 次 HTTP），打字時跑會慢到不能用。
+- 路由宣告在 `GET /worklogs/{date}` 之前，否則 `issue-search` 會被當成日期。
+
+| 情況 | 回應 |
+| :--- | :--- |
+| 🔴 `q` 省略、空字串或只有空白 | `400 INVALID_PARAMETER`，**不送 ZPlanner**——它對空字串回 0 筆而不是全部，照送會得到「沒有可記工時的單」這個錯誤結論。前端也在送出前擋下 |
+| `q` 超過 100 字 | `400 INVALID_PARAMETER` |
+| ZPlanner 沒設定（`ZPLANNER_BASE_URL`／`ZPLANNER_APIKEY`） | `500 CONFIGURATION_ERROR`，原因在 `message`。**不回空結果**：空的 `groups` 與「真的搜不到」長得一模一樣 |
+| 連不上／逾時 | `502 ZPLANNER_UNAVAILABLE`（唯讀，可以直接重試） |
+| ZPlanner 回了認不出 id 的項目 | `502 ZPLANNER_API_ERROR`。**不跳過那一筆**——靜默少一筆，Viewer 就會以為「沒有這張單」 |
+| 搜不到 | `200`，`count: 0`、`groups: []` |
+
 ### `POST /api/v1/worklogs/{date}/draft/stream`
 
 需登入。**SSE**。`{date}` 是 `YYYY-MM-DD`。body：
 ```json
 { "tz_offset": "+08:00", "repo_ids": [3], "space_ids": ["spaces/AAA"],
-  "total_hours": 8, "provider": null, "force": false }
+  "total_hours": 8, "provider": null }
 ```
 
 | 欄位 | 語意 |
@@ -920,7 +952,6 @@ POST／PATCH／verify 都回帶 `verification` 的單筆：
 | `space_ids` | 省略 ＝ 釘選的 Space ∪ 當天有 Mention 命中的 Space。**絕不掃全部 436 個**；非 `spaces/` 開頭 → `400` |
 | `total_hours` | **省略就不分配**，`entries[].hours` 一律 `null` |
 | `provider` | 這一階段**不接 AI**，只回進 `meta.provider` 備查 |
-| `force` | 預設 `false`。明示「我知道重產會清掉已經選好的專案，還是要重來」。**蓋不過「已送進 ZPlanner」那條線**（見下方重產規則） |
 
 ⚠️ **這裡沒有 `model` 欄位**，另外兩個串流端點有（見〈選擇 model〉）。理由同上：
 這一階段不接 AI（`meta.model` 固定 `null`），收下一個保證無效的參數比不收更糟——
@@ -928,6 +959,9 @@ POST／PATCH／verify 都回帶 `verification` 的單筆：
 
 事件序：`meta` → 每群一個 `chunk` → `done`。**事件型別不新增**，仍只有
 `meta`／`chunk`／`done`／`error`。以上參數錯誤全部**在 SSE 開始之前**回 4xx。
+⚠️ **2026-10-01 起沒有 `force` 欄位**（以前用來確認「重產會清掉已選的專案」）。重產對不上
+新分段的已選單號照規格留空、不擋，事後列在 `done.attributions_cleared`。舊前端若還帶著
+`force`，多出來的鍵被忽略——它本來就蓋不過「已送進 ZPlanner」那條線。
 
 `meta` ＝ `DayEvidence.to_meta()`（`work_date`／`tz_offset`／`since`／`until`／
 `repos[]`／`repos_skipped[]`／`spaces[]`／`spaces_skipped[]`／`commits[]`／`chat[]`）
@@ -950,6 +984,7 @@ POST／PATCH／verify 都回帶 `verification` 的單筆：
                   "terms": ["PEI-133", "export"], "occurred_at": "2026-09-13T10:00:00+08:00",
                   "issue_key": "PEI-133", "commit_count": 2, "chat_count": 0,
                   "source_labels": ["cs-backend", "cs-frontend"],
+                  "source": null,
                   "candidates": [ { "issue_id": 9, "issue_key": "PEI-133", "title": "訂單匯出效能",
                                     "project_id": 42, "project_key": "PEI",
                                     "source": "issue_key", "confidence": "strong",
@@ -1020,46 +1055,86 @@ POST／PATCH／verify 都回帶 `verification` 的單筆：
                  "state": "pending" } ],
   "allocation": { "total_hours": "8.00", "entries": [ { "index": 0, "issue_key": "PEI-133",
                   "allocated_hours": "3.50", "rounded_up": true, "merged_into": null } ],
-                  "adjustments": [] } }
+                  "adjustments": [] },
+  "attributions_cleared": { "count": 1, "issue_keys": ["OPS-7"] } }
 ```
 
-- 🔴 **`entries[].issue_id`／`issue_key` 一律是 `null`**——系統只給候選，選擇權在
+`attributions_cleared`：這次重產因分段改變而**清空**的已選歸屬——`count` 是段數，
+`issue_keys` 是被清掉的單號（去重；沒有單號的不列但照樣計數）。第一次產生是
+`{ "count": 0, "issue_keys": [] }`。**只在這次 done 出現、不落地**：它描述的是「這次重產
+做了什麼」，存進 meta 的話 Viewer 重新選好之後畫面仍會一直說「已清空」。前端據此在
+畫面上方顯示「有 N 段因分段改變，歸屬已清空：PEI-133、…」。
+
+- 🔴 **`entries[].issue_id`／`issue_key` 不會是系統選的**——系統只給候選，選擇權在
   Viewer（ADR-0008 的唯一硬規則）。一份看起來合理的自動歸屬，代價由一個月後發現
-  填錯的人支付（月結後不能直接改，要走 correction-request）。落地的那一份也是空的。
+  填錯的人支付（月結後不能直接改，要走 correction-request）。第一次產生一律是 `null`，
+  落地的那一份也是空的；**重產時 Viewer 在同一段選過的值原樣保留**（那是人的決定，
+  不是系統的猜測，見下方重產規則）。「上次記到」的記憶**只進候選**，不進這四欄。
   （`allocation.entries[].issue_key` 是**分配演算法的 tie-break 依據**，不是歸屬，
   前端不可拿它去預選。）
 - `total_hours` 省略時 `hours`／`allocated_hours`／`allocation` 全部是 `null`——
   使用者還沒決定總時數之前，不該看到憑空冒出來的數字。
 - 草稿**一天一份**（`UNIQUE(viewer_id, work_date)`），同一天再產一次是覆蓋——
-  覆蓋是**整組 DELETE 再 INSERT**，所以重產前有兩道守門，兩道都會把「會影響
-  幾筆」放進 `error.detail`，讓前端說得出具體數字而不必從中文句子裡挖：
+  覆蓋是**整組 DELETE 再 INSERT**，所以要先決定舊的歸屬怎麼處理：
 
-  | 情況 | 回應 | `force` 蓋得過嗎 |
-  | :--- | :--- | :--- |
-  | 有任何一筆送進 ZPlanner（`zplanner_worklog_id` 有值） | `409 WORKLOG_ALREADY_SUBMITTED`，`detail: { submitted_count, force_allowed: false }` | ❌ **不行**。worklog id 弄丟就永遠對不回來，之後只剩 correction-request |
-  | 沒送出、但有任何一筆已經選好 issue（`issue_id`／`issue_key` 有值） | `400 INVALID_PARAMETER`，`detail: { assigned_count, assigned_issue_keys, force_allowed: true }` | ✅ 帶 `force: true` 放行 |
+  | 情況 | 處理 |
+  | :--- | :--- |
+  | 有任何一筆送進 ZPlanner（`zplanner_worklog_id` 有值） | 串流開始前 `409 WORKLOG_ALREADY_SUBMITTED`，`detail: { submitted_count, force_allowed: false }`。**沒有任何參數蓋得過**：worklog id 弄丟就永遠對不回來，之後只剩 correction-request |
+  | 已選好單的筆**對得到**這次的某一段 | 四欄原樣帶到新的那一筆 |
+  | 已選好單的筆**對不到**這次的任何一段 | **照規格留空、不擋**，重產照常完成，列在 `done.attributions_cleared`（Viewer 決定：事後告知，不先確認） |
 
-  🔴 選專案是這個功能裡最花心力的一步（ADR-0008：系統只給候選，一律由 Viewer 選），
-  所以**不准安靜覆蓋**——擋下來、說清楚會清掉幾筆，由人決定。`force: true` 之後重產
-  出來的 `issue_id`／`issue_key` 一樣全是 `null`，要重選一次。
+  **「對得到」的判準（兩個條件同時成立）**：(1) 舊 entry 用 `evidence_refs` 對回舊
+  `meta.clusters[]` 的那一群，那一群的 `key`（`issue:PEI-133`／`repo:cs-backend`／
+  `space:spaces/AAA`）也出現在這次的切段裡；(2) 舊 entry 的 `evidence_refs` 與新那一段的
+  `evidence_refs` **至少有一筆交集**。
+  🔴 只看 key 會錯配：repo 段的 key 是 `repo:<名稱>`、Space 段是整天的 `space:<id>`，都與內容
+  無關。例：舊的 cs-backend 段含 commit A、B 且選了 OPS-7；重產時 A、B 改歸到 issue 段、新的
+  commit C 落進 cs-backend 段——只看 key，OPS-7 就被貼到毫不相干的 C 上。要求交集之後這算
+  「對不到」，留空並列出。不要求完全相等：重產多半是那天多了幾個 commit，refs 必然不同。
+  ref 是 `commit:<sha>`／`chat:<message_name>`，重產前後穩定。
+  時數、備註、送出狀態一律由新產生的值取代。判斷以**寫入前最新的草稿**為準：掃 git 那段
+  時間 Viewer 若在另一個分頁又選了幾筆，以那時的狀態為準。
   ⚠️ 已送出的那道守門在串流開始前檢查一次，**並且在真正寫入的那個 transaction 裡
   再檢查一次**：中間隔著 git 掃描與 ZPlanner 呼叫（可達數十秒），這段時間內若有另一
   條路徑把工時送出去，只靠前面那次檢查會把剛拿到的 worklog id 靜默抹掉。串流已經
   開始時，這道守門會變成 `error` 事件（`code: "WORKLOG_ALREADY_SUBMITTED"`），**草稿
-  一筆都不會被改到**。
+  一筆都不會被改到**（`meta`、`generated_at` 也不動）。
 - 錯誤主體的 `error.detail` **只有拋的人刻意給結構化補充時才出現**，型別是物件。
   其餘情況（大多數錯誤）沒有這個欄位——字串型的 detail 是內部訊息，只進 log。
 - 候選 issue 用 `list_worklogable_issues(q=群的關鍵字)` 撈，**`q` 必填**
   （ZPlanner 對空字串回 0 筆而不是全部）。`confidence` 只有三級並**一律附一句可見
   的理由**：不做排名徽章、不做百分比、不做進度條——要讓人讀理由而不是讀名次。
+- `candidates[].source`：`issue_key`（commit／發言裡直接寫了單號，`strong`）、
+  `default_project`（**這一段所屬 repo** 設定的預設 ZPlanner 專案底下的單，`medium`，
+  理由會寫出是哪個 repo）、`search`（關鍵字搜到的，`weak`）、`last_used`（見下）。
+  ⚠️ 預設專案加權**只比對這一段的 commit 所屬的 repo**（2026-10-01 以前比對的是所有
+  啟用 repo 的聯集，理由文字卻寫「該 repo」）。純 Chat 的段沒有所屬 repo，不加權。
+- **「上次記到」**：`clusters[].source` 有值時（整段的證據都來自同一個 Space 或同一個
+  repo；跨來源的段是 `null`），若這位 Viewer 曾在這個來源選過單，該段候選的**第一項**是
+  `{ …, "source": "last_used", "confidence": "medium", "reason": "「cs-backend」上次記到 PEI-133",
+  "last_used_at": "…", "matched_source": null }`。**同一張單這次也被搜到時合併成一筆**：
+  仍排第一、`source` 仍是 `last_used`，但 `confidence` 取搜到那一邊的（commit 直接寫了單號
+  就是 `strong`，不被記憶的 `medium` 降級）、`reason` 兩句都留（以「；」相接）、
+  `matched_source` 是搜到的來源（`issue_key`／`default_project`／`search`）、`title` 借搜到的
+  那份。沒搜到時 `matched_source: null`、`title` 是空字串（記憶不存標題）。ZPlanner 不可用或那一段查詢失敗時**照樣有**（記憶是本地資料），
+  此時 `can_worklog: null`、`permission_checked: false`。🔴 **它只是候選**，四個歸屬欄位
+  照樣是 `null`，Viewer 點了才算數。
+- `clusters[].source`：`{ "kind": "repo" | "space", "id": "<repo 絕對路徑或 space_id>",
+  "label": "<repo 名或 Space 名>" }` 或 `null`。PUT 選定歸屬時靠它知道要記到哪個來源上。
+- **三種「沒有系統候選」要分開讀**：`zplanner.available: false`（＋`reason`）＝不可用；
+  `zplanner.errors[]` 裡有 `cluster` 等於這一段的 `key` ＝那次查詢失敗（帶 `term`，可重試）；
+  兩者皆非而系統候選是空的 ＝有查但沒命中（`last_used` 不算系統候選，除非它帶著
+  `matched_source`——那代表同一張單這次也被搜到了）。
 - 權限預檢用 `list_project_role_permissions` ＋ `list_project_members`。
   查不到就 `can_worklog: null` ＋ `permission_checked: false`，**不假裝有權限**。
   ⚠️ `meta.zplanner.permission_checked` 現階段**一律是 `false`**：比對用的是登入的
   Google 信箱，而 `members[].user_email` 未必是同一個帳號；要確定得先有
   `preferences.zplanner_email`（該欄位尚未存在）。
-- 一次最多預檢 5 個專案、每群最多 3 個候選（清單永不封閉，其餘靠搜尋框）。
+- 一次最多預檢 5 個專案。每群最多 3 個**系統候選**；有「上次記到」時它另外排在最前面，
+  所以**最多 4 項**（記憶與系統候選是同一張單時合併成一筆，不會重複佔位）。清單永不封閉，
+  其餘靠搜尋框（`GET /worklogs/issue-search`）。
 - **ZPlanner 不可用時照樣產得出草稿**：`meta.zplanner.available` 為 `false`、
-  候選是空陣列，其餘一切照常。
+  候選只剩「上次記到」（沒有記憶就是空陣列），其餘一切照常。
 
 `error`：沒有任何 commit／發言時發 **`NO_EVIDENCE`**（SSE-only code，比照
 `NO_MESSAGES`），**且不落地任何草稿**——硬產一份空草稿會讓使用者把時數分給不存在
@@ -1101,7 +1176,7 @@ POST／PATCH／verify 都回帶 `verification` 的單筆：
 
 ### `PUT /api/v1/worklogs/{date}`
 
-需登入。**逐筆欄位更新**，只改時數、專案歸屬、備註。🔴 **不是整組取代**：整組取代
+需登入。**逐筆欄位更新**，只改時數、「記到哪張單」（歸屬四欄，舊稱「專案歸屬」）、備註。🔴 **不是整組取代**：整組取代
 要前端自己組出每筆的完整欄位，漏帶一個 `state`／`zplanner_worklog_id` 就是一次
 資料遺失。也**不能新增或刪除** entry——entry 只能由草稿產生流程依證據造出來。body：
 
@@ -1117,7 +1192,7 @@ POST／PATCH／verify 都回帶 `verification` 的單筆：
 | `id` | 必填，要改的那一筆。必須屬於這一天的草稿 |
 | 其餘欄位 | **鍵沒帶 ＝ 不改；帶 `null` ＝ 清除。** 沒出現在這張表裡的鍵（`state` 等）一律 `400`，不是靜默忽略——靜默忽略的話前端以為改到了，實際上什麼都沒發生 |
 | `hours` | 字串或 `null`。格式規則與送進 ZPlanner 的是**同一份**（最多三位整數、兩位小數，可為負數）；**不卡 0.5 倍數**，那是分配演算法的產出規則，不是 ZPlanner 的輸入限制。收到數字型別 → `400`。**不含任何數字的字串**（`""`、`"."`、`"-"`、`"-."`）也是 `400`——要清除時數請送 `null`，不要送空字串。前後空白會被去掉 |
-| `issue_id`／`issue_key`／`project_id`／`project_key` | **四個要一起帶**，而且 `issue_id` 與 `issue_key` 要同為 `null` 或同有值。只改一半的話，送出閘（看 `issue_id`）與重產守門（看 `issue_id` 或 `issue_key`）對「這筆指派了沒」會給出不同答案。**不限定只能選 `candidates` 裡的** |
+| `issue_id`／`issue_key`／`project_id`／`project_key` | **四個要一起帶**，而且 `issue_id` 與 `issue_key` 要同為 `null` 或同有值。只改一半的話，送出閘（看 `issue_id`）與重產守門（看 `issue_id` 或 `issue_key`）對「這筆指派了沒」會給出不同答案。**不限定只能選 `candidates` 裡的**（`GET /worklogs/issue-search` 搜到的照樣可以） |
 | `note` | 字串或 `null` |
 
 回應：`200`，與 `GET` **同一個形狀**（整份草稿寫完後重讀）。前端拿它直接重畫。
@@ -1127,6 +1202,10 @@ POST／PATCH／verify 都回帶 `verification` 的單筆：
 - **已送出守門是逐筆的：只看這次要改的筆。** 要改的筆裡有 `zplanner_worklog_id`
   有值者才 `409`；`failed`／`unknown`（沒有遠端 id）可以改。當天別處有筆已經送出，
   **不影響**其他筆的修改——否則選錯專案而 `failed` 的那筆就沒有路可以修。
+- **選定一張單（`issue_id` 有值）時順手記住「這個來源上次記到哪張單」**：來源取自
+  這筆所屬那一群的 `generation_meta.clusters[].source`；對不到群、或那群的 `source` 是
+  `null`（跨來源的段、2026-10-01 以前產的草稿）就不記。清除歸屬（四欄 `null`）**不會**
+  蓋掉上一次的記憶。記憶與歸屬寫在**同一個交易**：整批被拒絕時記憶也不動。
 - 未觸碰的欄位（`state`／`zplanner_worklog_id`／`is_locked`／`last_error_*`／
   `submitted_at`）一律原樣保留，改完 `failed` 那筆的歸屬，它仍然是 `failed`，
   上一次的錯誤訊息也還在，重打一次才會更新。

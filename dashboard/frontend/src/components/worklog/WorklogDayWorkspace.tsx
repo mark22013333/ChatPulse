@@ -1,12 +1,11 @@
 import { useEffect } from 'react'
-import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { Button } from '@/components/ui/button'
 import { WorklogDayEmpty } from '@/components/worklog/WorklogDayEmpty'
 import { WorklogEntryCard } from '@/components/worklog/WorklogEntryCard'
 import { WorklogHoursBar } from '@/components/worklog/WorklogHoursBar'
 import { WorklogSubmitBar } from '@/components/worklog/WorklogSubmitBar'
 import {
-  forceConfirmText,
+  clearedAttributionsText,
   submitBlockReason,
   useWorklogDayStore,
   type WorklogDayError,
@@ -29,8 +28,8 @@ import {
  *
  * ### 這裡不會有的東西
  *
- * **不會有「自動選好專案」的捷徑。** 系統只給候選、信心度與理由，選擇權在
- * Viewer——理由見 `docs/adr/0008-draft-worklog-over-clipboard-export.md`：
+ * **不會有「自動選好單」的捷徑**，「上次記到」也只是選單最上面的一項。系統只給
+ * 候選、信心度與理由，選擇權在 Viewer；也**不做批次套用**，每一段各自選——理由見 `docs/adr/0008-draft-worklog-over-clipboard-export.md`：
  * 工時會進月結，月結後要走 correction-request 才改得動，一個「多半正確」
  * 的自動歸屬，代價由一個月後發現錯誤的人支付。
  */
@@ -40,7 +39,7 @@ export function WorklogDayWorkspace({ date }: { date: string | null }) {
   const reloadError = useWorklogDayStore((s) => s.reloadError)
   const stream = useWorklogDayStore((s) => s.stream)
   const generateError = useWorklogDayStore((s) => s.generateError)
-  const pendingForce = useWorklogDayStore((s) => s.pendingForce)
+  const clearedAttributions = useWorklogDayStore((s) => s.clearedAttributions)
   const savingIds = useWorklogDayStore((s) => s.savingIds)
   const dirtyIds = useWorklogDayStore((s) => s.dirtyIds)
   const entryErrors = useWorklogDayStore((s) => s.entryErrors)
@@ -51,8 +50,6 @@ export function WorklogDayWorkspace({ date }: { date: string | null }) {
   const open = useWorklogDayStore((s) => s.open)
   const reload = useWorklogDayStore((s) => s.reload)
   const generate = useWorklogDayStore((s) => s.generate)
-  const confirmForce = useWorklogDayStore((s) => s.confirmForce)
-  const cancelForce = useWorklogDayStore((s) => s.cancelForce)
   const updateEntry = useWorklogDayStore((s) => s.updateEntry)
   const setDirty = useWorklogDayStore((s) => s.setDirty)
   const submit = useWorklogDayStore((s) => s.submit)
@@ -93,7 +90,7 @@ export function WorklogDayWorkspace({ date }: { date: string | null }) {
           {phase.kind === 'idle' ? (
             <p className="text-fg-dim max-w-prose text-sm leading-relaxed">
               從左欄挑一天開始。這裡會從你的 git commit 與 Chat 發言整理出那天做了什麼，你輸入當天總時數，
-              系統按證據比例分配成 0.5 的倍數，你再逐筆確認專案歸屬。
+              系統按證據比例分配成 0.5 的倍數，你再逐筆確認每一段要記到哪張單。
             </p>
           ) : null}
 
@@ -101,7 +98,7 @@ export function WorklogDayWorkspace({ date }: { date: string | null }) {
 
           {phase.kind === 'load-failed' ? (
             // 🔴 不知道有沒有草稿時不畫「產生草稿」：那會引導 Viewer 去重產，
-            // 而重產（帶 force）會清掉他已經選好的專案
+            // 而重產會把對不上新分段的已選單號清空
             <div role="alert" className="text-sm leading-relaxed">
               <p className="text-destructive">讀不到這一天的草稿：{phase.message}</p>
               <p className="text-fg-dim mt-1 text-xs">這不代表沒有草稿。先重讀一次再決定要不要產生。</p>
@@ -131,6 +128,14 @@ export function WorklogDayWorkspace({ date }: { date: string | null }) {
                 </div>
               ) : null}
 
+              {clearedAttributions ? (
+                // Viewer 已決定：對不上新分段的單號照規格留空、不擋，事後在這裡列出。
+                // 單號是資料，原樣列出，Viewer 才知道要回頭補選哪幾段
+                <p role="status" data-notice="attributions-cleared" className="text-caution text-xs leading-relaxed">
+                  {clearedAttributionsText(clearedAttributions)}。這幾段要重新選要記到哪張單。
+                </p>
+              ) : null}
+
               <WorklogHoursBar
                 day={day}
                 disabled={busy}
@@ -145,6 +150,7 @@ export function WorklogDayWorkspace({ date }: { date: string | null }) {
                     <li key={entry.id}>
                       <WorklogEntryCard
                         entry={entry}
+                        generationMeta={day.generation_meta}
                         saving={savingIds.includes(entry.id)}
                         error={entryErrors[entry.id] ?? null}
                         onSave={updateEntry}
@@ -169,17 +175,6 @@ export function WorklogDayWorkspace({ date }: { date: string | null }) {
         </div>
       </div>
 
-      <ConfirmDialog
-        open={pendingForce !== null}
-        onOpenChange={(next) => {
-          if (!next) cancelForce()
-        }}
-        title="清掉已選的專案並重新產生？"
-        description={pendingForce ? forceConfirmText(pendingForce) : undefined}
-        confirmLabel="清空並重新產生"
-        destructive
-        onConfirm={() => void confirmForce()}
-      />
     </div>
   )
 }
@@ -222,7 +217,7 @@ function StreamProgress({ date, stream }: { date: string | null; stream: Worklog
           <span className="metric">{meta.chat.length}</span> 則發言，分成{' '}
           <span className="metric">{meta.clusters.length}</span> 群。
           {meta.zplanner && meta.zplanner.available === false
-            ? `ZPlanner 目前不可用（${meta.zplanner.reason}），這次沒有候選 issue。`
+            ? `ZPlanner 目前不可用（${meta.zplanner.reason}），這次沒有系統候選的單。`
             : ''}
         </p>
       ) : null}

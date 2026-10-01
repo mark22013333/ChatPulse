@@ -4,7 +4,7 @@ import type { WorklogWeekDay } from '@/lib/types'
 /**
  * 工時草稿表格要用的純函式（設計規格 2026-10-01 §4.2、§4.4）。
  *
- * 不碰 store、不碰 DOM、不碰網路：tabs 怎麼判、篩選與排序怎麼做、專案分配欄
+ * 不碰 store、不碰 DOM、不碰網路：tabs 怎麼判、篩選與排序怎麼做、「記到哪張單」欄
  * 怎麼寫、比例條怎麼算，全在這裡測。元件只負責把它們接起來。
  *
  * ⚠️ 一天是什麼狀態（未產生／草稿／部分未完成／已送出）的判準**不在這裡**，
@@ -220,7 +220,7 @@ export function maxDraftHours(rows: readonly WorklogWeekDay[]): number {
   return max
 }
 
-// ── 專案分配欄 ────────────────────────────────────────────────────────
+// ── 「記到哪張單」欄 ────────────────────────────────────────────────────────
 
 export type AssignmentSummary =
   | { kind: 'none' }
@@ -230,12 +230,12 @@ export type AssignmentSummary =
   | { kind: 'invalid' }
 
 /**
- * 專案分配欄要寫什麼。
+ * 「記到哪張單」欄要寫什麼。
  *
  * 🔴 **只講 Viewer 已經選了什麼，不講系統建議什麼**（ADR-0008：產生時歸屬一律
  * 留空，選擇權在 Viewer）。週 API 的 `draft` 摘要裡可能帶著 `generation_meta`
  * ——那是產生當下的分群快照，裡面有每一群的**候選**專案——這裡**一個字都不讀**。
- * 把候選顯示在「專案分配」這一欄，等於替 Viewer 做了選擇：表格一眼看過去像是
+ * 把候選顯示在「記到哪張單」這一欄，等於替 Viewer 做了選擇：表格一眼看過去像是
  * 已經分好了，而月結後要改得走 correction-request。
  *
  * 🔴 資料來源只有兩個計數：`entry_count`（這天幾段）與 `unassigned_count`

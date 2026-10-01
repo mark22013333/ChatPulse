@@ -52,7 +52,7 @@ export function WorklogSubmitBar({
   const preview = pending
     .map(
       (entry) =>
-        `#${entry.seq}　${entry.issue_key ?? '（未選專案）'}　${formatHours(entry.hours)} h　${entry.note ?? ''}`,
+        `#${entry.seq}　${entry.issue_key ?? '（未選單）'}　${formatHours(entry.hours)} h　${entry.note ?? ''}`,
     )
     .join('\n')
 
@@ -66,7 +66,7 @@ export function WorklogSubmitBar({
           前端自己算一份遲早對不起來。這裡只預告，實際擋不擋以回應為準。 */}
       {totals.unassignedCount > 0 || totals.missingHoursCount > 0 ? (
         <p className="text-caution mt-1 text-xs leading-relaxed">
-          {totals.unassignedCount > 0 ? `還有 ${totals.unassignedCount} 筆沒選專案。` : ''}
+          {totals.unassignedCount > 0 ? `還有 ${totals.unassignedCount} 筆還沒選要記到哪張單。` : ''}
           {totals.missingHoursCount > 0 ? `還有 ${totals.missingHoursCount} 筆沒有時數。` : ''}
           有任何一筆送不出去，整批會一筆都不送。
         </p>
@@ -120,7 +120,7 @@ export function WorklogSubmitBar({
               {totals.pendingCount} 筆。
             </span>
             <span className="block">
-              送出後會以你的身分寫進 ZPlanner。月結之後要改只能走更正申請，送出前請確認每一筆的專案與時數。
+              送出後會以你的身分寫進 ZPlanner。月結之後要改只能走更正申請，送出前請確認每一筆記到的單與時數。
             </span>
           </span>
         }

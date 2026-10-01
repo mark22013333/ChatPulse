@@ -16,7 +16,7 @@ import type { Me, WorklogWeekDay, WorklogWeekDraft, WorklogWeekResponse } from '
  *
  * 1. **非工時視圖不發請求**（`active` 閘門）——用真的 store `loadWeek` ＋ api spy，
  *    不是把 loadWeek 換成 no-op，才驗得到「真的沒有打出去」。
- * 2. **專案分配不顯示系統建議**（ADR-0008）——資料裡刻意塞了候選專案當正對照。
+ * 2. **記到哪張單不顯示系統建議**（ADR-0008）——資料裡刻意塞了候選專案當正對照。
  * 3. **切 tab 的瞬間不拿上一週的資料畫這一週**。
  * 4. **「未送出」兩週缺一週時不畫半份**。
  * 5. 排序對全部列做完再切頁（第二頁才有的那一天當正對照）。
@@ -149,7 +149,7 @@ describe('一列一天', () => {
     vi.spyOn(api, 'worklogWeek').mockResolvedValue(week(THIS))
     mount()
     await waitFor(() => expect(bodyRows()).toHaveLength(7))
-    for (const name of ['日期', '星期', '草稿時數', '專案分配', '狀態', '燈號']) {
+    for (const name of ['日期', '星期', '草稿時數', '記到哪張單', '狀態', '燈號']) {
       expect(screen.getByRole('columnheader', { name: new RegExp(name) })).toBeInTheDocument()
     }
     expect(screen.getByText('週一')).toBeInTheDocument()
@@ -206,7 +206,7 @@ describe('一列一天', () => {
   })
 })
 
-describe('🔴 專案分配：只顯示 Viewer 已選定的歸屬（ADR-0008）', () => {
+describe('🔴 記到哪張單：只顯示 Viewer 已選定的歸屬（ADR-0008）', () => {
   const suggested = {
     clusters: [
       {

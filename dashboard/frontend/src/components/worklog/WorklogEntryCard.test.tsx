@@ -1,17 +1,22 @@
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { WorklogEntryCard } from '@/components/worklog/WorklogEntryCard'
 import { entryStateText, type WorklogEntryPatch } from '@/store/worklogDay'
-import type { WorklogCandidate, WorklogDayEntry, WorklogEntryState } from '@/lib/types'
+import type {
+  WorklogCandidate,
+  WorklogDayEntry,
+  WorklogEntryState,
+  WorklogIssueSearchResponse,
+} from '@/lib/types'
 
 /**
  * 一張草稿卡（AC-3、D-16、AC-10）。
  *
  * 守的是三件「畫面看起來沒事」的壞法：
  *
- * 1. **歸屬預選**：候選排第一的那個被當成已選，Viewer 一路按送出就送了系統猜的專案
- *    （ADR-0008 的唯一硬規則）。
+ * 1. **歸屬預選**：候選排第一的、或「上次記到」的那個被當成已選，Viewer 一路按送出
+ *    就送了系統猜的單（ADR-0008 的唯一硬規則）。
  * 2. **存檔多帶欄位**：只改時數卻把整筆帶出去，或 Enter 之後 blur 再存一次。
  * 3. **已送出的筆還能改**：後端會 409，但畫面讓人以為改得動。
  *
@@ -73,25 +78,64 @@ function entry(over: Partial<WorklogDayEntry> = {}): WorklogDayEntry {
   }
 }
 
-function mount(e: WorklogDayEntry = entry(), extra: { error?: string | null; saving?: boolean } = {}) {
+const LAST_USED = candidate({
+  issue_id: 777,
+  issue_key: 'OPS-9',
+  title: '',
+  project_id: 77,
+  project_key: 'OPS',
+  source: 'last_used',
+  confidence: 'medium',
+  reason: '「匯出逾時」上次記到 OPS-9',
+  last_used_at: '2026-09-12T00:00:00+00:00',
+})
+
+/** 產草稿時的 `generation_meta.zplanner` 段（只放卡片讀得到的欄位）。 */
+function meta(zplanner: Record<string, unknown>) {
+  return { clusters: [], zplanner: { reason: '', errors: [], ...zplanner } }
+}
+const META_OK = meta({ available: true })
+
+type SearchFn = (q: string, signal?: AbortSignal) => Promise<WorklogIssueSearchResponse>
+
+function mount(
+  e: WorklogDayEntry = entry(),
+  extra: { error?: string | null; saving?: boolean; generationMeta?: unknown; searchIssues?: SearchFn } = {},
+) {
   const onSave = vi.fn(async (_id: number, _patch: WorklogEntryPatch) => true)
   const onDirtyChange = vi.fn()
-  const view = render(<WorklogEntryCard entry={e} onSave={onSave} onDirtyChange={onDirtyChange} {...extra} />)
-  return { onSave, onDirtyChange, view }
+  const searchIssues =
+    extra.searchIssues ?? vi.fn<SearchFn>(async (q) => ({ q, count: 0, groups: [] }))
+  const view = render(
+    <WorklogEntryCard
+      entry={e}
+      onSave={onSave}
+      onDirtyChange={onDirtyChange}
+      generationMeta={META_OK}
+      {...extra}
+      searchIssues={searchIssues}
+    />,
+  )
+  return { onSave, onDirtyChange, searchIssues, view }
 }
 
-const trigger = () => screen.getByRole('combobox', { name: '專案歸屬' })
+const trigger = () => screen.getByRole('combobox', { name: '記到哪張單' })
 const hoursInput = () => screen.getByLabelText('時數') as HTMLInputElement
 const noteInput = () => screen.getByLabelText('備註') as HTMLTextAreaElement
+const searchBox = () => screen.getByRole('combobox', { name: '搜尋可記工時的單' })
+
+async function openPicker() {
+  await userEvent.click(trigger())
+  return screen.findByRole('listbox')
+}
 
 async function pickOption(optionText: string | RegExp) {
-  await userEvent.click(trigger())
-  const listbox = await screen.findByRole('listbox')
+  const listbox = await openPicker()
   await userEvent.click(within(listbox).getByText(optionText))
 }
 
 describe('WorklogEntryCard：歸屬一律從未指派開始（AC-3、ADR-0008）', () => {
-  it('🔴 產生後未指派：Select 顯示「未指派」，不是排第一的候選', () => {
+  it('🔴 產生後未指派：觸發鈕顯示「未指派」，不是排第一的候選', () => {
     mount()
     expect(trigger()).toHaveTextContent('未指派')
     expect(trigger()).not.toHaveTextContent('PEI-133')
@@ -105,8 +149,8 @@ describe('WorklogEntryCard：歸屬一律從未指派開始（AC-3、ADR-0008）
   })
 
   it('目前的選擇不在候選裡時照實顯示，不假裝成未指派', () => {
-    mount(entry({ issue_id: 777, issue_key: 'OPS-9', candidates: CANDIDATES }))
-    expect(trigger()).toHaveTextContent('OPS-9')
+    mount(entry({ issue_id: 778, issue_key: 'OPS-10', candidates: CANDIDATES }))
+    expect(trigger()).toHaveTextContent('OPS-10')
     expect(trigger()).not.toHaveTextContent('未指派')
   })
 
@@ -125,13 +169,178 @@ describe('WorklogEntryCard：歸屬一律從未指派開始（AC-3、ADR-0008）
     expect(Object.values(sent).some((v) => v === 0)).toBe(false)
   })
 
-  // 哨兵值本身「不是數字」由 worklogDay.test.ts 的 selectToAssignment 測試驗；
-  // 這裡只驗選單裡沒有多出一個空值／預設選項可以被誤點。
+  it('再點一次目前已選的那一項 → 不重存（沒有變更就沒有 PUT）', async () => {
+    const { onSave } = mount(entry({ issue_id: 502, issue_key: 'PEI-140', project_id: 43, project_key: 'OPS' }))
+    await pickOption(/PEI-140/)
+    expect(onSave).not.toHaveBeenCalled()
+  })
+
   it('選單只有「未指派」＋每個候選各一項，沒有多出空值選項', async () => {
     mount()
-    await userEvent.click(trigger())
-    const options = within(await screen.findByRole('listbox')).getAllByRole('option')
+    const options = within(await openPicker()).getAllByRole('option')
     expect(options.length).toBe(CANDIDATES.length + 1)
+  })
+})
+
+describe('WorklogEntryCard：「上次記到」要點選才套用（ADR-0008 的 2026-10-01 補充）', () => {
+  const withMemory = () => entry({ candidates: [LAST_USED, ...CANDIDATES] })
+
+  it('🔴 有記憶時仍顯示「未指派」，而且沒有任何存檔', () => {
+    const { onSave } = mount(withMemory())
+    expect(trigger()).toHaveTextContent('未指派')
+    expect(trigger()).not.toHaveTextContent('OPS-9')
+    expect(onSave).not.toHaveBeenCalled()
+  })
+
+  it('「上次記到」排在選單第一項', async () => {
+    mount(withMemory())
+    const options = within(await openPicker()).getAllByRole('option')
+    expect(options[0]).toHaveTextContent('OPS-9')
+    expect(options).toHaveLength(CANDIDATES.length + 2)
+  })
+
+  it('與 commit 直接寫的單號合併過 → 標強訊號的信心度，不被記憶降級', async () => {
+    const merged = candidate({
+      ...LAST_USED,
+      issue_id: 501,
+      issue_key: 'PEI-133',
+      title: '匯出逾時',
+      confidence: 'strong',
+      matched_source: 'issue_key',
+      reason: '「cs-backend」上次記到 PEI-133；你在 commit 訊息裡直接寫了 PEI-133',
+    })
+    const { view } = mount(entry({ candidates: [merged] }))
+    const first = within(await openPicker()).getAllByRole('option')[0]
+    expect(first).toHaveTextContent('PEI-133')
+    expect(first).toHaveTextContent('強') // 信心度等級是資料
+    // 合併過就是命中，不顯示「沒命中」
+    expect(view.container.querySelector('[data-lookup="no-match"]')).toBeNull()
+  })
+
+  it('點了才套用：四欄一起存', async () => {
+    const { onSave } = mount(withMemory())
+    const listbox = await openPicker()
+    await userEvent.click(within(listbox).getByRole('option', { name: /^OPS-9/ }))
+    expect(onSave).toHaveBeenCalledTimes(1)
+    expect(onSave).toHaveBeenCalledWith(11, { issue_id: 777, issue_key: 'OPS-9', project_id: 77, project_key: 'OPS' })
+  })
+})
+
+describe('WorklogEntryCard：搜尋全部可記工時的單', () => {
+  const RESULT: WorklogIssueSearchResponse = {
+    q: '備份',
+    count: 2,
+    groups: [
+      { project_id: 77, project_key: 'OPS', issues: [{ issue_id: 20, issue_key: 'OPS-7', title: '設定備份', project_id: 77, project_key: 'OPS' }] },
+      { project_id: 42, project_key: 'PEI', issues: [{ issue_id: 30, issue_key: 'PEI-300', title: '備份排程', project_id: 42, project_key: 'PEI' }] },
+    ],
+  }
+
+  it('輸入關鍵字 → 去掉前後空白後搜尋，結果依專案分組，點了就存四欄', async () => {
+    const searchIssues = vi.fn<SearchFn>(async () => RESULT)
+    const { onSave } = mount(entry(), { searchIssues })
+    await openPicker()
+    await userEvent.type(searchBox(), '  備份 ')
+    await waitFor(() => expect(searchIssues).toHaveBeenCalled())
+    expect(searchIssues.mock.calls.at(-1)?.[0]).toBe('備份')
+
+    const listbox = await screen.findByRole('listbox')
+    await waitFor(() => expect(within(listbox).getByText(/PEI-300/)).toBeInTheDocument())
+    // 分組的標題是資料（專案代號），不是文案
+    expect(within(listbox).getByText('OPS')).toBeInTheDocument()
+    expect(within(listbox).getByText('PEI')).toBeInTheDocument()
+
+    await userEvent.click(within(listbox).getByText(/PEI-300/))
+    expect(onSave).toHaveBeenCalledWith(11, { issue_id: 30, issue_key: 'PEI-300', project_id: 42, project_key: 'PEI' })
+  })
+
+  it('搜尋失敗 → 狀態列說失敗並給重試，按下用同一個關鍵字再查一次', async () => {
+    let attempt = 0
+    const searchIssues = vi.fn<SearchFn>(async () => {
+      attempt += 1
+      if (attempt === 1) throw new Error('連線逾時')
+      return RESULT
+    })
+    mount(entry(), { searchIssues })
+    await openPicker()
+    await userEvent.type(searchBox(), '備份')
+    const retry = await screen.findByRole('button', { name: '重試' })
+    await userEvent.click(retry)
+    await waitFor(() => expect(searchIssues).toHaveBeenCalledTimes(2))
+    expect(searchIssues.mock.calls[1][0]).toBe('備份')
+    await waitFor(() => expect(within(screen.getByRole('listbox')).getByText(/PEI-300/)).toBeInTheDocument())
+  })
+
+  it('🔴 只打空白不會送出搜尋（ZPlanner 對空字串回 0 筆而不是全部）', async () => {
+    const searchIssues = vi.fn<SearchFn>(async () => RESULT)
+    mount(entry(), { searchIssues })
+    await openPicker()
+    await userEvent.type(searchBox(), '   ')
+    await new Promise((r) => setTimeout(r, 450)) // 超過 debounce
+    expect(searchIssues).not.toHaveBeenCalled()
+    // 正對照：清單仍是系統候選，沒有被換成空的搜尋結果
+    expect(within(screen.getByRole('listbox')).getAllByRole('option')).toHaveLength(CANDIDATES.length + 1)
+  })
+})
+
+describe('WorklogEntryCard：三種「沒有系統候選」分開顯示', () => {
+  const noCandidates = () => entry({ candidates: [] })
+  const lookupOf = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll('[data-lookup]')).map((el) => el.getAttribute('data-lookup'))
+
+  it('ZPlanner 不可用 → 說明原因，而且搜尋框停用', async () => {
+    const { view } = mount(noCandidates(), {
+      generationMeta: meta({ available: false, reason: '未設定 ZPLANNER_BASE_URL' }),
+    })
+    expect(lookupOf(view.container)).toEqual(['unavailable'])
+    // 原因是後端給的資料，要原樣出現
+    expect(screen.getByRole('note')).toHaveTextContent('未設定 ZPLANNER_BASE_URL')
+    await openPicker()
+    expect(searchBox()).toBeDisabled()
+  })
+
+  it('正對照：ZPlanner 可用時搜尋框可以打字', async () => {
+    mount(noCandidates())
+    await openPicker()
+    expect(searchBox()).toBeEnabled()
+  })
+
+  it('這一段的查詢失敗 → 有重試，按下用那次的關鍵字重查', async () => {
+    const searchIssues = vi.fn<SearchFn>(async (q) => ({ q, count: 0, groups: [] }))
+    const { view } = mount(noCandidates(), {
+      searchIssues,
+      generationMeta: meta({
+        available: true,
+        errors: [{ cluster: 'c-a', term: '匯出逾時', reason: 'ZPlanner 連線逾時' }],
+      }),
+    })
+    expect(lookupOf(view.container)).toEqual(['query-failed'])
+    await userEvent.click(screen.getByRole('button', { name: '重試查詢' }))
+    await waitFor(() => expect(searchIssues).toHaveBeenCalledWith('匯出逾時', expect.anything()))
+    await new Promise((r) => setTimeout(r, 450)) // 超過 debounce：重試不該再經 debounce 多查一次
+    expect(searchIssues).toHaveBeenCalledTimes(1)
+  })
+
+  it('別段的查詢失敗不算這一段的', () => {
+    const { view } = mount(noCandidates(), {
+      generationMeta: meta({ available: true, errors: [{ cluster: 'c-other', term: 'x', reason: '逾時' }] }),
+    })
+    expect(lookupOf(view.container)).toEqual(['no-match'])
+  })
+
+  it('有查但沒命中 → 請 Viewer 自己搜', () => {
+    const { view } = mount(noCandidates())
+    expect(lookupOf(view.container)).toEqual(['no-match'])
+  })
+
+  it('只有「上次記到」也算沒命中（記憶不是查詢結果）', () => {
+    const { view } = mount(entry({ candidates: [LAST_USED] }))
+    expect(lookupOf(view.container)).toEqual(['no-match'])
+  })
+
+  it('正對照：有系統候選時不顯示任何一種說明', () => {
+    const { view } = mount()
+    expect(lookupOf(view.container)).toEqual([])
   })
 })
 

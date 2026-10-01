@@ -106,7 +106,7 @@ interface ExtraWeek {
  *
  * ### 欄位只放前端拿得到的
  *
- * 專案分配只寫段數、不寫專案名稱——週 API 沒有名稱（見 `lib/worklogTable.ts` 的
+ * 記到哪張單只寫段數、不寫專案名稱——週 API 沒有名稱（見 `lib/worklogTable.ts` 的
  * `assignmentOf`）；🔴 更不寫系統建議的候選專案（ADR-0008）。
  */
 export function WorklogTable({ active, thisWeek: thisWeekProp }: { active: boolean; thisWeek?: string }) {
@@ -292,7 +292,7 @@ export function WorklogTable({ active, thisWeek: thisWeekProp }: { active: boole
     },
     {
       id: 'assignment',
-      header: '專案分配',
+      header: '記到哪張單',
       cell: (day) => {
         const summary = assignmentOf(day)
         return (
@@ -459,7 +459,7 @@ export function WorklogTable({ active, thisWeek: thisWeekProp }: { active: boole
         />
 
         <p className="text-2xs text-muted-foreground">
-          專案分配在產生草稿時一律留空（ADR-0008），由你在當天的草稿裡逐段選擇；這裡只顯示你已經選了幾段。
+          「記到哪張單」在產生草稿時一律留空（ADR-0008），由你在當天的草稿裡逐段選擇；這裡只顯示你已經選了幾段。
         </p>
       </div>
     </div>

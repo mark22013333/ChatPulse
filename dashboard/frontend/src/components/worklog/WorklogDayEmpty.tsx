@@ -39,7 +39,7 @@ export function WorklogDayEmpty({
     <section aria-label="尚無草稿" className="max-w-prose">
       <p className="text-fg-dim text-sm leading-relaxed">
         {date} 還沒有工時草稿。產生時會從你的 git commit 與 Chat 發言整理出這天做了什麼、分成幾群，
-        並附上候選的 ZPlanner issue——<strong className="font-medium">專案一律由你自己選</strong>，系統不會先幫你選好。
+        並附上候選的 ZPlanner issue——<strong className="font-medium">要記到哪張單一律由你自己選</strong>，系統不會先幫你選好。
       </p>
 
       <form

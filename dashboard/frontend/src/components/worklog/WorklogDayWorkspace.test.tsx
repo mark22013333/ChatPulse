@@ -17,7 +17,7 @@ import { useRouteSync } from '@/router/useRouteSync'
  * 守的 AC：
  * - AC-1：尚無草稿時有「產生草稿」入口；讀取失敗時**沒有**（那會引導 Viewer 去重產）。
  * - AC-2：換日期中止串流（元件不卸載，只換 `date` prop）。
- * - AC-4：重產被已指派守門擋下 → 二次確認，確認才帶 force。
+ * - 重產清空的歸屬事後列出（2026-10-01 取代原本 AC-4 的「擋下→二次確認→帶 force」）。
  * - AC-10：送出前二次確認。
  * - AC-11：409 正在送出中有提示且不自動重試；not_attempted_count > 0 有提示。
  *
@@ -119,7 +119,7 @@ describe('WorklogDayWorkspace：入口（AC-1）', () => {
     const button = await screen.findByRole('button', { name: '產生草稿' })
     await userEvent.click(button)
     await waitFor(() => expect(calls).toHaveLength(1))
-    expect(calls[0].body.force).toBe(false)
+    expect('force' in calls[0].body).toBe(false) // force 流程已移除，不再送這個鍵
     expect(await screen.findByRole('status', { name: '正在產生草稿' })).toBeInTheDocument()
   })
 
@@ -196,25 +196,33 @@ describe('WorklogDayWorkspace：換日期中止串流（AC-2）', () => {
   })
 })
 
-describe('WorklogDayWorkspace：重產的二次確認（AC-4）', () => {
-  it('pendingForce 有值 → 對話框出現；確認後以 force:true 與同一個總時數重送', async () => {
-    seedReady({ pendingForce: { assignedCount: 2, assignedIssueKeys: ['PEI-133', 'PEI-140'], totalHours: 8 } })
-    const calls = hangingStream()
-    render(<WorklogDayWorkspace date={DATE} />)
-    const dialog = await screen.findByRole('dialog')
-    // 筆數是資料，不是文案：數字一定要出現在說明裡
-    expect(dialog).toHaveTextContent('2')
-    await userEvent.click(within(dialog).getByRole('button', { name: '清空並重新產生' }))
-    await waitFor(() => expect(calls).toHaveLength(1))
-    expect(calls[0].body.force).toBe(true)
-    expect(calls[0].body.total_hours).toBe(8)
-    useWorklogDayStore.getState().reset()
+describe('WorklogDayWorkspace：重產清空的歸屬事後列出（2026-10-01，取代原本的二次確認）', () => {
+  const notice = (container: HTMLElement) => container.querySelector('[data-notice="attributions-cleared"]')
+
+  it('有清空 → 上方列出段數與每一張被清掉的單號，而且沒有任何確認框', () => {
+    seedReady({ clearedAttributions: { count: 2, issueKeys: ['PEI-133', 'PEI-140'] } })
+    const { container } = render(<WorklogDayWorkspace date={DATE} />)
+    const el = notice(container)
+    expect(el).not.toBeNull()
+    // 段數與單號是資料，不是文案：一定要出現
+    expect(el).toHaveTextContent('2')
+    expect(el).toHaveTextContent('PEI-133')
+    expect(el).toHaveTextContent('PEI-140')
+    expect(screen.queryByRole('dialog')).toBeNull()
   })
 
-  it('正對照：沒有 pendingForce 就沒有對話框', () => {
+  it('通知列在草稿卡之前（畫面上方），Viewer 先看到才知道要回頭補選', () => {
+    seedReady({ clearedAttributions: { count: 1, issueKeys: ['PEI-133'] } })
+    const { container } = render(<WorklogDayWorkspace date={DATE} />)
+    const el = notice(container)
+    const cards = screen.getByRole('list', { name: '草稿卡' })
+    expect(el && el.compareDocumentPosition(cards) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('正對照：沒有清空就沒有這段通知', () => {
     seedReady()
-    render(<WorklogDayWorkspace date={DATE} />)
-    expect(screen.queryByRole('dialog')).toBeNull()
+    const { container } = render(<WorklogDayWorkspace date={DATE} />)
+    expect(notice(container)).toBeNull()
   })
 })
 

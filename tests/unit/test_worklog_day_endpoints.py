@@ -226,13 +226,14 @@ class DayCase(unittest.TestCase):
             return
         self.fail(f"這個請求應該被 400 擋下，卻被收下了：{entries!r}")
 
-    def stream(self, *, force: bool = False) -> List[Dict[str, Any]]:
+    def stream(self, *, evidence: DayEvidence = None) -> List[Dict[str, Any]]:
         """跑一次草稿產生（SSE），回傳事件清單。證據與 ZPlanner 都是假的。"""
-        evidence = day_evidence(
-            commit("a" * 40, "fix: PEI-133 匯出逾時"),
-            commit("b" * 40, "整理設定", repo_name="chatpulse"),
-        )
-        request = server.WorklogDraftRequest(tz_offset=TZ, force=force)
+        if evidence is None:
+            evidence = day_evidence(
+                commit("a" * 40, "fix: PEI-133 匯出逾時"),
+                commit("b" * 40, "整理設定", repo_name="chatpulse"),
+            )
+        request = server.WorklogDraftRequest(tz_offset=TZ)
         with mock.patch.object(
             server.worklog_evidence, "collect_day_evidence", lambda **kw: evidence
         ), mock.patch.object(server, "zplanner_client", lambda: FakeZPlanner()):
@@ -686,8 +687,12 @@ class TestRegenerationAfterPut(DayCase):
         self.assertEqual(self.stream()[-1]["type"], "done")
         self.assertEqual(self.stream()[-1]["type"], "done")
 
-    def test_put_assignment_then_regenerate_hits_assigned_count_then_force_clears(self):
-        """🔴 實際走一次：產生 → PUT 選歸屬 → 重產被 400（assigned_count）→ force 清成 null。"""
+    def test_put_assignment_then_regenerate_keeps_it_on_the_same_segment(self):
+        """🔴 實際走一次：產生 → PUT 選歸屬 → 同樣的證據重產 → 那一段的歸屬還在。
+
+        2026-10-01 以前重產會整組清掉已選的歸屬（所以要 force）；現在同一段
+        （cluster key 相同）的四欄原樣保留，其他段照樣是 null。
+        """
         self.assertEqual(self.stream()[-1]["type"], "done")
         generated = self.stored()["entries"]
         self.assertGreaterEqual(len(generated), 2)
@@ -697,20 +702,28 @@ class TestRegenerationAfterPut(DayCase):
         self.put([{"id": generated[0]["id"], **ASSIGN}])
         self.assertEqual(self.stored()["entries"][0]["issue_key"], "PEI-133")
 
-        with self.assertRaises(InvalidParameter) as ctx:
-            self.stream()
-        detail = ctx.exception.detail
-        self.assertEqual(detail["assigned_count"], 1)
-        self.assertEqual(detail["assigned_issue_keys"], ["PEI-133"])
-        self.assertIs(detail["force_allowed"], True)
-        # 擋下來＝真的一筆都沒動
-        self.assertEqual(self.stored()["entries"][0]["issue_key"], "PEI-133")
-
-        self.assertEqual(self.stream(force=True)[-1]["type"], "done")
+        self.assertEqual(self.stream()[-1]["type"], "done", "沒有東西會丟，不必 force")
         after = self.stored()["entries"]
-        for e in after:
+        self.assertEqual({k: after[0][k] for k in ASSIGN}, ASSIGN)
+        for e in after[1:]:
             for key in ASSIGN:
-                self.assertIsNone(e[key], f"force 重產後 {key} 應清成 null")
+                self.assertIsNone(e[key], "沒選過的段不會因為重產而被填上")
+
+    def test_segment_gone_is_cleared_and_reported(self):
+        """🔴 選好的那一段在新切段裡不見了 → 重產照常完成、那筆留空、done 列出單號。"""
+        self.stream()
+        first = self.stored()["entries"][0]
+        self.put([{"id": first["id"], **ASSIGN}])
+
+        # 這次那天只剩「整理設定」那一段，PEI-133 那段不在了
+        only_b = day_evidence(commit("b" * 40, "整理設定", repo_name="chatpulse"))
+        events = self.stream(evidence=only_b)
+        self.assertEqual(events[-1]["type"], "done")
+        self.assertEqual(events[-1]["attributions_cleared"], {"count": 1, "issue_keys": ["PEI-133"]})
+        after = self.stored()["entries"]
+        self.assertEqual(len(after), 1)
+        for key in ASSIGN:
+            self.assertIsNone(after[0][key], f"對不上的段 {key} 應清成 null")
 
     def test_put_hours_only_does_not_trigger_the_assigned_guard(self):
         """只改時數／備註不算「已指派」：守門看的是 issue_id／issue_key。"""

@@ -4,10 +4,8 @@ import * as sse from '@/lib/sse'
 import type { WorklogCandidate, WorklogDay, WorklogDayEntry, WorklogSubmitSummary } from '@/lib/types'
 import { useWorklogStore } from './worklog'
 import {
-  UNASSIGNED,
-  assignmentValue,
-  readForceDetail,
-  selectToAssignment,
+  clearedAttributionsText,
+  readClearedAttributions,
   submitBlockReason,
   submitErrorText,
   submitSummaryLines,
@@ -19,7 +17,7 @@ import {
  * 單日工時 store（D-15）。這裡守的都是「畫面看起來正常、資料卻錯了」的那種壞法：
  *
  * 1. **晚到的回應不准蓋掉現在這一天**（連點兩天、PUT 排隊中換日）。
- * 2. **讀取失敗不准畫成「沒有草稿」**——Viewer 會按下產生，帶 force 時清掉他選好的專案。
+ * 2. **讀取失敗不准畫成「沒有草稿」**——Viewer 會按下產生，而重產會清空對不上新分段的已選單號。
  * 3. **Select 清除給的 null 不准變成 0 或「清成未指派」**（AC-3、plan.md 風險段）。
  * 4. **409 正在送出中不自動重試**（AC-11）。自動重試正是那道鎖要防的動作。
  *
@@ -251,14 +249,14 @@ describe('worklogDay store：產生草稿', () => {
     useWorklogStore.setState({ loadWeek } as never)
   })
 
-  it('body 帶那一天的 tz_offset 與 force=false；總時數 null 時省略', async () => {
+  it('body 帶那一天的 tz_offset、不帶 force（已移除）；總時數 null 時省略', async () => {
     const { calls } = captureStream((h) => h.onDone?.({ type: 'done', draft_id: 1, allocation: null } as never))
     vi.spyOn(api, 'worklogDay').mockResolvedValue(day())
     await useWorklogDayStore.getState().generate({ totalHours: null })
     expect(calls).toHaveLength(1)
     expect(calls[0].url).toContain(`/worklogs/${DATE}/draft/stream`)
     expect(calls[0].body.tz_offset).toBe(tzOffsetFor(DATE))
-    expect(calls[0].body.force).toBe(false)
+    expect('force' in calls[0].body).toBe(false)
     expect('total_hours' in calls[0].body).toBe(false)
   })
 
@@ -287,68 +285,46 @@ describe('worklogDay store：產生草稿', () => {
     expect(useWorklogDayStore.getState().phase.kind).not.toBe('absent')
   })
 
-  it('AC-4：已指派守門的 400 → pendingForce 帶 detail 的筆數，不是一般錯誤', async () => {
+  it('done 帶 attributions_cleared → 記下清空了哪幾張單（事後列出，不擋）', async () => {
     captureStream((h) =>
-      h.onError?.({
-        type: 'error',
-        code: 'INVALID_PARAMETER',
-        message: '有 2 筆已經選好專案了',
-        detail: { assigned_count: 2, assigned_issue_keys: ['PEI-133', 'PEI-140'], force_allowed: true },
-      }),
+      h.onDone?.({
+        type: 'done',
+        draft_id: 1,
+        allocation: null,
+        attributions_cleared: { count: 2, issue_keys: ['PEI-133', 'PEI-140'] },
+      } as never),
     )
     vi.spyOn(api, 'worklogDay').mockResolvedValue(day())
     await useWorklogDayStore.getState().generate({ totalHours: 8 })
     const state = useWorklogDayStore.getState()
-    expect(state.pendingForce).toEqual({ assignedCount: 2, assignedIssueKeys: ['PEI-133', 'PEI-140'], totalHours: 8 })
+    expect(state.phase.kind).toBe('ready')
+    expect(state.clearedAttributions).toEqual({ count: 2, issueKeys: ['PEI-133', 'PEI-140'] })
     expect(state.generateError).toBeNull()
   })
 
-  it('正對照：認不出的 400（沒有 force_allowed）走一般錯誤，不問要不要清空', async () => {
+  it('正對照：0 筆被清空 → 不顯示；下一次產生會先清掉上一次的通知', async () => {
+    const { calls } = captureStream((h) =>
+      h.onDone?.({
+        type: 'done',
+        draft_id: 1,
+        allocation: null,
+        attributions_cleared:
+          calls.length === 1 ? { count: 1, issue_keys: ['PEI-133'] } : { count: 0, issue_keys: [] },
+      } as never),
+    )
+    vi.spyOn(api, 'worklogDay').mockResolvedValue(day())
+    await useWorklogDayStore.getState().generate({ totalHours: null })
+    expect(useWorklogDayStore.getState().clearedAttributions).not.toBeNull()
+    await useWorklogDayStore.getState().generate({ totalHours: null })
+    expect(useWorklogDayStore.getState().clearedAttributions).toBeNull()
+  })
+
+  it('串流 error 事件一律走一般錯誤（不再有「要不要清空」的確認）', async () => {
     captureStream((h) => h.onError?.({ type: 'error', code: 'INVALID_PARAMETER', message: 'tz_offset 格式錯' }))
     vi.spyOn(api, 'worklogDay').mockResolvedValue(day())
     await useWorklogDayStore.getState().generate({ totalHours: 8 })
     const state = useWorklogDayStore.getState()
-    expect(state.pendingForce).toBeNull()
     expect(state.generateError?.code).toBe('INVALID_PARAMETER')
-  })
-
-  it('confirmForce 以同一個總時數帶 force:true 重送', async () => {
-    const { calls } = captureStream((h) => {
-      if (calls.length === 1) {
-        h.onError?.({
-          type: 'error',
-          code: 'INVALID_PARAMETER',
-          message: 'x',
-          detail: { assigned_count: 1, assigned_issue_keys: ['PEI-133'], force_allowed: true },
-        })
-      } else {
-        h.onDone?.({ type: 'done', draft_id: 1, allocation: null } as never)
-      }
-    })
-    vi.spyOn(api, 'worklogDay').mockResolvedValue(day())
-    await useWorklogDayStore.getState().generate({ totalHours: 6 })
-    expect(useWorklogDayStore.getState().pendingForce).not.toBeNull()
-    await useWorklogDayStore.getState().confirmForce()
-    expect(calls).toHaveLength(2)
-    expect(calls[1].body.force).toBe(true)
-    expect(calls[1].body.total_hours).toBe(6)
-    expect(useWorklogDayStore.getState().pendingForce).toBeNull()
-  })
-
-  it('cancelForce 不重送', async () => {
-    const { calls } = captureStream((h) =>
-      h.onError?.({
-        type: 'error',
-        code: 'INVALID_PARAMETER',
-        message: 'x',
-        detail: { assigned_count: 1, force_allowed: true },
-      }),
-    )
-    vi.spyOn(api, 'worklogDay').mockResolvedValue(day())
-    await useWorklogDayStore.getState().generate({ totalHours: null })
-    useWorklogDayStore.getState().cancelForce()
-    expect(useWorklogDayStore.getState().pendingForce).toBeNull()
-    expect(calls).toHaveLength(1)
   })
 
   it('AC-2：換日期中止串流，晚到的事件不碰新一天的狀態', async () => {
@@ -396,8 +372,6 @@ describe('worklogDay store：產生草稿', () => {
     await generating
   })
 })
-
-// ── 逐筆存檔（PUT）────────────────────────────────────────────────────
 
 describe('worklogDay store：updateEntry', () => {
   it('只帶這一筆，回應整份取代 day（D-10、D-16）', async () => {
@@ -520,62 +494,25 @@ describe('worklogDay store：submit', () => {
 
 // ── 純函式 ────────────────────────────────────────────────────────────
 
-describe('selectToAssignment／assignmentValue（AC-3）', () => {
-  const cands = [candidate(), candidate({ issue_id: 502, issue_key: 'PEI-140', project_id: 43, project_key: 'OPS' })]
-
-  it('🔴 Base UI 清除給的 null／空字串 → 不動（不是 0、也不是清成未指派）', () => {
-    expect(selectToAssignment(null, cands)).toBeUndefined()
-    expect(selectToAssignment(undefined, cands)).toBeUndefined()
-    expect(selectToAssignment('', cands)).toBeUndefined()
-  })
-
-  it('明確選了未指派哨兵 → 四欄全 null', () => {
-    expect(selectToAssignment(UNASSIGNED, cands)).toEqual({
-      issue_id: null,
-      issue_key: null,
-      project_id: null,
-      project_key: null,
+describe('readClearedAttributions／clearedAttributionsText', () => {
+  it('認得的形狀 → 段數與單號（非字串的單號丟掉）', () => {
+    expect(readClearedAttributions({ count: 2, issue_keys: ['A-1', 3, 'B-2'] })).toEqual({
+      count: 2,
+      issueKeys: ['A-1', 'B-2'],
     })
   })
 
-  it('正對照：選候選 → 四欄一起給（D-12）', () => {
-    expect(selectToAssignment('502', cands)).toEqual({
-      issue_id: 502,
-      issue_key: 'PEI-140',
-      project_id: 43,
-      project_key: 'OPS',
-    })
+  it('認不出或 0 筆 → null（不講猜的數字）', () => {
+    for (const raw of [undefined, null, [], {}, { count: 0, issue_keys: [] }, { count: '2' }, { count: 1.5 }]) {
+      expect(readClearedAttributions(raw)).toBeNull()
+    }
   })
 
-  it('認不出的值 → 不動，絕不猜', () => {
-    expect(selectToAssignment('0', cands)).toBeUndefined()
-    expect(selectToAssignment('9999', cands)).toBeUndefined()
-  })
-
-  it('哨兵是非數字字串（Number(哨兵) 不是 0）', () => {
-    expect(Number.isNaN(Number(UNASSIGNED))).toBe(true)
-  })
-
-  it('未指派的 entry 顯示哨兵，候選排第一也不預選（ADR-0008）', () => {
-    expect(assignmentValue(entry({ candidates: cands }))).toBe(UNASSIGNED)
-    expect(assignmentValue(entry({ issue_id: 502, issue_key: 'PEI-140' }))).toBe('502')
-  })
-})
-
-describe('readForceDetail', () => {
-  it('認得的守門 detail → 筆數與 keys', () => {
-    expect(readForceDetail({ assigned_count: 2, assigned_issue_keys: ['A-1', 3, 'B-2'], force_allowed: true })).toEqual({
-      assignedCount: 2,
-      assignedIssueKeys: ['A-1', 'B-2'],
-    })
-  })
-
-  it('少任一條件就認不出（不講猜的數字）', () => {
-    expect(readForceDetail(null)).toBeNull()
-    expect(readForceDetail({ assigned_count: 2 })).toBeNull()
-    expect(readForceDetail({ assigned_count: 2, force_allowed: false })).toBeNull()
-    expect(readForceDetail({ assigned_count: '2', force_allowed: true })).toBeNull()
-    expect(readForceDetail({ assigned_count: 1.5, force_allowed: true })).toBeNull()
+  it('說明句列出段數與每一張被清掉的單號（資料，不是措辭）', () => {
+    const text = clearedAttributionsText({ count: 3, issueKeys: ['PEI-133', 'OPS-7'] })
+    expect(text).toContain('3')
+    expect(text).toContain('PEI-133')
+    expect(text).toContain('OPS-7')
   })
 })
 
