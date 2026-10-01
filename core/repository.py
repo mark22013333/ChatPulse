@@ -602,6 +602,41 @@ def count_mentions(viewer_id: int) -> Dict[str, int]:
     return out
 
 
+def list_mentions_with_counts(
+    viewer_id: int, state: Optional[str] = None, limit: int = 200
+) -> tuple:
+    """在**同一個讀取快照**裡取清單與計數，回傳 `(rows, counts)`。
+
+    🔴 不要拆回兩次獨立呼叫。`db.query_all` 在 sqlite3 的 legacy 交易模式下
+    每個 SELECT 各自 autocommit，WAL 模式下等於兩個不同的快照；中間只要
+    隔一段時間（`GET /mentions` 中間隔的是逐則打 Chat API 補內容，好幾秒），
+    背景採集器（45 秒一輪）寫入的新 Mention 就只會出現在其中一邊。
+    2026-10-01 實際發生：清單 90 則已處理、counts 卻是 pending 1／resolved 90，
+    前端徽章說有 1 則待處理、清單卻說「沒有待處理的 Mention」，還跳出假的
+    「共 91 筆」截斷提示——畫面說有，Viewer 卻看不到。
+
+    用 SAVEPOINT 而不是 BEGIN：連線若已經在交易裡（別處的 DML 開了隱含
+    交易還沒結束），BEGIN 會直接拋「cannot start a transaction within a
+    transaction」；SAVEPOINT 在交易外等同 BEGIN DEFERRED，在交易內則沿用
+    那筆交易的快照，兩種情況都拿得到一致的讀取（2026-10-01 實測 Python 3.12：
+    交易內 BEGIN 照上述訊息拋錯、SAVEPOINT 正常；最外層 RELEASE 後
+    `in_transaction` 回到 False）。
+    被否決的做法：把計數寫成清單 SELECT 的子查詢欄位——清單為空時就拿不到
+    計數，還得再補一次查詢，又回到兩個快照。
+    """
+    conn = db.get_connection()
+    conn.execute("SAVEPOINT mentions_snapshot")
+    try:
+        rows = list_mentions(viewer_id, state=state, limit=limit)
+        counts = count_mentions(viewer_id)
+    finally:
+        # 只有讀取，RELEASE 不會寫任何東西；在最外層時它會結束交易、放掉
+        # 讀取快照。不放的話這條 thread-local 連線會一直卡著舊快照，
+        # 之後的讀取全部看不到新資料，WAL 也無法 checkpoint。
+        conn.execute("RELEASE mentions_snapshot")
+    return rows, counts
+
+
 # --------------------------------------------------------------------------
 # Draft Reply
 # --------------------------------------------------------------------------

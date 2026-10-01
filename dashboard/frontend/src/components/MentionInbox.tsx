@@ -41,6 +41,7 @@ export function MentionInbox({ onSelect, onMergedGenerate }: MentionInboxProps) 
   const counts = useMentionsStore((state) => state.counts)
   const tab = useMentionsStore((state) => state.tab)
   const loading = useMentionsStore((state) => state.loading)
+  const loaded = useMentionsStore((state) => state.loaded)
   const checking = useMentionsStore((state) => state.checking)
   const error = useMentionsStore((state) => state.error)
   const selectedId = useMentionsStore((state) => state.selectedId)
@@ -257,14 +258,18 @@ export function MentionInbox({ onSelect, onMergedGenerate }: MentionInboxProps) 
       ) : null}
 
       <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
-        {loading && items.length === 0 ? (
+        {/* ⚠️ 「從未載入過」要當成載入中，不是「沒有」：第一次 load() 在
+            useBootstrap 的 effect 裡才發出，收件匣第一次 render 時 loading 還是
+            false（見 store 的 `loaded`）。載入失敗而從未載入過時兩個都不畫，
+            只留上面的錯誤框——不知道就說不知道。 */}
+        {(loading && items.length === 0) || (!loaded && !error && visible.length === 0) ? (
           <div className="flex items-center justify-center gap-2 py-8 text-xs text-muted-foreground">
             <Loader2Icon className="size-3.5 animate-spin" />
             正在載入…
           </div>
         ) : null}
 
-        {!loading && visible.length === 0 ? (
+        {!loading && loaded && visible.length === 0 ? (
           <p className="px-2 py-8 text-center text-xs text-muted-foreground">
             {tab === 'pending' ? '沒有待處理的 Mention。' : '還沒有已處理的 Mention。'}
           </p>

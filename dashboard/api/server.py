@@ -2508,7 +2508,12 @@ def get_mentions(
     if state and state not in ("pending", "resolved"):
         raise InvalidParameter(f"state 只接受 pending／resolved，收到 {state!r}")
 
-    rows = repo.list_mentions(viewer["id"], state=state, limit=limit)
+    # 🔴 清單與計數必須在補內容**之前**、於同一個讀取快照裡一起讀完。
+    # 原本是 list → 補內容（逐則打 Chat API，最多 60 則、要好幾秒）→ count，
+    # 採集器在中間寫入的新 pending 只會被 count 看到。2026-10-01 實際發生：
+    # 清單 90 則已處理、counts 卻是 pending 1／resolved 90，畫面徽章說有 1 則、
+    # 清單卻是空的，還出現假的截斷提示。詳見 repo.list_mentions_with_counts。
+    rows, counts = repo.list_mentions_with_counts(viewer["id"], state=state, limit=limit)
     if with_content and rows:
         rows = _hydrate_mention_content(get_client(viewer["id"]), rows)
 
@@ -2518,7 +2523,7 @@ def get_mentions(
     with_drafts = repo.mention_ids_with_drafts(viewer["id"])
     return {
         "count": len(rows),
-        "counts": repo.count_mentions(viewer["id"]),
+        "counts": counts,
         "mentions": [
             _mention_public(
                 r, resolve, viewer_id=viewer["id"], has_draft=r.get("id") in with_drafts

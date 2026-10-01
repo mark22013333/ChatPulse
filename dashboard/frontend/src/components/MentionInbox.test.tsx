@@ -34,6 +34,8 @@ function seed(items: Mention[], tab: 'pending' | 'resolved' = 'pending') {
     tab,
     counts: { pending: items.filter((m) => m.state !== 'resolved').length, resolved: 0 },
     loading: false,
+    // seed 代表「清單已經載入完」；要測「從未載入過」的畫面請改用 getInitialState()
+    loaded: true,
     checking: false,
     error: null,
     selectedId: null,
@@ -376,5 +378,40 @@ describe('MentionInbox 的截斷提示', () => {
     seed(loaded) // seed 的 counts 就等於清單筆數
     renderInbox()
     expect(notice()).toBeNull()
+  })
+})
+
+describe('MentionInbox 尚未載入過時的顯示', () => {
+  // 迴歸（2026-10-01）：store 的 loading 初值是 false，而第一次 load() 是在
+  // useBootstrap 的 useEffect 裡才呼叫——effect 在 commit 之後才跑，所以收件匣
+  // 第一次 render 看到的是「沒在載入、清單是空的」，畫出「沒有待處理的
+  // Mention」。頂列 badge 此時可能已經被 /me 的 mention_counts 填成 1，
+  // 畫面就同時說「有 1 則」與「沒有」。
+  it('從未載入過：顯示「正在載入…」，不顯示空狀態', () => {
+    // 直接用 store 的初始狀態，不用 seed()——seed 代表「已經載入完」
+    useMentionsStore.setState(useMentionsStore.getInitialState(), true)
+    useMentionsStore.setState({ counts: { pending: 1, resolved: 0 } })
+    renderInbox()
+
+    expect(screen.getByText('正在載入…')).toBeInTheDocument()
+    expect(screen.queryByText('沒有待處理的 Mention。')).toBeNull()
+  })
+
+  it('從未載入過但載入失敗：只顯示錯誤，不說「沒有」也不假裝還在載入', () => {
+    useMentionsStore.setState(useMentionsStore.getInitialState(), true)
+    useMentionsStore.setState({ error: '連不上後端' })
+    renderInbox()
+
+    expect(screen.getByText('連不上後端')).toBeInTheDocument()
+    expect(screen.queryByText('沒有待處理的 Mention。')).toBeNull()
+    expect(screen.queryByText('正在載入…')).toBeNull()
+  })
+
+  it('（正對照）載入完成且真的是空的：照常顯示空狀態', () => {
+    seed([])
+    renderInbox()
+
+    expect(screen.getByText('沒有待處理的 Mention。')).toBeInTheDocument()
+    expect(screen.queryByText('正在載入…')).toBeNull()
   })
 })

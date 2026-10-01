@@ -243,6 +243,10 @@ export interface MentionTruncation {
  * 判準：`counts` 來自 repository.count_mentions，算的是這位 Viewer 的**全部**
  * Mention（manual 併進 pending，與清單同一套歸類），所以
  * `pending + resolved > items.length` 就代表有東西沒載入。
+ * 🔴 這個判準的前提是「清單與 counts 來自同一個快照」。2026-10-01 以前並非如此：
+ * 後端先讀清單、補完內容（好幾秒）才讀 counts，採集器在中間寫入的新 Mention
+ * 只算進 counts，於是 90 筆的清單配上 91 的總數，跳出假的截斷提示。現在兩者在
+ * repository.list_mentions_with_counts 裡同一個讀取交易讀完；拆開它，這裡就會誤報。
  * ⚠️ 反方向不成立：count_mentions 會丟掉 pending／manual／resolved 以外的
  * 狀態，所以「沒偵測到」只是「沒有證據說被截斷」。
  *
