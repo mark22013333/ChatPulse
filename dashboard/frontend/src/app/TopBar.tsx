@@ -46,6 +46,8 @@ export function TopBar() {
   const me = useAuthStore((s) => s.me)
   const setPaletteOpen = useUiStore((s) => s.setPaletteOpen)
 
+  const settingsOpen = route.section === 'settings'
+
   const breakpoint = useBreakpoint()
   const evidenceInline = breakpoint === 'wide'
   const drawerOpen = useUiStore((s) => s.drawer[breakpoint] === true)
@@ -81,7 +83,9 @@ export function TopBar() {
         </kbd>
       </button>
 
-      {!evidenceInline ? (
+      {/* 設定頁不放證據鈕：證據回答「這份產出建立在什麼之上」，設定頁沒有產出；
+          AppShell 也會在設定時把抽屜收起來，鈕留著就是一顆按了沒反應的鈕 */}
+      {!evidenceInline && !settingsOpen ? (
         <Button
           size="sm"
           variant="ghost"

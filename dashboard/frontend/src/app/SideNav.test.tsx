@@ -44,6 +44,13 @@ describe('SideNav', () => {
     expect(nav.querySelectorAll('[aria-current="page"]')).toHaveLength(1)
   })
 
+  it('在設定頁時「設定」標 aria-current="page"，而且只有一個', () => {
+    mountAt('#/settings/personas')
+    const nav = screen.getByRole('navigation', { name: '主導覽' })
+    expect(within(nav).getByRole('link', { name: /設定/ })).toHaveAttribute('aria-current', 'page')
+    expect(nav.querySelectorAll('[aria-current="page"]')).toHaveLength(1)
+  })
+
   it('**不補 tablist 語意**（§10.2：它本來就是連結）', () => {
     mountAt('#/summary')
     expect(screen.queryByRole('tablist')).toBeNull()

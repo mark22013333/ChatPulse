@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { BellIcon, BellRingIcon } from 'lucide-react'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TopBar } from './TopBar'
 import { CommandPalette } from '@/components/CommandPalette'
 import type { Me } from '@/lib/types'
@@ -121,6 +121,39 @@ describe('TopBar', () => {
     window.history.replaceState(null, '', '#/mentions')
     mount()
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Mention 收件匣')
+  })
+
+  it('在設定頁時標題是「設定」（設定是主體裡的一頁，頂列照常顯示）', () => {
+    window.history.replaceState(null, '', '#/settings/personas')
+    mount()
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('設定')
+  })
+
+  describe('證據鈕（<1280 才有）', () => {
+    /** 假裝視窗是 1024–1280：只有 min-width:1024 與 768 成立，證據改走抽屜。 */
+    beforeEach(() => {
+      vi.stubGlobal('matchMedia', (query: string) => ({
+        matches: query !== '(min-width: 1280px)',
+        media: query,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      }))
+    })
+    afterEach(() => {
+      vi.unstubAllGlobals()
+    })
+
+    it('正對照：工作台上有證據鈕', () => {
+      window.history.replaceState(null, '', '#/summary')
+      mount()
+      expect(screen.getByRole('button', { name: '開啟證據欄' })).toBeInTheDocument()
+    })
+
+    it('設定頁沒有證據鈕（設定沒有產出，抽屜也被收起來）', () => {
+      window.history.replaceState(null, '', '#/settings/reply')
+      mount()
+      expect(screen.queryByRole('button', { name: /證據欄/ })).toBeNull()
+    })
   })
 
   it('**渲染結果裡 [title] 選得到 0 個**（規格 2026-09-09 §10.3）', () => {

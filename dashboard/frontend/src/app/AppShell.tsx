@@ -14,7 +14,7 @@ import { EvidenceColumn } from '@/components/evidence/EvidenceColumn'
 import { EvidenceDrawer } from '@/components/evidence/EvidenceDrawer'
 import { DiagnosticsPage } from '@/components/settings/DiagnosticsPage'
 import { TokenSheet } from '@/dev/TokenSheet'
-import { SettingsOverlay } from '@/components/settings/SettingsOverlay'
+import { SETTINGS_MAIN_ID, SettingsOverlay } from '@/components/settings/SettingsOverlay'
 import { DraftReplyWorkspace } from '@/components/draft/DraftReplyWorkspace'
 import { LoginScreen } from '@/components/LoginScreen'
 import { MentionInbox } from '@/components/MentionInbox'
@@ -80,6 +80,10 @@ export function AppShell() {
    * 是屬性不是樣式，non-active 的那一半必須在 JS 這一側知道。
    */
   const detail = hasDetail(route)
+
+  // 設定是主體區域裡的一頁（蓋在工作台上方），不是另一個工作台：`view` 在設定
+  // 時維持 toWorkbench 給的既有值，底下的工作台照常掛著（設計規格 §7.2）
+  const settingsOpen = route.section === 'settings'
 
   // 版面斷點：≥1280 證據欄常駐，以下改成抽屜（設計規格 §12）
   const breakpoint = useBreakpoint()
@@ -164,7 +168,7 @@ export function AppShell() {
     <div className="flex h-full overflow-clip bg-background text-foreground">
       {/* 「主要內容」會變：主從切換顯示清單那一半時 `<main>` 是 inert 的，
           那時清單本身就是主要內容 */}
-      <SkipLink href={mainHidden ? '#rail' : '#main'} />
+      <SkipLink href={settingsOpen ? `#${SETTINGS_MAIN_ID}` : mainHidden ? '#rail' : '#main'} />
 
       <StreamLiveRegions />
 
@@ -192,9 +196,27 @@ export function AppShell() {
         reset() 把還在串流的內容清光。現在改成保留掛載，那些條件式 reset 也就
         退化成第二道防線。
       */}
+      {/*
+        主體那一格。設定頁 absolute 蓋在這一格裡，所以側欄與頂列在設定時仍然可見
+        （2026-10-01：設定原本是 fixed inset-0 的全螢幕對話框，使用者回報「側欄
+        不見了，像跳到另一個 app」）。
+
+        🔴 工作台在設定開著時**不卸載**，只 inert ＋ 透明收起來——與 Pane、主從
+        切換同一套手法。被否決：`settingsOpen ? <設定/> : <工作台/>`，那會讓還在
+        串流的工作區在開設定的那一刻卸載，掛載時的 reset() 把內容清光。
+        `AppShell.settings.test.tsx` 守著這件事。
+      */}
+      <div className="relative flex min-h-0 flex-1">
       {/* relative 是主從切換要的：收起來的那一半用 absolute inset-0 移出
           版面流，定位基準就是這個容器 */}
-      <div className="relative flex min-h-0 flex-1">
+      <div
+        id="workbench"
+        inert={settingsOpen}
+        className={cn(
+          'relative flex min-h-0 min-w-0 flex-1',
+          settingsOpen && 'pointer-events-none opacity-0',
+        )}
+      >
         <aside
           id="rail"
           tabIndex={-1}
@@ -304,24 +326,29 @@ export function AppShell() {
             <EvidenceColumn origin="worklog" />
           </Pane>
         </aside>
+      </div>
+
+      {settingsOpen ? (
+        <div className="absolute inset-0 z-10 flex">
+          <SettingsOverlay />
         </div>
+      ) : null}
+      </div>
       </div>
 
       <CommandPalette />
 
-      {/* `?` 的快捷鍵說明。放在設定覆蓋層**之前**沒有影響——它自己是
-          fixed z-50，而 Esc 的層次由 store 的 isOverlayOpen() 決定，
-          不靠 DOM 順序 */}
+      {/* `?` 的快捷鍵說明。它自己是 fixed z-50，蓋得過主體裡的設定頁；
+          Esc 的層次由 store 的 isOverlayOpen() 決定，不靠 DOM 順序 */}
       <ShortcutHelp />
 
       <EvidenceDrawer
-        open={!evidenceInline && drawerOpen}
+        // 設定頁沒有「產出」，證據抽屜在這裡沒有東西可回答；而它是 fixed 的，
+        // 不收起來會蓋在設定頁上面
+        open={!evidenceInline && drawerOpen && !settingsOpen}
         origin={evidenceOriginOf(route.section)}
         onClose={() => closeDrawer(breakpoint)}
       />
-
-      {/* 設定中心是覆蓋層：工作台仍掛在後面，串流不中斷、狀態不掉 */}
-      {route.section === 'settings' ? <SettingsOverlay /> : null}
     </div>
     </SmallScreenNotice>
   )
