@@ -4,7 +4,8 @@
 並在被人 @ 時取得一份可修改的 **Draft Reply**。
 
 讀寫 Google Chat 一律使用**你本人的 OAuth 憑證**，不註冊 Chat App、不用機器人身分發話
-（[ADR-0001](docs/adr/0001-user-oauth-not-bot.md)）。任何送出動作都需要二次確認。
+（[ADR-0001](docs/adr/0001-user-oauth-not-bot.md)）。儀表板與 CLI 的送出動作都需要二次確認；
+MCP 的 `send_chat_message` 在 ChatPulse 這層不再確認，由 Claude 端的工具權限把關。
 
 - 需求規格：[`SPECIFICATION.md`](SPECIFICATION.md)｜領域語彙：[`CONTEXT.md`](CONTEXT.md)
 - API 契約：[`docs/api-contract.md`](docs/api-contract.md)｜架構決策：[`docs/adr/`](docs/adr/)
@@ -240,8 +241,8 @@ tests/e2e/   端對端測試
 
 ## 資料處理邊界
 
-**沒有 Space 排除清單**：所有你有權讀取的 Space，其對話內容都可以被送去 Gemini
-產生摘要與草稿，**包含公部門與金融客戶專案群組**。對話全文不落地，但摘要與草稿會以
+**沒有 Space 排除清單**：所有你有權讀取的 Space，其對話內容都可以被送去你選定的 AI 供應商
+（預設 Claude）產生摘要與草稿，**包含公部門與金融客戶專案群組**。對話全文不落地，但摘要與草稿會以
 明文存在本機 SQLite 中 90 天。這是已經做出的決定，理由與代價寫在
 `SPECIFICATION.md` 第十節，團隊共用前請先讀那一節。
 
