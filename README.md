@@ -227,7 +227,7 @@ ADD annotation 樣本）、靜態托管與路徑穿越防護。
 core/        共用封裝，不含任何入口（Google Chat／Gemini／SQLite／加密／名錄／採集器）
   polishers/   潤稿層；sepia_rules/ 是 vendored 的第三方規則（MIT，LICENSE 與
                VERSION.json 同目錄，不要就地改內容——要更新請重新 vendored 並記錄 commit）
-mcp_app/     MCP 入口——發給團隊安裝（四個 MCP 工具、CLI 摘要、OAuth 授權精靈）
+mcp_app/     MCP 入口——發給團隊安裝（五個 MCP 工具、CLI 摘要、OAuth 授權精靈）
 dashboard/   儀表板——內部使用（FastAPI 後端 ＋ React 前端）
 config/      憑證（不進版控）
 data/        SQLite 與加密金鑰（不進版控）
