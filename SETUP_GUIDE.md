@@ -73,7 +73,7 @@ Python 與 `uv` **不用自己準備**——安裝腳本偵測不到 `uv` 會自
 ## 快速上手（2 步驟）
 
 ### 步驟 1：取得專案與 Client Secret 憑證
-1. 將本專案 git clone 至您的電腦（**專案庫是 private，請向維護者索取存取權**）：
+1. 將本專案 git clone 至您的電腦（專案庫是公開的，不需要另外申請存取權）：
    ```bash
    git clone https://github.com/mark22013333/ChatPulse.git google-chat-bot
    cd google-chat-bot
