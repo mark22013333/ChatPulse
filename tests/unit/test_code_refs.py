@@ -133,6 +133,7 @@ class TestDraftStreamWiring(unittest.TestCase):
         req = server.DraftRequest(code_refs=[{"project_id": 999}])
         with mock.patch.object(server.repo, "get_mention", lambda vid, mid: dict(MENTION)), \
              mock.patch.object(server.repo, "get_code_project", lambda vid, pid: None), \
+             mock.patch.object(server, "viewer_default_models", lambda vid: {}), \
              mock.patch.object(server, "get_client", lambda vid: FakeClient()), \
              mock.patch.object(server.providers, "resolve_name", lambda p=None: "fake"):
             with self.assertRaises(CodeProjectNotFound):
@@ -142,3 +143,85 @@ class TestDraftStreamWiring(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestGitReadFailures(unittest.TestCase):
+    def setUp(self):
+        import subprocess
+        import tempfile
+        from pathlib import Path
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = self.temp.name
+        def git(*args):
+            return subprocess.run(['git', *args], cwd=self.path, check=True, capture_output=True, text=True).stdout.strip()
+        git('init', '-b', 'main')
+        git('config', 'user.email', 'fixture@example.test')
+        git('config', 'user.name', 'Fixture')
+        Path(self.path, 'demo.py').write_text('def known_symbol():\n    return 42\n', encoding='utf-8')
+        git('add', 'demo.py')
+        git('commit', '-m', '合成測試')
+        self.sha = git('rev-parse', 'HEAD')
+
+    def collect(self, **kwargs):
+        from core import code_search
+        return code_search.collect(repo_path=self.path, project_name='合成專案', environment='production', branch='main', terms=['known_symbol'], **kwargs)
+
+    def test_real_git_hit_and_successful_no_hit(self):
+        from core import code_search
+        context, skipped = self.collect()
+        self.assertEqual(context.commit_sha, self.sha[:7])
+        self.assertEqual(context.hits[0].path, 'demo.py')
+        self.assertEqual(skipped, [])
+        self.assertEqual(code_search._grep(self.path, self.sha, ['absent_symbol'], []), {})
+
+    def test_invalid_pathspec_is_not_successful_no_hit(self):
+        from core.errors import ChatPulseError
+        with self.assertRaises(ChatPulseError) as raised:
+            self.collect(include_globs=[':(unsupported)demo.py'])
+        self.assertEqual(raised.exception.code, 'CODE_READ_FAILED')
+        self.assertNotIn(self.path, str(raised.exception))
+
+    def test_show_missing_file_is_not_skipped(self):
+        from core.errors import ChatPulseError
+        with self.assertRaises(ChatPulseError) as raised:
+            self.collect(explicit_paths=['absent.py'])
+        self.assertEqual(raised.exception.code, 'CODE_READ_FAILED')
+
+    def test_show_failure_after_real_grep_stops_collection(self):
+        from core import code_search
+        from core.errors import ChatPulseError
+        import subprocess
+        real_git = code_search._git
+        def fail_show(path, *args, **kwargs):
+            if args[0] == 'show':
+                return subprocess.CompletedProcess(args, 128, '', 'private stderr')
+            return real_git(path, *args, **kwargs)
+        with mock.patch.object(code_search, '_git', side_effect=fail_show):
+            with self.assertRaises(ChatPulseError) as raised:
+                self.collect()
+        self.assertEqual(raised.exception.code, 'CODE_READ_FAILED')
+        self.assertNotIn('private stderr', str(raised.exception))
+
+    def test_timeout_is_not_partial_success(self):
+        from core import code_search
+        from core.errors import ChatPulseError
+        from pathlib import Path
+        import shutil
+        wrapper = Path(self.path, 'slow_git.py')
+        wrapper.write_text(
+            f'#!{sys.executable}\n'
+            'import os, sys, time\n'
+            "if 'grep' in sys.argv: time.sleep(1)\n"
+            f'os.execv({shutil.which("git")!r}, ["git", *sys.argv[1:]])\n',
+            encoding='utf-8',
+        )
+        wrapper.chmod(0o700)
+        real_git = code_search._git
+        def short_grep(path, *args, **kwargs):
+            return real_git(path, *args, timeout=0.1 if args[0] == 'grep' else 5)
+        with mock.patch.object(cfg, 'CODE_GIT_BIN', str(wrapper)), \
+             mock.patch.object(code_search, '_git', side_effect=short_grep):
+            with self.assertRaises(ChatPulseError) as raised:
+                self.collect()
+        self.assertEqual(raised.exception.code, 'CODE_READ_FAILED')

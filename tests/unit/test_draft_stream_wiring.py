@@ -86,7 +86,7 @@ class FakeClient:
         return []
 
 
-def run_stream(req=None, captured=None):
+def run_stream(req=None, captured=None, code_project=None, saved=None):
     """跑一次 draft_stream，把 draft_context.build 的呼叫參數攔下來。"""
     calls = captured if captured is not None else []
     real_build = dc.build
@@ -98,7 +98,8 @@ def run_stream(req=None, captured=None):
     provider = FakeProvider()
     request = req or server.DraftRequest()
     with mock.patch.object(server.repo, "get_mention", lambda vid, mid: dict(MENTION)), \
-         mock.patch.object(server.repo, "create_draft", lambda mid, text, config=None: 1), \
+         mock.patch.object(server.repo, "create_draft", lambda mid, text, config=None: (saved.append(mid) if saved is not None else None) or 1), \
+         mock.patch.object(server.repo, "get_code_project", lambda vid, pid: code_project), \
          mock.patch.object(server.repo, "get_preferences", lambda vid: dict(PREFERENCES)), \
          mock.patch.object(server, "get_client", lambda vid: FakeClient()), \
          mock.patch.object(server, "get_provider", lambda vid, p, model=None: provider), \
@@ -188,6 +189,40 @@ class TestStreamActuallySucceeds(unittest.TestCase):
         self.assertIn("reply", meta)
         # 沒有任何偏好、request 也沒帶 → 只有 sepia 一個鍵，且是關閉
         self.assertEqual(meta["reply"], {"sepia": False})
+
+
+class TestGitFailureStopsDraft(unittest.TestCase):
+    def test_real_git_error_emits_only_error_without_provider_or_save(self):
+        import json
+        import subprocess
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as path:
+            def git(*args):
+                subprocess.run(['git', *args], cwd=path, check=True, capture_output=True)
+            git('init', '-b', 'main')
+            git('config', 'user.email', 'fixture@example.test')
+            git('config', 'user.name', 'Fixture')
+            Path(path, 'demo.py').write_text('known_symbol = 42\n', encoding='utf-8')
+            git('add', 'demo.py')
+            git('commit', '-m', '合成測試')
+            project = {
+                'id': 3, 'name': '合成專案', 'repo_path': path,
+                'branches': {'production': 'main'}, 'default_env': 'production',
+                'include_globs': [':(unsupported)demo.py'], 'exclude_globs': [], 'enabled': True,
+            }
+            saved = []
+            _, raw_events, provider = run_stream(
+                server.DraftRequest(code_refs=[{'project_id': 3}], code_terms=['known_symbol']),
+                code_project=project, saved=saved,
+            )
+            events = [json.loads(e.split('data: ', 1)[1]) for e in raw_events]
+            self.assertEqual([e['type'] for e in events], ['error'])
+            self.assertEqual(events[0]['code'], 'CODE_READ_FAILED')
+            self.assertFalse(hasattr(provider, 'prompt'))
+            self.assertEqual(saved, [])
+            self.assertNotIn(path, json.dumps(events))
 
 
 if __name__ == "__main__":

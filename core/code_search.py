@@ -26,6 +26,7 @@ from . import config as cfg
 from .errors import (
     CodeBranchNotFound,
     CodeProjectUnavailable,
+    CodeReadFailed,
     ConfigurationError,
 )
 
@@ -108,6 +109,8 @@ def _git(repo_path: str, *args: str, timeout: Optional[int] = None) -> subproces
             timeout=timeout or cfg.CODE_GIT_TIMEOUT,
             env=env,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise CodeReadFailed() from exc
     except FileNotFoundError as exc:
         raise ConfigurationError(
             f"找不到 git 執行檔（{cfg.CODE_GIT_BIN}）。"
@@ -131,7 +134,7 @@ def _ensure_repo(repo_path: str, project_name: str) -> None:
 def _list_branches(repo_path: str, limit: int = 20) -> List[str]:
     proc = _git(repo_path, "branch", "--format=%(refname:short)", "--all")
     if proc.returncode != 0:
-        return []
+        raise CodeReadFailed()
     names = [b.strip() for b in proc.stdout.splitlines() if b.strip()]
     return names[:limit]
 
@@ -151,8 +154,9 @@ def _resolve_commit(repo_path: str, branch: str, project_name: str) -> Tuple[str
         )
     sha = proc.stdout.strip()
     date_proc = _git(repo_path, "log", "-1", "--format=%cI", sha)
-    commit_date = date_proc.stdout.strip() if date_proc.returncode == 0 else ""
-    return sha[:7], commit_date
+    if date_proc.returncode != 0 or not date_proc.stdout.strip():
+        raise CodeReadFailed()
+    return sha, date_proc.stdout.strip()
 
 
 def _repo_state_notes(repo_path: str, branch: str, sha: str, commit_date: str) -> List[str]:
@@ -164,7 +168,9 @@ def _repo_state_notes(repo_path: str, branch: str, sha: str, commit_date: str) -
     notes: List[str] = []
 
     dirty = _git(repo_path, "status", "--porcelain", "--untracked-files=no")
-    if dirty.returncode == 0 and dirty.stdout.strip():
+    if dirty.returncode != 0:
+        notes.append("無法確認本機 working tree 是否有未提交變更。")
+    elif dirty.stdout.strip():
         notes.append(
             f"本機 working tree 有未提交變更，但以下程式碼讀自 {branch}@{sha}，不含這些變更。"
         )
@@ -185,6 +191,9 @@ def _repo_state_notes(repo_path: str, branch: str, sha: str, commit_date: str) -
                     f"這個 repo 正在進行 {label}，分支狀態可能是暫時的（讀取本身仍然有效）。"
                 )
                 break
+
+    else:
+        notes.append("無法確認本機 repo 是否正在進行合併或 rebase。")
 
     if commit_date:
         try:
@@ -379,30 +388,34 @@ def _grep(
 
     proc = _git(repo_path, *args)
     # exit code 1 是「沒有命中」，不是錯誤。搞反是這裡的經典 bug。
-    if proc.returncode not in (0, 1):
+    if proc.returncode == 1 and not proc.stdout:
         return {}
+    if proc.returncode != 0 or not proc.stdout:
+        raise CodeReadFailed()
 
     found: Dict[str, List[Tuple[int, str]]] = {}
     prefix = sha + ":"
     for line in proc.stdout.splitlines():
         if not line.startswith(prefix):
-            continue
+            raise CodeReadFailed()
         rest = line[len(prefix) :]
         try:
             path, lineno_s, content = rest.split(":", 2)
             lineno = int(lineno_s)
-        except ValueError:
-            continue
+        except ValueError as exc:
+            raise CodeReadFailed() from exc
+        if not path or lineno < 1:
+            raise CodeReadFailed()
         low = content.lower()
         matched = next((t for t in terms if t.lower() in low), terms[0])
         found.setdefault(path, []).append((lineno, matched))
     return found
 
 
-def _read_file(repo_path: str, sha: str, path: str) -> Optional[str]:
+def _read_file(repo_path: str, sha: str, path: str) -> str:
     proc = _git(repo_path, "show", f"{sha}:{path}")
     if proc.returncode != 0:
-        return None
+        raise CodeReadFailed()
     return proc.stdout
 
 
@@ -454,9 +467,8 @@ def collect(
 ) -> Tuple[CodeContext, List[str]]:
     """主入口。回傳 (context, skipped)。
 
-    形狀刻意與 attachments.collect 一致：局部失敗降級成 skipped 訊息，
-    不讓整份草稿掛掉。但「路徑不存在」與「分支不存在」是例外——那兩個會拋，
-    因為使用者要的就是有依據的草稿，靜默給一份沒依據的更糟。
+    skipped 只記錄刻意排除或預算限制。Git 讀取失敗一律拋錯，
+    避免產出省略必要證據卻看似成功的草稿。
     """
     skipped: List[str] = []
     budget = budget_tokens or cfg.CODE_BUDGET_TOKENS_DRAFT
@@ -474,9 +486,6 @@ def collect(
             skipped.append(f"{path}：路徑符合機敏樣式，未讀取")
             continue
         content = _read_file(repo_path, sha, path)
-        if content is None:
-            skipped.append(f"{path}：在 {branch}@{sha} 中不存在")
-            continue
         lines = content.splitlines()
         text = "\n".join(f"{i:>5} | {l}" for i, l in enumerate(lines[:400], 1))
         raw_hits.append(
@@ -493,11 +502,7 @@ def collect(
         )
 
     # 第二層：關鍵字搜尋
-    try:
-        found = _grep(repo_path, sha, terms, pathspec)
-    except subprocess.TimeoutExpired:
-        skipped.append(f"搜尋逾時（{cfg.CODE_GIT_TIMEOUT} 秒），只回傳已取得的片段")
-        found = {}
+    found = _grep(repo_path, sha, terms, pathspec)
 
     already_reported = {
         s.split("：", 1)[0] for s in skipped
@@ -510,8 +515,6 @@ def collect(
                 skipped.append(f"{path}：路徑符合機敏樣式，未讀取")
             continue
         content = _read_file(repo_path, sha, path)
-        if content is None:
-            continue
         if len(content.encode("utf-8", "ignore")) > cfg.CODE_MAX_FILE_BYTES:
             skipped.append(f"{path}：檔案過大，未讀取")
             continue
@@ -560,7 +563,7 @@ def collect(
         project_name=project_name,
         environment=environment,
         branch=branch,
-        commit_sha=sha,
+        commit_sha=sha[:7],
         commit_date=commit_date,
         terms=tuple(terms),
         hits=tuple(kept),

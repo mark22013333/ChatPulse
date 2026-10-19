@@ -113,6 +113,12 @@ class CodeBranchNotFound(ChatPulseError):
     default_message = "環境對應的分支不存在"
 
 
+class CodeReadFailed(ChatPulseError):
+    code = "CODE_READ_FAILED"
+    http_status = 502
+    default_message = "參考專案讀取失敗，請確認本機 Git 狀態後重試"
+
+
 class WorkRepoNotFound(ChatPulseError):
     """找不到這個「我的工作 repo」登錄（ADR-0008）。
 
