@@ -4,7 +4,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { ModelSelect } from '@/components/ModelSelect'
 import { ProviderSelect } from '@/components/ProviderSelect'
-import { useDraftStore } from '@/store/draft'
+import { useDraftStore, selectReferenceSpaceIds } from '@/store/draft'
 
 /**
  * Reference Space 的控件：搜尋、每群抓取則數、供應商（規格 §9.2）。
@@ -21,8 +21,8 @@ import { useDraftStore } from '@/store/draft'
  * 436 筆的虛擬清單——那正是改版要修掉的效能問題。
  */
 export function ReferenceSpacePicker() {
-  const referenceSpaceIds = useDraftStore((s) => s.referenceSpaceIds)
-  const referenceSearch = useDraftStore((s) => s.referenceSearch)
+  const referenceSpaceIds = useDraftStore(selectReferenceSpaceIds)
+  const referenceSearch = useDraftStore((s) => s.active?.referenceSearch ?? '')
   const refLimit = useDraftStore((s) => s.refLimit)
   const refLimitError = useDraftStore((s) => s.refLimitError)
   const streaming = useDraftStore((s) => s.streaming)

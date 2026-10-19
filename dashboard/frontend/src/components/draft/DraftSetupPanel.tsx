@@ -4,7 +4,7 @@ import { CodeRefPicker } from '@/components/draft/CodeRefPicker'
 import { GenerateButton } from '@/components/draft/GenerateButton'
 import { QuickReplySettings } from '@/components/draft/QuickReplySettings'
 import { ReferenceSpacePicker } from '@/components/draft/ReferenceSpacePicker'
-import { useDraftStore } from '@/store/draft'
+import { useDraftStore, selectReferenceSpaceIds } from '@/store/draft'
 import { filterSpaces, useSpacesStore } from '@/store/spaces'
 import type { Mention } from '@/lib/types'
 
@@ -17,8 +17,8 @@ import type { Mention } from '@/lib/types'
  */
 export function DraftSetupPanel({ mention }: { mention: Mention }) {
   const spaces = useSpacesStore((s) => s.items)
-  const referenceSearch = useDraftStore((s) => s.referenceSearch)
-  const referenceSpaceIds = useDraftStore((s) => s.referenceSpaceIds)
+  const referenceSearch = useDraftStore((s) => s.active?.referenceSearch ?? '')
+  const referenceSpaceIds = useDraftStore(selectReferenceSpaceIds)
   const toggleReference = useDraftStore((s) => s.toggleReference)
   // 要用 selector 而不是 getState()：後者讀一次就不再訂閱，串流開始時這裡
   // 不會重繪，回覆設定就不會變成 disabled（使用者能在生成中改口氣）。
