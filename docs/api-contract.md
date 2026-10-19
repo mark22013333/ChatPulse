@@ -426,6 +426,9 @@ mentions 表**只存識別資訊**，不存內容）。
 **400 `INVALID_PARAMETER`**——**這兩個都在 SSE 開始前就回**，不是 error 事件。
 路徑不是 repo 回 **409 `CODE_PROJECT_UNAVAILABLE`**、分支不存在回
 **409 `CODE_BRANCH_NOT_FOUND`**（訊息會附上現有分支清單）。
+Git 查詢或檔案讀取失敗、逾時會送出 `CODE_READ_FAILED` SSE error（非串流狀態碼為 502），
+不會呼叫 AI、送出 done 或保存新草稿。只有 `git grep` 正常結束且零命中才算成功空結果；
+錯誤內容不包含原始 stderr 或本機 repo 絕對路徑。
 
 圖片：**只取被 @ 的那則與其脈絡，Reference Space 的圖不取**。理由是成本——
 參考群組可能有好幾個、每個 50 則，圖片全抓會吃光預算；而真正需要看到的是

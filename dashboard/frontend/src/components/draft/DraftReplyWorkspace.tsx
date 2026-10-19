@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ChevronLeftIcon, MessageSquareQuoteIcon, SlidersHorizontalIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { DraftOutputPane } from '@/components/draft/DraftOutputPane'
@@ -22,7 +22,7 @@ interface DraftReplyWorkspaceProps {
 /**
  * Draft Reply 工作區（規格 7 節、§9.2）。
  *
- * 這個檔案只剩兩件事：**版面骨架**與**換 Mention 的 reset 契約**。其餘都在
+ * 這個檔案只剩兩件事：**版面骨架**與**Mention scope 的啟用**。其餘都在
  * 同目錄的兄弟檔，各自用細 selector 讀 store（規格 §9.3）。
  *
  * 拆檔前這裡是一個 478 行的檔案，而且用**無 selector 的 `useDraftStore()`**
@@ -30,16 +30,14 @@ interface DraftReplyWorkspaceProps {
  * **不要把那一行加回來**，那是這次改版要修掉的效能問題（規格 §9.3）。
  */
 export function DraftReplyWorkspace({ mention, active = true }: DraftReplyWorkspaceProps) {
-  const reset = useDraftStore((s) => s.reset)
-  const loadStored = useDraftStore((s) => s.loadStored)
-  // store 記著「目前這份草稿是誰的」，用它判斷要不要清空，元件自己不必追蹤
-  const streamedMentionId = useDraftStore((s) => s.mentionId)
+  const activateMention = useDraftStore((s) => s.activateMention)
+  const scope = useDraftStore((s) => s.active)
   const streaming = useDraftStore((s) => s.streaming)
   // 只訂閱「有沒有內容」這個布林，不訂閱 raw 本身——後者每個串流 chunk 都會變，
   // 訂了就等於讓整個工作區跟著每個 chunk 重繪（§9.3 要修掉的正是這件事）
   const hasDraft = useDraftStore((s) => s.raw.length > 0)
 
-  const [confirmOpen, setConfirmOpen] = useState(false)
+  const [confirmEpoch, setConfirmEpoch] = useState<symbol | null>(null)
 
   // 設定側欄的收合。`userDecided` 記住「使用者自己表達過意見了」——
   // 一旦他手動展開或收合，自動行為就不再插手；自動收合不該推翻使用者
@@ -74,33 +72,9 @@ export function DraftReplyWorkspace({ mention, active = true }: DraftReplyWorksp
     setSetupCollapsed(collapsed)
   }
 
-  // 只有**真的換了一則 Mention** 才清空。
-  //
-  // 以前這裡是無條件 reset()，而 App.tsx 的頁籤是條件渲染（不是隱藏），
-  // 切頁籤會把這個元件整個卸載重掛——於是每次切回來，掛載時的 reset()
-  // 就把還在串流的草稿清光了，使用者什麼都看不到。
-  useEffect(() => {
-    const id = mention?.id ?? null
-    if (id !== null && streamedMentionId !== null && id !== streamedMentionId) {
-      reset()
-    }
-  }, [mention?.id, streamedMentionId, reset])
-
-  // 這一則如果有**存下來**的草稿就讀回來。
-  //
-  // 在這之前草稿只活在串流那一次的記憶體裡：重新整理、切回收件匣再點進來、
-  // 或隔天再開，畫面都是空的，看起來像草稿沒了——實際上它一直在
-  // `draft_replies` 裡（本機實測 53 筆）。
-  //
-  // 安全性靠 `loadStored` 自己的三道守衛：正在串流不讀、同一則已經有內容
-  // 不讀、404 安靜略過。所以這個 effect 重複觸發是無害的。
-  // 只在 active 時讀：背景那一半的 pane 仍然掛載著（`app/Pane.tsx`），
-  // 不 gate 的話每次切頁籤都會為看不見的那一半多打一次。
-  useEffect(() => {
-    const id = mention?.id ?? null
-    if (!active || id === null || !mention?.has_draft) return
-    void loadStored(id)
-  }, [active, mention?.id, mention?.has_draft, loadStored])
+  useLayoutEffect(() => {
+    if (active && mention) activateMention(mention.id)
+  }, [active, mention?.id, activateMention])
 
   // 這裡刻意**不**在卸載時 abort。
   //
@@ -125,6 +99,8 @@ export function DraftReplyWorkspace({ mention, active = true }: DraftReplyWorksp
       </div>
     )
   }
+
+  if (scope?.mentionId !== mention.id) return null
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -172,12 +148,17 @@ export function DraftReplyWorkspace({ mention, active = true }: DraftReplyWorksp
           <DraftSetupPanel mention={mention} />
         </div>
 
-        <DraftOutputPane active={active} onRequestSend={() => setConfirmOpen(true)} />
+        <DraftOutputPane active={active} onRequestSend={() => setConfirmEpoch(scope.epoch)} />
       </div>
 
       {/* `confirmOpen` 住在這一層是因為它有兩個使用者：編輯器裡的送出鈕負責
           打開，對話框負責關。放進任一邊都得把 state 往上或往下穿。 */}
-      <SendReplyConfirm mention={mention} open={confirmOpen} onOpenChange={setConfirmOpen} />
+      <SendReplyConfirm
+        key={mention.id}
+        mention={mention}
+        open={confirmEpoch === scope.epoch}
+        onOpenChange={(open) => setConfirmEpoch(open ? scope.epoch : null)}
+      />
     </div>
   )
 }

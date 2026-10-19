@@ -1,9 +1,14 @@
+import type { ActiveDraftScope } from '@/store/draft'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { api, LIMIT_DEFAULT } from '@/lib/api'
+import { api, ApiError, LIMIT_DEFAULT } from '@/lib/api'
 import * as sse from '@/lib/sse'
 import { NONE_ID, splitDraft, useDraftStore } from './draft'
 import { useProviderStore } from './providers'
 import type { SseDone, SseMeta } from '@/lib/types'
+
+function draftScope(mentionId: number): ActiveDraftScope {
+  return { mentionId, epoch: Symbol('fixture'), referenceSpaceIds: [], codeRefs: [], codeTerms: '', referenceSearch: '', operation: null }
+}
 
 /**
  * Draft store 的單元測試，重點在**送出去的 request body** 與**回覆設定的生命週期**。
@@ -22,10 +27,6 @@ import type { SseDone, SseMeta } from '@/lib/types'
  */
 
 const INITIAL = {
-  referenceSpaceIds: [],
-  codeRefs: [],
-  codeTerms: '',
-  referenceSearch: '',
   refLimit: LIMIT_DEFAULT,
   refLimitError: null,
   toneId: null,
@@ -38,11 +39,11 @@ const INITIAL = {
   meta: null,
   draftId: null,
   error: null,
-  mentionId: null,
   polish: null,
   replyText: '',
   replyEdited: false,
-  sending: false,
+  sendingMentionIds: [],
+  active: { ...draftScope(7), referenceSpaceIds: [], codeRefs: [], codeTerms: '', referenceSearch: '' }
 }
 
 /** 攔下 streamSse 的呼叫，回傳送出去的 body 與可以手動觸發的 handlers。 */
@@ -60,6 +61,8 @@ function captureStream() {
 
 beforeEach(() => {
   vi.restoreAllMocks()
+  useDraftStore.getState().reset()
+  vi.spyOn(api, 'storedDraft').mockRejectedValue(new ApiError(404, 'DRAFT_NOT_FOUND', '無草稿'))
   useDraftStore.setState({ ...INITIAL })
   useProviderStore.setState({
     providers: [],
@@ -215,7 +218,7 @@ describe('done 事件的潤稿結果', () => {
   async function runWithDone(done: SseDone, raw: string) {
     const captured = captureStream()
     useDraftStore.getState().setSepiaEnabled(true)
-    await useDraftStore.getState().generate(7)
+    void useDraftStore.getState().generate(7)
     captured.handlers.onMeta?.(META)
     captured.handlers.onChunk?.({ type: 'chunk', text: raw })
     captured.handlers.onDone?.(done)
@@ -249,7 +252,7 @@ describe('done 事件的潤稿結果', () => {
 
   it('使用者已經編輯過時，潤稿結果不覆寫他的版本', async () => {
     const captured = captureStream()
-    await useDraftStore.getState().generate(7)
+    void useDraftStore.getState().generate(7)
     captured.handlers.onChunk?.({ type: 'chunk', text: '### ✍️ 建議回話\n串流的版本' })
     useDraftStore.getState().setReplyText('我自己改的版本')
     captured.handlers.onDone?.({ type: 'done', draft_id: 1, reply: '潤稿後的版本' })
@@ -273,7 +276,7 @@ describe('done 事件的潤稿結果', () => {
 
   it('沒開潤稿時 polish 保持 null', async () => {
     const captured = captureStream()
-    await useDraftStore.getState().generate(7)
+    void useDraftStore.getState().generate(7)
     captured.handlers.onDone?.({ type: 'done', draft_id: 1 })
     expect(useDraftStore.getState().polish).toBeNull()
   })
@@ -298,7 +301,7 @@ describe('reset 不可以清掉跨 Mention 的偏好', () => {
     expect(after.sepiaEnabled).toBe(true)
   })
 
-  it('保留參考來源與抓取則數（既有行為）', () => {
+  it('清除當題來源但保留抓取則數', () => {
     const store = useDraftStore.getState()
     store.toggleReference('spaces/AAA')
     store.toggleCodeRef(2, 'uat')
@@ -308,31 +311,26 @@ describe('reset 不可以清掉跨 Mention 的偏好', () => {
     useDraftStore.getState().reset()
 
     const after = useDraftStore.getState()
-    expect(after.referenceSpaceIds).toEqual(['spaces/AAA'])
-    expect(after.codeRefs).toEqual([{ project_id: 2, environment: 'uat' }])
+    expect(after.active).toBeNull()
     expect(after.refLimit).toBe(77)
-    expect(after.referenceSearch).toBe('關鍵字')
+
   })
 
-  it('**保留手動指定的檢索關鍵字**（與參考專案同一類的跨 Mention 偏好）', () => {
-    // 切一則 Mention 就把它洗掉的話，使用者每次都得重打一次——而參考專案
-    // 的勾選還留著，所以他不會想到關鍵字被清了，只會覺得搜出來的結果變了
+  it('手動檢索詞屬於當題，reset 一併清除', () => {
     useDraftStore.getState().setCodeTerms('sendPush retryCount')
-
     useDraftStore.getState().reset()
-
-    expect(useDraftStore.getState().codeTerms).toBe('sendPush retryCount')
+    expect(useDraftStore.getState().active).toBeNull()
   })
 
   it('清掉這一次草稿的結果（含 polish）', () => {
     useDraftStore.setState({
       raw: '內容',
       draftId: 9,
-      mentionId: 7,
       replyText: '回話',
       replyEdited: true,
       polish: { polisher: 'sepia', polished: true },
       error: '錯誤',
+      active: draftScope(7)
     })
 
     useDraftStore.getState().reset()
@@ -340,7 +338,7 @@ describe('reset 不可以清掉跨 Mention 的偏好', () => {
     const after = useDraftStore.getState()
     expect(after.raw).toBe('')
     expect(after.draftId).toBeNull()
-    expect(after.mentionId).toBeNull()
+    expect(after.active).toBeNull()
     expect(after.replyText).toBe('')
     expect(after.replyEdited).toBe(false)
     expect(after.polish).toBeNull()
@@ -368,9 +366,9 @@ describe('generate 會重置這一次的結果但保留設定', () => {
   it('mentionId 會換成新的那一則（切換 Mention 的歸屬標記）', async () => {
     captureStream()
     await useDraftStore.getState().generate(7)
-    expect(useDraftStore.getState().mentionId).toBe(7)
+    expect(useDraftStore.getState().active?.mentionId).toBe(7)
     await useDraftStore.getState().generate(9)
-    expect(useDraftStore.getState().mentionId).toBe(9)
+    expect(useDraftStore.getState().active?.mentionId).toBe(9)
   })
 })
 
@@ -458,7 +456,7 @@ describe('loadStored（讀回既有草稿）', () => {
     expect(s.raw).toContain('舊的版本')
     expect(s.replyText).toContain('舊的版本')
     expect(s.draftId).toBe(80)
-    expect(s.mentionId).toBe(65)
+    expect(s.active?.mentionId).toBe(65)
     expect(s.restored).toBe(true)
     expect(s.restoredAt).toBe('2026-09-08T01:20:41Z')
   })
@@ -487,7 +485,7 @@ describe('loadStored（讀回既有草稿）', () => {
   })
 
   it('沒有草稿（404）安靜回 false，不設 error', async () => {
-    vi.spyOn(api, 'storedDraft').mockRejectedValue(new Error('DRAFT_NOT_FOUND'))
+    vi.spyOn(api, 'storedDraft').mockRejectedValue(new ApiError(404, 'DRAFT_NOT_FOUND', '無草稿'))
 
     const ok = await useDraftStore.getState().loadStored(65)
 
@@ -498,7 +496,7 @@ describe('loadStored（讀回既有草稿）', () => {
 
   it('正在串流時不讀（不可以把長出來一半的內容換成舊的）', async () => {
     const spy = vi.spyOn(api, 'storedDraft')
-    useDraftStore.setState({ streaming: true })
+    useDraftStore.setState({ active: draftScope(65), streaming: true })
 
     expect(await useDraftStore.getState().loadStored(65)).toBe(false)
     expect(spy).not.toHaveBeenCalled()
@@ -506,7 +504,10 @@ describe('loadStored（讀回既有草稿）', () => {
 
   it('同一則已經有內容時不讀（不可以洗掉編到一半的東西）', async () => {
     const spy = vi.spyOn(api, 'storedDraft')
-    useDraftStore.setState({ mentionId: 65, raw: '我改到一半的內容' })
+    useDraftStore.setState({
+      raw: '我改到一半的內容',
+      active: draftScope(65)
+    })
 
     expect(await useDraftStore.getState().loadStored(65)).toBe(false)
     expect(spy).not.toHaveBeenCalled()

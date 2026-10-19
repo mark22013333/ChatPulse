@@ -86,3 +86,13 @@ describe('isOutstanding：「什麼算待處理」的唯一定義', () => {
     expect(items.filter((m) => isOutstanding(m.state)).map((m) => m.id)).toEqual(inPendingTab)
   })
 })
+
+it('合併回覆成功只移除真正已處理的勾選，保留其他 Mention', () => {
+  reset([mention(1, 'pending'), mention(2, 'pending'), mention(3, 'pending')], { pending: 3, resolved: 0 })
+  useMentionsStore.getState().setMergeIds([1, 2, 3])
+  useMentionsStore.getState().applyResolvedMany([mention(1, 'resolved'), mention(2, 'resolved')])
+  expect(useMentionsStore.getState().mergeIds).toEqual([3])
+  expect(useMentionsStore.getState().counts).toEqual({ pending: 1, resolved: 2 })
+  useMentionsStore.getState().applyResolvedMany([mention(3, 'resolved')])
+  expect(useMentionsStore.getState().mergeIds).toEqual([])
+})

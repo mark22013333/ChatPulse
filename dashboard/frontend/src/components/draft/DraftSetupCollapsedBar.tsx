@@ -1,6 +1,6 @@
 import { ChevronRightIcon, SlidersHorizontalIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { useDraftStore } from '@/store/draft'
+import { useDraftStore, selectReferenceSpaceIds, selectCodeRefs } from '@/store/draft'
 import { settingsSummary, useReplySettingsStore } from '@/store/replySettings'
 
 /**
@@ -16,8 +16,8 @@ import { settingsSummary, useReplySettingsStore } from '@/store/replySettings'
  * 摘要字串本身住在 store（`settingsSummary`），那裡測得到。
  */
 export function DraftSetupCollapsedBar({ onExpand }: { onExpand: () => void }) {
-  const referenceSpaceIds = useDraftStore((s) => s.referenceSpaceIds)
-  const codeRefs = useDraftStore((s) => s.codeRefs)
+  const referenceSpaceIds = useDraftStore(selectReferenceSpaceIds)
+  const codeRefs = useDraftStore(selectCodeRefs)
   const toneId = useDraftStore((s) => s.toneId)
   const personaId = useDraftStore((s) => s.personaId)
   const customPrompt = useDraftStore((s) => s.customPrompt)

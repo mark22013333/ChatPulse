@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { parseCodeTerms } from '@/lib/codeTerms'
 import { ENV_LABELS, ENV_ORDER, useCodeProjectStore } from '@/store/codeProjects'
-import { useDraftStore } from '@/store/draft'
+import { useDraftStore, selectCodeRefs } from '@/store/draft'
 
 /**
  * 手動指定檢索關鍵字。
@@ -18,7 +18,7 @@ import { useDraftStore } from '@/store/draft'
  * 所以覆寫有沒有生效、搜錯了沒，使用者在模型開口之前就看得到。
  */
 function CodeTermsInput() {
-  const codeTerms = useDraftStore((s) => s.codeTerms)
+  const codeTerms = useDraftStore((s) => s.active?.codeTerms ?? '')
   const setCodeTerms = useDraftStore((s) => s.setCodeTerms)
   const streaming = useDraftStore((s) => s.streaming)
 
@@ -59,7 +59,7 @@ function CodeTermsInput() {
  * 一個專案都沒設定時整塊不畫（不是畫一個空清單）。
  */
 export function CodeRefPicker() {
-  const codeRefs = useDraftStore((s) => s.codeRefs)
+  const codeRefs = useDraftStore(selectCodeRefs)
   const toggleCodeRef = useDraftStore((s) => s.toggleCodeRef)
   const clearCodeRefs = useDraftStore((s) => s.clearCodeRefs)
   const streaming = useDraftStore((s) => s.streaming)

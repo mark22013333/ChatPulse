@@ -194,7 +194,8 @@ export const useMentionsStore = create<MentionsState>((set, get) => ({
     // 逐則套用既有邏輯，計數才會一則一則正確地扣。整批直接覆寫的話，
     // 混著 manual 與 pending 時 counts 會失真而沒有任何跡象。
     for (const m of mentions) get().applyResolved(m)
-    set({ mergeIds: [] })
+    const resolvedIds = new Set(mentions.map((mention) => mention.id))
+    set((state) => ({ mergeIds: state.mergeIds.filter((id) => !resolvedIds.has(id)) }))
   },
 
   applyResolved: (mention) => {

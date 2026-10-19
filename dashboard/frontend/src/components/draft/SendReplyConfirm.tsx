@@ -3,7 +3,7 @@ import { toast } from 'sonner'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { errorMessage } from '@/lib/api'
 import { formatDateTime } from '@/lib/format'
-import { useDraftStore } from '@/store/draft'
+import { useDraftStore, selectReferenceSpaceIds, selectSending } from '@/store/draft'
 import { useMentionsStore } from '@/store/mentions'
 import { useSpacesStore } from '@/store/spaces'
 import type { Mention } from '@/lib/types'
@@ -24,11 +24,11 @@ interface SendReplyConfirmProps {
 export function SendReplyConfirm({ mention, open, onOpenChange }: SendReplyConfirmProps) {
   const meta = useDraftStore((s) => s.meta)
   const replyText = useDraftStore((s) => s.replyText)
-  const sending = useDraftStore((s) => s.sending)
+  const sending = useDraftStore(selectSending)
   const applyResolved = useMentionsStore((s) => s.applyResolved)
   const applyResolvedMany = useMentionsStore((s) => s.applyResolvedMany)
   const spaces = useSpacesStore((s) => s.items)
-  const referenceSpaceIds = useDraftStore((s) => s.referenceSpaceIds)
+  const referenceSpaceIds = useDraftStore(selectReferenceSpaceIds)
 
   const selectedNames = useMemo(
     () =>
@@ -42,19 +42,20 @@ export function SendReplyConfirm({ mention, open, onOpenChange }: SendReplyConfi
 
   const handleSend = async () => {
     try {
-      const updated = await useDraftStore.getState().send(mention.id)
+      const receipt = await useDraftStore.getState().send(mention.id)
+      const updated = receipt.mentions
       if (updated.length) applyResolvedMany(updated)
       else applyResolved({ ...mention, state: 'resolved', resolved_at: new Date().toISOString() })
       toast.success(
         updated.length > 1
-          ? `已送出回話，這 ${updated.length} 則都標記為已處理`
-          : '已送出回話，該則 Mention 已標記為已處理',
+          ? `已送出至「${mention.space_name}」，這 ${updated.length} 則都標記為已處理`
+          : `已送出至「${mention.space_name}」，該則 Mention 已標記為已處理`,
       )
-      onOpenChange(false)
+      if (useDraftStore.getState().active?.epoch === receipt.scopeEpoch) onOpenChange(false)
     } catch (err) {
       // **失敗時刻意不關對話框。** 關掉的話畫面回到草稿、什麼都沒變，
       // 使用者會以為送出去了。留著它，錯誤訊息與「再試一次」都還在原地。
-      toast.error(errorMessage(err))
+      toast.error(`在「${mention.space_name}」送出失敗：${errorMessage(err)}`)
     }
   }
 

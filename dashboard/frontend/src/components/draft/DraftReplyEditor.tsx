@@ -1,7 +1,7 @@
 import { MessageSquareQuoteIcon, SendIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
-import { useDraftStore } from '@/store/draft'
+import { useDraftStore, selectSending } from '@/store/draft'
 
 /**
  * 建議回話的行內編輯器 ＋ 送出鈕（規格 §9.2）。
@@ -13,7 +13,7 @@ export function DraftReplyEditor({ onRequestSend }: { onRequestSend: () => void 
   const replyText = useDraftStore((s) => s.replyText)
   const setReplyText = useDraftStore((s) => s.setReplyText)
   const streaming = useDraftStore((s) => s.streaming)
-  const sending = useDraftStore((s) => s.sending)
+  const sending = useDraftStore(selectSending)
 
   return (
     // 與〈脈絡分析〉同一個卡片語法：標題與主要動作都在標頭帶裡。

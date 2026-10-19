@@ -1,3 +1,4 @@
+import type { ActiveDraftScope } from '@/store/draft'
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -9,6 +10,11 @@ import { useMentionsStore } from '@/store/mentions'
 import { useReplySettingsStore } from '@/store/replySettings'
 import { useSpacesStore } from '@/store/spaces'
 import type { Mention, SseMeta } from '@/lib/types'
+import { api, ApiError } from '@/lib/api'
+
+function draftScope(mentionId: number): ActiveDraftScope {
+  return { mentionId, epoch: Symbol('fixture'), referenceSpaceIds: [], codeRefs: [], codeTerms: '', referenceSearch: '', operation: null }
+}
 
 /**
  * 設計規格 §15.4 的第 1 條：送出流程。
@@ -56,9 +62,6 @@ function seedStores() {
   useSpacesStore.setState({ items: [] })
   useMentionsStore.setState({ items: [], mergeIds: [], selectedId: 45, external: null })
   useDraftStore.setState({
-    referenceSpaceIds: [],
-    codeRefs: [],
-    referenceSearch: '',
     refLimitError: null,
     streaming: false,
     raw: '### ✍️ 建議回話\n這邊我確認過了。',
@@ -67,8 +70,8 @@ function seedStores() {
     polish: null,
     replyText: '這邊我確認過了。',
     replyEdited: false,
-    sending: false,
-    mentionId: 45,
+    sendingMentionIds: [],
+    active: { ...draftScope(45), referenceSpaceIds: [], codeRefs: [], referenceSearch: '' }
   })
 }
 
@@ -97,7 +100,14 @@ async function openConfirm() {
   return screen.findByRole('dialog')
 }
 
+const ORIGINAL_DRAFT = useDraftStore.getState()
+const ORIGINAL_MENTIONS = useMentionsStore.getState()
+
 beforeEach(() => {
+  vi.restoreAllMocks()
+  useDraftStore.setState(ORIGINAL_DRAFT)
+  useMentionsStore.setState(ORIGINAL_MENTIONS)
+  vi.spyOn(api, 'storedDraft').mockRejectedValue(new ApiError(404, 'DRAFT_NOT_FOUND', '無草稿'))
   window.history.replaceState(null, '', '#/mentions/45')
   seedStores()
 })
@@ -118,7 +128,9 @@ describe('送出流程：什麼時候送不出去', () => {
   })
 
   it('送出進行中送不出去（避免連按兩次送兩則）', () => {
-    useDraftStore.setState({ sending: true })
+    useDraftStore.setState({
+      sendingMentionIds: [45]
+    })
     renderWorkspace()
 
     expect(sendButton()).toBeDisabled()
@@ -203,7 +215,7 @@ describe('送出的結果', () => {
 
   it('正對照：送出成功會關掉對話框並標記已處理', async () => {
     const resolved: Mention = { ...MENTION, state: 'resolved', resolved_at: '2026-09-10T05:00:00Z' }
-    const send = vi.fn().mockResolvedValue([resolved])
+    const send = vi.fn().mockResolvedValue({ mentions: [resolved], scopeEpoch: useDraftStore.getState().active?.epoch })
     useDraftStore.setState({ send })
     const applyResolvedMany = vi.fn()
     useMentionsStore.setState({ applyResolvedMany })
@@ -217,12 +229,16 @@ describe('送出的結果', () => {
   })
 
   it('送出中確認鈕會鎖住（連按兩次不會送兩則）', async () => {
-    useDraftStore.setState({ sending: false })
+    useDraftStore.setState({
+      sendingMentionIds: []
+    })
     renderWorkspace()
     const dialog = await openConfirm()
 
     // 進入送出中：確認與取消都要鎖，不然對話框關掉、請求還在飛
-    useDraftStore.setState({ sending: true })
+    useDraftStore.setState({
+      sendingMentionIds: [45]
+    })
 
     await waitFor(() =>
       expect(within(dialog).getByRole('button', { name: '確認送出' })).toBeDisabled(),
@@ -320,12 +336,14 @@ describe('產生鈕', () => {
 
 describe('Reference Space 與參考專案的控件', () => {
   it('已勾選數量與清空鈕', async () => {
-    useDraftStore.setState({ referenceSpaceIds: ['spaces/a', 'spaces/b'] })
+    useDraftStore.setState({
+      active: { ...draftScope(45), referenceSpaceIds: ['spaces/a', 'spaces/b'] }
+    })
     renderWorkspace()
 
     expect(screen.getByText('已勾選 2')).toBeInTheDocument()
     await userEvent.click(screen.getAllByRole('button', { name: '清空' })[0])
-    expect(useDraftStore.getState().referenceSpaceIds).toEqual([])
+    expect(useDraftStore.getState().active?.referenceSpaceIds).toEqual([])
   })
 
   it('**抓取則數的錯誤訊息是 role="alert" 並被輸入框指名**', () => {
@@ -365,7 +383,9 @@ describe('手動指定檢索關鍵字（ADR-0006 的逃生門）', () => {
   it('**沒勾任何專案時不出現這個輸入框**', () => {
     // 沒勾專案的話後端根本不會搜，多一個沒作用的輸入框只會讓人困惑
     seedCodeProject()
-    useDraftStore.setState({ codeRefs: [] })
+    useDraftStore.setState({
+      active: { ...draftScope(45), codeRefs: [] }
+    })
     renderWorkspace()
 
     expect(termsBox()).toBeNull()
@@ -373,7 +393,9 @@ describe('手動指定檢索關鍵字（ADR-0006 的逃生門）', () => {
 
   it('勾了專案才出現，並說明留空的行為', () => {
     seedCodeProject()
-    useDraftStore.setState({ codeRefs: [{ project_id: 3, environment: 'production' }] })
+    useDraftStore.setState({
+      active: { ...draftScope(45), codeRefs: [{ project_id: 3, environment: 'production' }] }
+    })
     renderWorkspace()
 
     expect(termsBox()).toBeInTheDocument()
@@ -382,12 +404,14 @@ describe('手動指定檢索關鍵字（ADR-0006 的逃生門）', () => {
 
   it('**打字之後回顯切出來的關鍵字**（打成全角逗號的人才看得出來）', async () => {
     seedCodeProject()
-    useDraftStore.setState({ codeRefs: [{ project_id: 3, environment: 'production' }] })
+    useDraftStore.setState({
+      active: { ...draftScope(45), codeRefs: [{ project_id: 3, environment: 'production' }] }
+    })
     renderWorkspace()
 
     await userEvent.type(termsBox()!, 'sendPush, retryCount')
 
-    expect(useDraftStore.getState().codeTerms).toBe('sendPush, retryCount')
+    expect(useDraftStore.getState().active?.codeTerms).toBe('sendPush, retryCount')
     expect(
       screen.getByText(/會用這 2 個關鍵字搜，取代系統自動抽的：sendPush、retryCount/),
     ).toBeInTheDocument()
@@ -396,8 +420,8 @@ describe('手動指定檢索關鍵字（ADR-0006 的逃生門）', () => {
   it('串流中不讓改', () => {
     seedCodeProject()
     useDraftStore.setState({
-      codeRefs: [{ project_id: 3, environment: 'production' }],
       streaming: true,
+      active: { ...draftScope(45), codeRefs: [{ project_id: 3, environment: 'production' }] }
     })
     renderWorkspace()
 
@@ -462,7 +486,13 @@ describe('讀回既有草稿', () => {
 
   /** 清成「什麼都還沒有」，才看得出來是讀回來的。 */
   function seedEmptyDraft() {
-    useDraftStore.setState({ raw: '', replyText: '', mentionId: null, meta: null, polish: null })
+    useDraftStore.setState({
+      raw: '',
+      replyText: '',
+      meta: null,
+      polish: null,
+      active: null
+    })
   }
 
   function renderWith(mention: Mention) {
@@ -479,9 +509,9 @@ describe('讀回既有草稿', () => {
       useDraftStore.setState({
         raw: STORED.content_md,
         replyText: STORED.content_md,
-        mentionId: id,
         restored: true,
         restoredAt: STORED.created_at,
+        active: draftScope(id)
       })
       return true
     })
@@ -493,7 +523,7 @@ describe('讀回既有草稿', () => {
     expect(await screen.findByText(/這是三天前存下來的版本/)).toBeInTheDocument()
   })
 
-  it('正對照：沒有 has_draft 就不去讀（多數 Mention 都沒有草稿）', async () => {
+  it('沒有 has_draft 仍嘗試還原，存在性由 API 判斷', async () => {
     seedEmptyDraft()
     const loadStored = vi.fn(async () => false)
     useDraftStore.setState({ loadStored })
@@ -501,16 +531,16 @@ describe('讀回既有草稿', () => {
     renderWith({ ...MENTION, has_draft: false })
 
     await waitFor(() => expect(screen.getByText(/勾好 Reference Space/)).toBeInTheDocument())
-    expect(loadStored).not.toHaveBeenCalled()
+    expect(loadStored).toHaveBeenCalledWith(45)
   })
 
   it('**還原的草稿要看得出是舊的，並說出產生時間**', () => {
     useDraftStore.setState({
       raw: STORED.content_md,
       replyText: STORED.content_md,
-      mentionId: 45,
       restored: true,
       restoredAt: STORED.created_at,
+      active: draftScope(45)
     })
     renderWith(MENTION)
 
@@ -524,9 +554,9 @@ describe('讀回既有草稿', () => {
     useDraftStore.setState({
       raw: STORED.content_md,
       replyText: STORED.content_md,
-      mentionId: 45,
       restored: false,
       restoredAt: null,
+      active: draftScope(45)
     })
     renderWith(MENTION)
 
@@ -546,10 +576,10 @@ describe('還原提示要說對「證據全不全」', () => {
     useDraftStore.setState({
       raw: '### ✍️ 建議回話\n內容',
       replyText: '內容',
-      mentionId: 45,
       restored: true,
       restoredAt: '2026-09-08T01:20:41Z',
       meta: meta as never,
+      active: draftScope(45)
     })
     return render(
       <RouterProvider>
@@ -654,4 +684,39 @@ describe('設定側欄的自動收合', () => {
 
     expect(expandButton()).toHaveAttribute('aria-expanded', 'false')
   })
+})
+
+it('同一 Mention 切頁籤保留 scope、文字與串流', () => {
+  useDraftStore.setState({ streaming: true, raw: '串流中的文字' })
+  const epoch = useDraftStore.getState().active?.epoch
+  const view = renderWorkspace()
+  view.rerender(<RouterProvider><DraftReplyWorkspace mention={MENTION} active={false} /></RouterProvider>)
+  view.rerender(<RouterProvider><DraftReplyWorkspace mention={MENTION} active /></RouterProvider>)
+  expect(useDraftStore.getState().active?.epoch).toBe(epoch)
+  expect(useDraftStore.getState()).toMatchObject({ raw: '串流中的文字', streaming: true })
+  expect(api.storedDraft).not.toHaveBeenCalled()
+})
+
+it('A 舊送出完成仍更新 A，但不能關閉 B 的新確認框', async () => {
+  let resolve!: (value: Awaited<ReturnType<typeof api.sendReply>>) => void
+  vi.spyOn(api, 'sendReply').mockImplementation(() => new Promise((yes) => { resolve = yes }))
+  const updated = { ...MENTION, state: 'resolved' as const }
+  useMentionsStore.setState({ items: [MENTION, { ...MENTION, id: 46 }, { ...MENTION, id: 47 }], counts: { pending: 3, resolved: 0 }, mergeIds: [45] })
+  const view = renderWorkspace()
+  const first = await openConfirm()
+  await userEvent.click(within(first).getByRole('button', { name: '確認送出' }))
+  const next = { ...MENTION, id: 46, text: '合成問題 B' }
+  view.rerender(<RouterProvider><DraftReplyWorkspace mention={next} /></RouterProvider>)
+  expect(screen.queryByRole('dialog')).toBeNull()
+  act(() => {
+    useDraftStore.setState({ raw: '### ✍️ 建議回話\nB', replyText: 'B' })
+    useMentionsStore.getState().setMergeIds([46, 47])
+  })
+  const second = await openConfirm()
+  expect(within(second).getByText('B', { exact: true })).toBeInTheDocument()
+  await act(async () => { resolve({ mentions: [updated] } as never) })
+  expect(useMentionsStore.getState().items.find((item) => item.id === 45)?.state).toBe('resolved')
+  expect(useMentionsStore.getState().mergeIds).toEqual([46, 47])
+  expect(screen.getByRole('dialog')).toBeInTheDocument()
+  expect(within(screen.getByRole('dialog')).getByText('B', { exact: true })).toBeInTheDocument()
 })
