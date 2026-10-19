@@ -1,0 +1,10 @@
+{"case_id":"done_not_deployed","claims":[{"claim_id":"c1","decision":"qualify","relation":"insufficient","currency":"unknown","scope":"mismatch","references":[{"evidence_id":"e1","lines":[1,2]}]}]}
+{"case_id":"done_and_verified","claims":[{"claim_id":"c1","decision":"assert","relation":"supported","currency":"current","scope":"match","references":[{"evidence_id":"e1","lines":[1,2]}]}]}
+{"case_id":"merged_not_deployed","claims":[{"claim_id":"c1","decision":"qualify","relation":"contradicted","currency":"current","scope":"match","references":[{"evidence_id":"e1","lines":[1,2]}]}]}
+{"case_id":"merged_and_deployed","claims":[{"claim_id":"c1","decision":"assert","relation":"supported","currency":"current","scope":"match","references":[{"evidence_id":"e1","lines":[1,2]}]}]}
+{"case_id":"uat_not_production","claims":[{"claim_id":"c1","decision":"qualify","relation":"insufficient","currency":"current","scope":"mismatch","references":[{"evidence_id":"e1","lines":[1,2]}]}]}
+{"case_id":"production_timeout","claims":[{"claim_id":"c1","decision":"assert","relation":"supported","currency":"current","scope":"match","references":[{"evidence_id":"e1","lines":[1,2]}]}]}
+{"case_id":"deployment_rolled_back","claims":[{"claim_id":"c1","decision":"qualify","relation":"contradicted","currency":"superseded","scope":"match","references":[{"evidence_id":"e1","lines":[1,2]}]}]}
+{"case_id":"deployment_still_current","claims":[{"claim_id":"c1","decision":"assert","relation":"supported","currency":"current","scope":"match","references":[{"evidence_id":"e1","lines":[1,2]}]}]}
+{"case_id":"planned_not_guaranteed","claims":[{"claim_id":"c1","decision":"qualify","relation":"insufficient","currency":"current","scope":"match","references":[{"evidence_id":"e1","lines":[1,2]}]}]}
+{"case_id":"explicit_guarantee","claims":[{"claim_id":"c1","decision":"assert","relation":"supported","currency":"current","scope":"match","references":[{"evidence_id":"e1","lines":[1,2]}]}]}
