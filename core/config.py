@@ -413,3 +413,5 @@ def ensure_data_dir() -> str:
     """建立資料目錄（含 0700 權限），回傳路徑。"""
     os.makedirs(DATA_DIR, mode=0o700, exist_ok=True)
     return DATA_DIR
+
+PROJECT_CONTEXT_ENABLED = os.environ.get("CHATPULSE_PROJECT_CONTEXT_ENABLED", "").lower() in ("1", "true")

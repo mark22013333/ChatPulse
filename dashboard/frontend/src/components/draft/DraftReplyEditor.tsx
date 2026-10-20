@@ -12,6 +12,7 @@ import { useDraftStore, selectSending } from '@/store/draft'
 export function DraftReplyEditor({ onRequestSend }: { onRequestSend: () => void }) {
   const replyText = useDraftStore((s) => s.replyText)
   const setReplyText = useDraftStore((s) => s.setReplyText)
+  const projectBlocked = useDraftStore((s) => s.projectStatus !== null && s.projectStatus !== 'complete')
   const streaming = useDraftStore((s) => s.streaming)
   const sending = useDraftStore(selectSending)
 
@@ -30,7 +31,7 @@ export function DraftReplyEditor({ onRequestSend }: { onRequestSend: () => void 
           onClick={onRequestSend}
           // 三個條件各有理由：串流中送出的是半截草稿；送出中連按會送兩則；
           // 空白內容送出去是一則空訊息。`DraftReplyWorkspace.test.tsx` 各有一條守著。
-          disabled={streaming || sending || !replyText.trim()}
+          disabled={streaming || sending || projectBlocked || !replyText.trim()}
         >
           <SendIcon />
           送出回話

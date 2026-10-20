@@ -6,6 +6,8 @@ import type {
   CodeProject,
   Me,
   Preferences,
+  ProjectProfile,
+  ProjectSource,
   Mention,
   MentionRefreshResponse,
   MentionState,
@@ -316,10 +318,18 @@ export const api = {
    * 沒有草稿時後端回 404 `DRAFT_NOT_FOUND`，那是**正常狀態**不是錯誤
    * （多數 Mention 本來就沒產過草稿），呼叫端要自己吞掉。
    */
+  projectProfiles: () => request<{ profiles: ProjectProfile[] }>('/project-profiles'),
+  projectOptIn: (enabled: boolean) => request<Preferences>('/preferences/project-context', {
+    method: 'PATCH', body: JSON.stringify({ enabled }),
+  }),
+  saveProjectProfile: (body: { name: string; sources: ProjectSource[]; revision?: number }, id?: number) =>
+    request<ProjectProfile>(id ? `/project-profiles/${id}` : '/project-profiles', {
+      method: id ? 'PUT' : 'POST', body: JSON.stringify(body),
+    }),
   storedDraft: (id: number) => request<StoredDraft>(`/mentions/${id}/draft`),
   sendReply: (
     id: number,
-    body: { text: string; draft_id?: number | null; merge_mention_ids?: number[] },
+    body: { text: string; draft_id?: number | null; merge_mention_ids?: number[]; scope_digest?: string },
   ) => post<ReplyResponse>(`/mentions/${id}/reply`, body as unknown as Json),
 
   // ── 參考專案（ADR-0006）────────────────────────────────

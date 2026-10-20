@@ -18,12 +18,13 @@ import dataclasses
 import json
 import logging
 import os
+import sqlite3
 import sys
 import threading
 import time
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Generator, List, Optional, Tuple
+from typing import Any, Dict, Generator, List, Literal, Optional, Tuple
 
 from fastapi import Depends, FastAPI, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -54,6 +55,7 @@ from core import (
     db,
     directory,
     draft_context,
+    project_context,
     identity,
     persona_sources,
     personas,
@@ -83,6 +85,7 @@ from core.errors import (
     MentionNotFound,
     NotAuthenticated,
     PersonaInvalid,
+    ProjectContextStale,
     PersonaNotFound,
     ReplyPromptNotFound,
     RouteNotFound,
@@ -844,6 +847,7 @@ def get_me(viewer: Dict[str, Any] = ViewerDep):
     stats = state.get("last_run_stats")
     return {
         "viewer": _viewer_public(viewer),
+        "features": {"project_context": cfg.PROJECT_CONTEXT_ENABLED},
         "scopes": scopes,
         "has_identity_scope": identity.has_identity_scope(scopes),
         "preferences": repo.get_preferences(viewer["id"]),
@@ -899,6 +903,55 @@ class PreferencesRequest(BaseModel):
     #: 那一個供應商的偏好；整個欄位沒帶＝不動既有偏好（同其他欄位）。
     #: 值**不驗白名單**：白名單只是常用值，「也能自己打字自訂」正是這個功能要的。
     default_models: Optional[Dict[str, Optional[str]]] = None
+
+
+def require_project_feature(viewer_id: int, *, opt_in: bool = True) -> None:
+    if not cfg.PROJECT_CONTEXT_ENABLED or (opt_in and not repo.get_preferences(viewer_id).get("project_context_opt_in")):
+        raise InvalidParameter("專案脈絡尚未啟用")
+
+
+class ProjectProfileRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=120)
+    sources: List[Dict[str, Any]] = Field(min_length=1, max_length=project_context.MAX_SOURCES)
+    revision: Optional[int] = Field(default=None, gt=0)
+
+
+class ProjectOptInRequest(BaseModel):
+    enabled: bool
+
+
+@app.patch("/api/v1/preferences/project-context")
+def project_opt_in(req: ProjectOptInRequest, viewer: Dict[str, Any] = ViewerDep):
+    require_project_feature(viewer["id"], opt_in=False)
+    return repo.set_project_context_opt_in(viewer["id"], req.enabled)
+
+
+@app.get("/api/v1/project-profiles")
+def list_project_profiles(viewer: Dict[str, Any] = ViewerDep):
+    require_project_feature(viewer["id"])
+    return {"profiles": repo.list_project_profiles(viewer["id"])}
+
+
+@app.post("/api/v1/project-profiles")
+def create_project_profile(req: ProjectProfileRequest, viewer: Dict[str, Any] = ViewerDep):
+    return write_project_profile(None, req, viewer)
+
+
+@app.put("/api/v1/project-profiles/{profile_id}")
+def update_project_profile(profile_id: int, req: ProjectProfileRequest, viewer: Dict[str, Any] = ViewerDep):
+    return write_project_profile(profile_id, req, viewer)
+
+
+def write_project_profile(profile_id: Optional[int], req: ProjectProfileRequest, viewer: dict):
+    require_project_feature(viewer["id"])
+    try:
+        return repo.save_project_profile(viewer["id"], req.name, req.sources,
+                                         profile_id=profile_id, revision=req.revision)
+    except ValueError as exc:
+        raise ProjectContextStale(str(exc)) from exc
+    except sqlite3.IntegrityError as exc:
+        raise InvalidParameter("專案名稱重複或來源不屬於目前 Viewer") from exc
 
 
 # ==========================================================================
@@ -1099,7 +1152,11 @@ def reverify_code_project(project_id: int, viewer: Dict[str, Any] = ViewerDep):
 
 @app.delete("/api/v1/code-projects/{project_id}")
 def remove_code_project(project_id: int, viewer: Dict[str, Any] = ViewerDep):
-    if not repo.delete_code_project(viewer["id"], project_id):
+    try:
+        deleted = repo.delete_code_project(viewer["id"], project_id)
+    except sqlite3.IntegrityError as exc:
+        raise InvalidParameter("此 Git 登錄仍被專案來源使用，請先更新專案來源") from exc
+    if not deleted:
         raise CodeProjectNotFound(f"找不到參考專案 {project_id}")
     return {"deleted": True}
 
@@ -2585,7 +2642,23 @@ class CodeRefRequest(BaseModel):
     paths: List[str] = Field(default_factory=list)
 
 
+class ProjectSourceChoice(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    binding_id: str
+    use: Literal["metadata_only", "reply_context"] = "metadata_only"
+
+
+class ProjectSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    profile_id: int = Field(gt=0)
+    revision: int = Field(gt=0)
+    sources: List[ProjectSourceChoice]
+    target_space_id: str
+    target_thread_name: Optional[str] = None
+
+
 class DraftRequest(BaseModel):
+    project_selection: Optional[ProjectSelection] = None
     # 7.3：不自動選擇 Reference Space，預設空陣列
     reference_space_ids: List[str] = Field(default_factory=list)
     provider: Optional[str] = None
@@ -2957,21 +3030,7 @@ def resolve_reply_options(
 
 @app.get("/api/v1/mentions/{mention_id}/draft")
 def get_stored_draft(mention_id: int, viewer: Dict[str, Any] = ViewerDep):
-    """取回這一則**已經存下來**的最新草稿。
-
-    為什麼需要這個端點：草稿一直都有存進 `draft_replies`，但在這之前沒有
-    任何路徑把它讀回來——`repo.latest_draft()` 寫好了卻零呼叫者。於是重新
-    整理、切回收件匣再點進來、或隔天再開，畫面都是空的，看起來像草稿沒了。
-    實際上它在資料庫裡（本機實測 53 筆）。
-
-    **`generation_config` 不等於產生當下的完整 meta。** 存下來的只有
-    `{provider, model} ＋ reply_meta ＋ polish_meta`——也就是證據欄的
-    「生成」「回話設定」「潤稿」三列。脈絡（讀了幾則、涵蓋範圍、時間範圍）、
-    參考 Space、程式碼佐證、合併回覆對象**沒有存**，所以還原不了。
-    前端要把這件事明講（見 `toEvidence` 的 `restored`），不可以讓一份
-    只有一半證據的草稿看起來像完整的——這個分支整個設計前提就是
-    「證據要對得上」，半套的證據比沒有更糟。
-    """
+    """讀回原始 snapshot，不用目前設定重建來源或恢復本題同意。"""
     viewer_id = viewer["id"]
     if not repo.get_mention(viewer_id, mention_id):
         raise MentionNotFound()
@@ -2988,7 +3047,14 @@ def get_stored_draft(mention_id: int, viewer: Dict[str, Any] = ViewerDep):
         log.warning("Draft %s 的 generation_config_json 不是合法 JSON", row.get("id"))
         config = {}
 
+    scope = (config.get("meta") or {}).get("project_scope")
+    scope_state = None
+    if scope:
+        scope_state = "current" if repo.project_scope_current(
+            viewer_id, repo.get_mention(viewer_id, mention_id), scope
+        ) else "stale"
     return {
+        "scope_state": scope_state,
         "draft_id": row.get("id"),
         "mention_id": mention_id,
         "content_md": row.get("content_md") or "",
@@ -3012,11 +3078,33 @@ def draft_stream(
     if not mention:
         raise MentionNotFound()
 
+    approved = None
+    if req.project_selection is not None:
+        require_project_feature(viewer_id)
+        if req.merge_mention_ids or req.reference_space_ids or req.code_refs:
+            raise InvalidParameter("專案範圍不可混用合併回覆或舊版來源欄位")
+        if len(req.code_terms) > cfg.CODE_MAX_TERMS:
+            raise InvalidParameter("搜尋詞超過上限")
+        try:
+            approved = repo.admit_project_scope(
+                viewer_id, mention_id, req.project_selection.model_dump(), req.limit,
+                req.code_terms, cfg.CODE_MAX_PROJECTS_PER_DRAFT,
+            )
+        except ValueError as exc:
+            raise ProjectContextStale(str(exc)) from exc
+        if approved.git_refs and not cfg.CODE_ENABLED:
+            raise InvalidParameter("Git 來源功能尚未啟用")
+    project_scope = approved.scope if approved else None
+
+    def check_project_scope():
+        if project_scope and not repo.project_scope_current(viewer_id, mention, project_scope):
+            raise ProjectContextStale()
+
     for sid in req.reference_space_ids:
         if not sid.startswith("spaces/"):
             raise InvalidParameter(f"reference_space_ids 含非法值 {sid!r}")
 
-    ref_ids = list(dict.fromkeys(req.reference_space_ids))  # 去重、保留順序
+    ref_ids = list(approved.chat_ids) if approved else list(dict.fromkeys(req.reference_space_ids))  # 去重、保留順序
     limit = req.limit
     providers.resolve_name(req.provider)
     req_provider = req.provider
@@ -3026,7 +3114,7 @@ def draft_stream(
     # 在進 generator 之前驗證：SSE 一旦開始就是 HTTP 200，之後的錯誤只能變成
     # error 事件，使用者比較難注意到。參數錯誤要用正常的 4xx 擋在門外。
     targets = resolve_merge_targets(viewer_id, mention, req.merge_mention_ids)
-    resolved_code_refs = resolve_code_refs(viewer_id, req.code_refs)
+    resolved_code_refs = list(approved.git_refs) if approved else resolve_code_refs(viewer_id, req.code_refs)
     # 回覆設定（ADR-0007）也在這裡解析：不合法的 tone、不存在的 Persona／
     # preset、以及「要 Sepia 但規則沒安裝」都要變成 4xx，不是 error 事件。
     reply_options, sepia_enabled, reply_meta = resolve_reply_options(viewer_id, req)
@@ -3041,11 +3129,15 @@ def draft_stream(
         # 出錯」會讓 finally 自己噴 NameError，把真正的錯誤蓋掉。
         meta_event: Optional[Dict[str, Any]] = None
         try:
+            check_project_scope()
             client = get_client(viewer_id)
             ai = get_provider(viewer_id, provider_name, model=req_model)
 
             # 被 @ 的那則訊息本身；多選合併時還有其他幾則要一起回
-            anchor_msgs = [client.get_message(t["message_name"]) for t in targets]
+            anchor_msgs = []
+            for target in targets:
+                check_project_scope()
+                anchor_msgs.append(client.get_message(target["message_name"]))
             mention_msg = next(
                 (m for m in anchor_msgs if m.get("name") == mention["message_name"]),
                 anchor_msgs[0],
@@ -3067,6 +3159,7 @@ def draft_stream(
                 return name_resolver_for(viewer)
 
             resolve = name_resolver_for(viewer)
+            check_project_scope()
             ctx = draft_context.build(
                 client,
                 space_id=mention["space_id"],
@@ -3093,6 +3186,7 @@ def draft_stream(
             # Reference Space（7.1）
             ref_blocks = []
             for sid in ref_ids:
+                check_project_scope()
                 msgs = client.fetch_recent_messages(sid, limit=limit)
                 learn_names(msgs)
                 text = format_conversation(msgs, name_resolver_for(viewer))
@@ -3145,9 +3239,12 @@ def draft_stream(
                 if resolved_code_refs
                 else []
             )
-            code_blocks, code_skipped = collect_code_context(
-                resolved_code_refs, code_terms
-            )
+            code_blocks, code_skipped = [], []
+            for code_ref in resolved_code_refs:
+                check_project_scope()
+                blocks, skipped = collect_code_context([code_ref], code_terms)
+                code_blocks.extend(blocks)
+                code_skipped.extend(skipped)
 
             # 先組好再送，因為**同一份**要一起存進 `generation_config_json`。
             #
@@ -3213,8 +3310,13 @@ def draft_stream(
                     # 讓 Viewer 在模型開口之前就看得到「系統以為我選了什麼」。
                     "reply": reply_meta,
             }
+            if project_scope:
+                meta_event["project_scope"] = project_scope
+                meta_event["semantic_status"] = "unverified"
+            check_project_scope()
             yield sse(meta_event)
 
+            check_project_scope()
             prompt = prompts.draft_reply_prompt(
                 anchor_text=ctx.anchor_text or mention_text,
                 mention_sender=mention_sender,
@@ -3226,9 +3328,15 @@ def draft_stream(
                 reference_blocks=ref_blocks,
                 code_blocks=code_blocks or None,
                 reply_options=reply_options,
+                project_context=({
+                    "name": project_scope["profile_name"],
+                    "environments": [ref[1] for ref in approved.git_refs],
+                } if project_scope else None),
             )
 
+            check_project_scope()
             for chunk in ai.stream_text(prompt, operation="draft_reply", images=images):
+                check_project_scope()
                 collected.append(chunk)
                 yield sse({"type": "chunk", "text": chunk})
 
@@ -3291,21 +3399,29 @@ def draft_stream(
                 # 平鋪版本，讀回來時還得靠它們，不能因為有了 meta 就拿掉。
                 "meta": meta_event,
             }
-            draft_id = (
-                repo.create_draft(mention_id, content, generation_config)
-                if content.strip()
-                else None
-            )
+            check_project_scope()
+            if project_scope:
+                generation_config.update(project_status="complete", semantic_status="unverified")
+                result = repo.create_project_draft(viewer_id, mention_id, content, generation_config) if content.strip() else None
+                saved = True
+                if result is None or result["status"] != "complete":
+                    raise ProjectContextStale()
+                draft_id = result["draft_id"]
+            else:
+                draft_id = repo.create_draft(mention_id, content, generation_config) if content.strip() else None
             saved = True
             # `reply` 帶潤稿後的建議回話全文。這不是 UX 裝飾——潤稿後 DB 存的
             # 與前端串流累積的會不一致，而使用者按「送出」時送的是前端那一份。
             # 沒有這個欄位，開了 Sepia 就會把**未潤稿**的版本送到 Google Chat。
+            check_project_scope()
             yield sse(
                 {
                     "type": "done",
                     "draft_id": draft_id,
                     "reply": final_reply,
                     "polish": polish_meta or None,
+                    "scope_digest": project_scope["digest"] if project_scope else None,
+                    "project_status": "complete" if project_scope else None,
                 }
             )
         except ChatPulseError as exc:
@@ -3331,8 +3447,13 @@ def draft_stream(
                 # 既有邏輯畫成「沒有保存」。
                 if meta_event is not None:
                     partial_config["meta"] = meta_event
+                if project_scope:
+                    partial_config.update(project_status="partial", semantic_status="unverified")
+                    if meta_event is None:
+                        partial_config["meta"] = {"type": "meta", "project_scope": project_scope}
                 save_partial(
-                    lambda text: repo.create_draft(mention_id, text, partial_config),
+                    (lambda text: repo.create_project_draft(viewer_id, mention_id, text, partial_config))
+                    if project_scope else (lambda text: repo.create_draft(mention_id, text, partial_config)),
                     "草稿",
                     "".join(collected),
                 )
@@ -3342,6 +3463,7 @@ def draft_stream(
 
 class ReplyRequest(BaseModel):
     text: str
+    scope_digest: Optional[str] = None
     draft_id: Optional[int] = None
     #: 這則回話同時回掉的其他 Mention（草稿的 meta.answering 帶回來的）。
     #: 送出成功後一起標成已處理。
@@ -3372,6 +3494,26 @@ def reply_to_mention(
     mention = repo.get_mention(viewer_id, mention_id)
     if not mention:
         raise MentionNotFound()
+
+    if req.scope_digest and not req.draft_id:
+        raise ProjectContextStale("專案草稿必須指定 draft_id")
+    if req.draft_id:
+        row = repo.get_owned_draft(viewer_id, mention_id, req.draft_id)
+        if not row:
+            raise ProjectContextStale("草稿不屬於目前 Viewer 與 Mention")
+        config = json.loads(row.get("generation_config_json") or "{}")
+        scope = (config.get("meta") or {}).get("project_scope")
+        if scope:
+            if (not cfg.PROJECT_CONTEXT_ENABLED
+                or not repo.get_preferences(viewer_id).get("project_context_opt_in")
+                or req.merge_mention_ids or not req.scope_digest
+                or req.scope_digest != scope.get("digest")
+                or config.get("project_status") != "complete"
+                or config.get("partial")
+                or not repo.project_scope_current(viewer_id, mention, scope)):
+                raise ProjectContextStale()
+        elif req.scope_digest:
+            raise ProjectContextStale()
 
     targets = resolve_merge_targets(viewer_id, mention, req.merge_mention_ids)
 

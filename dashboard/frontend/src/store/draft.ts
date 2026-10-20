@@ -1,10 +1,11 @@
 import { create } from 'zustand'
 import { api, ApiError, errorMessage, LIMIT_DEFAULT, streamUrls } from '@/lib/api'
+import { useAuthStore } from '@/store/auth'
 import { parseCodeTerms } from '@/lib/codeTerms'
 import { streamSse } from '@/lib/sse'
 import { streamErrorMessage } from '@/lib/aiErrors'
 import { modelRequestField, providerRequestField } from '@/store/providers'
-import type { CodeEnvironment, DraftPolishMeta, Mention, SseMeta } from '@/lib/types'
+import type { CodeEnvironment, DraftPolishMeta, Mention, SseMeta, ProjectChoice, ProjectProfile } from '@/lib/types'
 
 /** 建議回話段落的標題（契約：`### ✍️ 建議回話`）。容忍 emoji 與空白差異。 */
 const REPLY_HEADING = /^#{2,4}\s*.*建議回話.*$/m
@@ -56,6 +57,7 @@ export interface CodeRefSelection {
 
 export interface ActiveDraftScope {
   mentionId: number
+  projectChoice?: ProjectChoice | null
   epoch: symbol
   referenceSpaceIds: string[]
   codeRefs: CodeRefSelection[]
@@ -88,6 +90,7 @@ interface DraftState {
   streaming: boolean
   raw: string
   meta: SseMeta | null
+  projectStatus: 'complete' | 'partial' | 'stale' | null
   draftId: number | null
   error: string | null
   /** 這次潤稿的結果（沒開潤稿時是 null）。UI 用它顯示「Sepia 有沒有生效」。 */
@@ -108,6 +111,9 @@ interface DraftState {
   replyEdited: boolean
 
   activateMention: (mentionId: number) => void
+  selectProject: (profile: ProjectProfile | null) => void
+  toggleProjectSource: (bindingId: string) => void
+  setProjectConsent: (consent: ProjectChoice['consent']) => void
 
   toggleReference: (spaceId: string) => void
   clearReferences: () => void
@@ -164,7 +170,7 @@ export const selectCodeRefs = (state: DraftState) => state.active?.codeRefs ?? E
 export const selectSending = (state: DraftState) => state.active !== null && state.sendingMentionIds.includes(state.active.mentionId)
 
 const EMPTY_OUTPUT = {
-  streaming: false, raw: '', meta: null, draftId: null, error: null,
+  streaming: false, raw: '', meta: null, draftId: null, error: null, projectStatus: null,
   polish: null, restored: false, restoredAt: null, replyText: '', replyEdited: false,
 }
 
@@ -189,8 +195,23 @@ export const useDraftStore = create<DraftState>((set, get) => {
     set({ active: { ...active, operation: { kind, id } } })
     return { epoch: active.epoch, operationId: id }
   }
-  const updateSources = (update: (scope: ActiveDraftScope) => Partial<ActiveDraftScope>) =>
-    set((state) => state.active ? { active: { ...state.active, ...update(state.active) } } : state)
+  const updateSources = (update: (scope: ActiveDraftScope) => Partial<ActiveDraftScope>, forceInvalidate = false) => {
+    const state = get()
+    if (!forceInvalidate && !state.active?.projectChoice && !state.meta?.project_scope) {
+      set((current) => current.active ? { active: { ...current.active, ...update(current.active) } } : current)
+      return
+    }
+    const oldController = controller
+    controller = null
+    set((state) => state.active ? {
+      ...EMPTY_OUTPUT,
+      active: { ...state.active, ...update(state.active), epoch: Symbol('selection'), operation: null },
+    } : state)
+    oldController?.abort()
+  }
+  const invalidateProject = () => {
+    if (get().active?.projectChoice || get().meta?.project_scope) updateSources(() => ({}))
+  }
 
   const activate = (mentionId: number) => {
     if (get().active?.mentionId === mentionId) return false
@@ -220,6 +241,21 @@ export const useDraftStore = create<DraftState>((set, get) => {
       if (activate(mentionId)) void get().loadStored(mentionId)
     },
 
+    selectProject: (profile) => updateSources(() => ({
+      projectChoice: profile ? { profile, approvedIds: [], consent: null } : null,
+      referenceSpaceIds: [], codeRefs: [],
+    }), true),
+    toggleProjectSource: (bindingId) => updateSources((scope) => ({
+      projectChoice: scope.projectChoice ? {
+        ...scope.projectChoice, consent: null,
+        approvedIds: scope.projectChoice.approvedIds.includes(bindingId)
+          ? scope.projectChoice.approvedIds.filter((id) => id !== bindingId)
+          : [...scope.projectChoice.approvedIds, bindingId],
+      } : null,
+    })),
+    setProjectConsent: (consent) => updateSources((scope) => ({
+      projectChoice: scope.projectChoice ? { ...scope.projectChoice, consent } : null,
+    })),
     toggleReference: (spaceId) => updateSources((scope) => ({
       referenceSpaceIds: scope.referenceSpaceIds.includes(spaceId)
         ? scope.referenceSpaceIds.filter((id) => id !== spaceId)
@@ -233,9 +269,10 @@ export const useDraftStore = create<DraftState>((set, get) => {
     })),
     clearCodeRefs: () => updateSources(() => ({ codeRefs: [] })),
     setCodeTerms: (codeTerms) => updateSources(() => ({ codeTerms })),
-    setReferenceSearch: (referenceSearch) => updateSources(() => ({ referenceSearch })),
+    setReferenceSearch: (referenceSearch) => set((state) => state.active ? { active: { ...state.active, referenceSearch } } : state),
 
     setRefLimit: (raw) => {
+      invalidateProject()
       const trimmed = raw.trim()
       if (trimmed === '') {
         set({ refLimit: Number.NaN, refLimitError: '請輸入抓取則數' })
@@ -253,11 +290,11 @@ export const useDraftStore = create<DraftState>((set, get) => {
       set({ refLimit: parsed, refLimitError: null })
     },
 
-    setToneId: (toneId) => set({ toneId }),
-    setPersonaId: (personaId) => set({ personaId }),
-    setCustomPrompt: (value) => set({ customPrompt: value }),
-    setCustomPromptId: (customPromptId) => set({ customPromptId }),
-    setSepiaEnabled: (sepiaEnabled) => set({ sepiaEnabled }),
+    setToneId: (toneId) => { invalidateProject(); set({ toneId }) },
+    setPersonaId: (personaId) => { invalidateProject(); set({ personaId }) },
+    setCustomPrompt: (value) => { invalidateProject(); set({ customPrompt: value }) },
+    setCustomPromptId: (customPromptId) => { invalidateProject(); set({ customPromptId }) },
+    setSepiaEnabled: (sepiaEnabled) => { invalidateProject(); set({ sepiaEnabled }) },
 
     setReplyText: (text) => set({ replyText: text, replyEdited: true }),
 
@@ -266,6 +303,16 @@ export const useDraftStore = create<DraftState>((set, get) => {
       const state = get()
       const { refLimit, refLimitError, toneId, personaId, customPrompt, customPromptId, sepiaEnabled } = state
       if (refLimitError || !Number.isInteger(refLimit) || !state.active) return
+      const choice = state.active.projectChoice
+      if (choice && (!useAuthStore.getState().me?.features?.project_context
+        || !useAuthStore.getState().me?.preferences.project_context_opt_in)) {
+        set({ error: '請先啟用專案脈絡' })
+        return
+      }
+      if (choice && (!choice.consent || mergeIds.some((id) => id !== mentionId))) {
+        set({ error: '請確認確切目標；專案範圍只支援單一 Mention' })
+        return
+      }
       const referenceSpaceIds = [...state.active.referenceSpaceIds]
       const codeRefs = state.active.codeRefs.map((ref) => ({ ...ref }))
       const codeTerms = state.active.codeTerms
@@ -274,7 +321,7 @@ export const useDraftStore = create<DraftState>((set, get) => {
       const runController = new AbortController()
       controller = runController
       const signal = runController.signal
-      commit(lease, () => ({ ...EMPTY_OUTPUT, streaming: true }))
+      commit(lease, () => ({ ...EMPTY_OUTPUT, streaming: true, projectStatus: choice ? 'partial' : null }))
 
       // 回覆設定一律「有值才送」：省略欄位代表「沿用 Viewer 偏好」，
       // 送 null 在後端是「清除偏好」的意思（只用在 PATCH /preferences），
@@ -297,10 +344,22 @@ export const useDraftStore = create<DraftState>((set, get) => {
         // provider 與 model 都是選填：選「自動」／「跟隨預設」時整個欄位不出現，
         // 交給伺服器解析。model 帶的是裸值，不是用量欄位那種帶前綴的識別字。
         {
-          reference_space_ids: referenceSpaceIds,
+          ...(choice ? {
+            project_selection: {
+              profile_id: choice.profile.id, revision: choice.profile.revision,
+              sources: choice.profile.sources.map((source) => ({
+                binding_id: source.id,
+                use: choice.approvedIds.includes(source.id) ? 'reply_context' : 'metadata_only',
+              })),
+              target_space_id: choice.consent?.spaceId,
+              target_thread_name: choice.consent?.threadName,
+            },
+          } : {
+            reference_space_ids: referenceSpaceIds,
+            merge_mention_ids: mergeIds.filter((id) => id !== mentionId),
+            code_refs: codeRefs,
+          }),
           limit: refLimit,
-          merge_mention_ids: mergeIds.filter((id) => id !== mentionId),
-          code_refs: codeRefs,
           ...providerRequestField(),
           ...modelRequestField(),
           ...replyFields,
@@ -318,6 +377,9 @@ export const useDraftStore = create<DraftState>((set, get) => {
             commit(lease, (state) => ({
               streaming: false,
               draftId: done.draft_id ?? null,
+              projectStatus: choice
+                ? (done.project_status === 'complete' && done.scope_digest === state.meta?.project_scope?.digest && done.draft_id ? 'complete' : 'partial')
+                : null,
               polish: done.polish ?? null,
               // `done.reply` 是潤稿後的版本。**必須採用它**，否則開了 Sepia
               // 之後畫面上是未潤稿的內容、資料庫是潤稿後的內容，而使用者
@@ -406,6 +468,9 @@ export const useDraftStore = create<DraftState>((set, get) => {
           meta,
           polish,
           draftId: stored.draft_id,
+          projectStatus: meta.project_scope
+            ? (stored.scope_state !== 'current' ? 'stale' : cfg.project_status === 'complete' ? 'complete' : 'partial')
+            : null,
           error: null,
           restored: true,
           restoredAt: stored.created_at,
@@ -420,12 +485,17 @@ export const useDraftStore = create<DraftState>((set, get) => {
     },
 
     send: async (mentionId) => {
-      const { active, replyText, draftId, meta, sendingMentionIds } = get()
+      const { active, replyText, draftId, meta, sendingMentionIds, projectStatus } = get()
       if (!active || active.mentionId !== mentionId) throw new Error('草稿與 Mention 不一致，請重新確認')
       if (sendingMentionIds.includes(mentionId)) throw new Error('這則 Mention 正在送出')
       if (!replyText.trim()) throw new Error('回話內容不可空白')
+      if (projectStatus !== null && (projectStatus !== 'complete' || !meta?.project_scope || !draftId)) {
+        throw new Error('專案草稿尚未完整產生或已失效，請重新產生')
+      }
+      if (meta?.project_scope && projectStatus !== 'complete') throw new Error('專案草稿無法送出')
       const scopeEpoch = active.epoch
-      const body = { text: replyText, draft_id: draftId, merge_mention_ids: answeringIds(meta, mentionId) }
+      const body = { text: replyText, draft_id: draftId, merge_mention_ids: answeringIds(meta, mentionId),
+        ...(meta?.project_scope ? { scope_digest: meta.project_scope.digest } : {}), }
       set({ sendingMentionIds: [...sendingMentionIds, mentionId], error: null })
       try {
         const result = await api.sendReply(mentionId, body)
