@@ -1,0 +1,12 @@
+{
+  "name": "chatpulse-agent-runtime-probe",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": {
+    "@agentclientprotocol/codex-acp": "2.2.2",
+    "@openai/codex": "0.163.0"
+  },
+  "overrides": {
+    "@openai/codex": "0.163.0"
+  }
+}
