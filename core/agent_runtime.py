@@ -8,6 +8,7 @@ from typing import Awaitable, Callable
 
 
 class RunState(str, Enum):
+    CLAIMED = "claimed"
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"

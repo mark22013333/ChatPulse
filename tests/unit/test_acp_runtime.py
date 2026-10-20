@@ -7,6 +7,7 @@ import sys
 import tempfile
 import shlex
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -115,6 +116,99 @@ class AcpRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(await first, Completed)
         with self.assertRaises(RuntimeRejected):
             app.run(lease, "合成提示")
+
+    async def test_cancelled_before_start_recovers_capacity_after_expiry_or_revoke(self):
+        for invalidation in ("expiry", "revoke"):
+            with self.subTest(invalidation=invalidation):
+                app = runtime()
+                now = [100]
+                with patch("core.acp_runtime.time", SimpleNamespace(monotonic=lambda: now[0], time=time.time)):
+                    tasks = []
+                    for _ in range(1024):
+                        lease = app.issue("viewer-a", SyntheticScope(), timeout=1)
+                        task = asyncio.create_task(app.run(lease, "合成提示"))
+                        task.cancel()
+                        tasks.append(task)
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    self.assertTrue(all(isinstance(result, asyncio.CancelledError) for result in results))
+                    with self.assertRaises(RuntimeRejected) as rejected:
+                        app.issue("viewer-a", SyntheticScope())
+                    self.assertEqual(rejected.exception.code, FailureCode.LIMIT)
+                    if invalidation == "expiry":
+                        now[0] = 102
+                    else:
+                        app.revoke_viewer("viewer-a")
+                        app.replace_credentials("viewer-a", CredentialSnapshot(
+                            "viewer-a", "subject-a", 2, time.time() + 300, "replacement-secret"))
+                    result = await app.run(app.issue("viewer-a", SyntheticScope()), "合成提示")
+                self.assertIsInstance(result, Completed)
+                self.assertTrue(result.cleanup.confirmed)
+
+    async def test_invalidated_claim_never_starts_broker_or_process_after_reclamation(self):
+        for docker in (False, True):
+            for invalidation in ("expiry", "revoke"):
+                with self.subTest(docker=docker, invalidation=invalidation):
+                    app = runtime()
+                    if docker:
+                        app = AgentRuntime(DockerProbe("/synthetic/docker", "sha256:" + "a" * 64,
+                                                       "unix:///synthetic.sock"))
+                        app.replace_credentials("viewer-a", CredentialSnapshot(
+                            "viewer-a", "subject-a", 1, time.time() + 300, "synthetic-secret"))
+                    now = [100]
+                    with patch("core.acp_runtime.time", SimpleNamespace(monotonic=lambda: now[0], time=time.time)):
+                        lease = app.issue("viewer-a", SyntheticScope(), timeout=1)
+                        pending = app.run(lease, "合成提示")
+                        if invalidation == "expiry":
+                            now[0] = 102
+                        else:
+                            app.revoke_viewer("viewer-a")
+                            app.replace_credentials("viewer-a", CredentialSnapshot(
+                                "viewer-a", "subject-a", 2, time.time() + 300, "replacement-secret"))
+                        app.issue("viewer-a", SyntheticScope())
+                        with patch.object(_SyntheticMcp, "start") as broker_start, \
+                                patch("core.acp_runtime.asyncio.create_subprocess_exec") as spawn:
+                            result = await pending
+                        broker_start.assert_not_awaited()
+                        spawn.assert_not_awaited()
+                    if invalidation == "expiry":
+                        self.assertIsInstance(result, Failed)
+                        self.assertEqual(result.code, FailureCode.DEADLINE)
+                    else:
+                        self.assertIsInstance(result, Cancelled)
+                    self.assertTrue(result.cleanup.confirmed)
+                    with self.assertRaises(RuntimeRejected):
+                        app.run(lease, "合成提示")
+
+    async def test_active_revoked_run_keeps_capacity_until_supervisor_cleanup(self):
+        app = runtime("hang")
+        app.replace_credentials("viewer-b", CredentialSnapshot(
+            "viewer-b", "subject-b", 1, time.time() + 300, "synthetic-secret-b"))
+        ready, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        cleanup = app._cleanup
+        async def emit(event):
+            ready.set()
+        async def delayed_cleanup(*args):
+            cleaning.set()
+            await release.wait()
+            return await cleanup(*args)
+        with patch.object(app, "_cleanup", side_effect=delayed_cleanup):
+            task = asyncio.create_task(app.run(app.issue("viewer-a", SyntheticScope()),
+                                              "合成提示", emit=emit))
+            try:
+                await asyncio.wait_for(ready.wait(), 2)
+                app.revoke_viewer("viewer-a")
+                await asyncio.wait_for(cleaning.wait(), 2)
+                for _ in range(1023):
+                    app.issue("viewer-b", SyntheticScope())
+                with self.assertRaises(RuntimeRejected) as rejected:
+                    app.issue("viewer-b", SyntheticScope())
+                self.assertEqual(rejected.exception.code, FailureCode.LIMIT)
+            finally:
+                release.set()
+                result = await task
+        self.assertIsInstance(result, Cancelled)
+        self.assertTrue(result.cleanup.confirmed)
+        app.issue("viewer-b", SyntheticScope())
 
     async def test_viewer_binding_refresh_and_subject_change(self):
         app = runtime()
@@ -237,6 +331,7 @@ class AcpRuntimeTests(unittest.IsolatedAsyncioTestCase):
         result = await app.run(app.issue("viewer-a", SyntheticScope()), "合成提示", emit=emit)
         self.assertNotIn("synthetic-secret-token", repr(result))
         self.assertNotIn("synthetic-secret-token", "".join(events))
+        self.assertIsInstance(result, Completed)
         self.assertEqual(result.text, "[已遮蔽]")
 
     async def test_actual_mcp_http_and_scope_denial(self):

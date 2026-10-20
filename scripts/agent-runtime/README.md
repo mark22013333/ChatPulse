@@ -46,6 +46,8 @@ CLI 以 JSON 分項回報 `pass`、`failed`、`blocked` 或 `unverified`。有 `
 
 可信登入入口提供 `CredentialSnapshot`。主機 CLI 登入與 email 都不能建立 Viewer binding。`issue(viewer_id, scope)` 簽發一次性 lease，`run(lease, prompt, emit=..., cancelled=...)` 在第一個 await 前 claim。重建或重複使用 lease 都遭拒絕。更新憑證撤銷舊 generation，不重播 prompt。`revoke_viewer()` 同時撤銷現有執行與未來簽發資格，必須重新提供可信 binding 才能繼續。
 
+同步 claim 進入 `CLAIMED`，awaitable 真正開始執行並建立 supervisor owner 才進入 `RUNNING`。啟動前取消或未 await 的 claim 在到期或撤權後，可由下次 `issue()` 回收容量。已有 owner 的執行必須等 supervisor 完成清理才能釋放容量。舊 claim 即使稍後才 await，也會在啟動 MCP、子程序或容器前檢查授權，回傳 `Failed(DEADLINE)` 或 `Cancelled` 與已確認的清理收據，不恢復 lease 或重播 prompt。
+
 `emit` 必須是 async callback，與呼叫端在同一個 event loop，由獨立 dispatcher 消費有界 queue。正常完成會交付 queue 中所有文字，總 lease deadline 包含這段等待。外部取消與 callback 例外由 supervisor 獨立處理。callback 或取消訊號 awaitable 不合作時，runtime 有界返回並標示 `cleanup.confirmed=False`。
 
 結果以 `Completed`、`Failed` 或 `Cancelled` 區分，每份結果都包含獨立清理收據。`Completed` 只代表代理回合完成，不代表文字已查證、已獲 Viewer 核准或已送出。清理無法確認時，完成候選改為 `Failed`。取消仍保持 `Cancelled`，清理失敗由收據揭露。

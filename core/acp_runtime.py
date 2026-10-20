@@ -127,7 +127,7 @@ class AgentRuntime:
             raise RuntimeRejected(FailureCode.DEADLINE)
         with self._lock:
             for key, previous in tuple(self._runs.items()):
-                if previous.state is None and not self._authorized(previous):
+                if previous.state in (None, RunState.CLAIMED) and not self._authorized(previous):
                     self._runs.pop(key)
             if len(self._runs) >= 1024:
                 raise RuntimeRejected(FailureCode.LIMIT)
@@ -150,7 +150,7 @@ class AgentRuntime:
     def cancel(self, lease: RuntimeLease) -> None:
         with self._lock:
             run = self._runs.get(lease.run_id)
-            if run is not None and run.lease is lease and run.state in (None, RunState.RUNNING):
+            if run is not None and run.lease is lease and run.state in (None, RunState.CLAIMED, RunState.RUNNING):
                 run.cancel_requested = True
                 run.revoked.set()
 
@@ -166,11 +166,13 @@ class AgentRuntime:
                 raise RuntimeRejected(FailureCode.LEASE)
             if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > self._limits.prompt_chars:
                 raise RuntimeRejected(FailureCode.LIMIT)
-            run.state = RunState.RUNNING
+            run.state = RunState.CLAIMED
         return self._guard(run, prompt, emit, cancelled)
 
     async def _guard(self, run, prompt, emit, cancelled):
-        owner = asyncio.create_task(self._supervise(run, prompt, emit, cancelled))
+        with self._lock:
+            run.state = RunState.RUNNING
+            owner = asyncio.create_task(self._supervise(run, prompt, emit, cancelled))
         while True:
             try:
                 return await asyncio.shield(owner)
@@ -201,6 +203,8 @@ class AgentRuntime:
                 self.cancel(run.lease)
             cancellation = asyncio.create_task(wait_cancel())
         try:
+            if not self._authorized(run):
+                raise RuntimeRejected(FailureCode.DEADLINE)
             root = Path(directory.name).resolve()
             (root / "home" / ".codex").mkdir(parents=True)
             env = {"PATH": "/usr/bin:/bin", "HOME": str(root / "home"),
