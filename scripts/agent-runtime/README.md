@@ -30,7 +30,11 @@ CLI 從可信 Docker CLI 的目前 context 取得本機 unix 引擎端點。啟�
 
 容器使用 `network none`、唯讀根目錄、非 root 身分、run 專用 tmpfs、`cap-drop ALL`、`no-new-privileges` 及 PID 128、記憶體 512 MiB、CPU 1 核心上限。沒有 host repo、config、data 或 Docker socket 掛載。image 內的假 Responses 服務只監聽容器 loopback。
 
-容器診斷會比對實際套件版本，完成固定 marker，拒絕 HTTP 400 假成功，並取消等待中的模型請求。canary 模式由假模型強制要求真 adapter 的內建 shell 工具執行讀取。正對照讀取容器內合成檔案，反對照嘗試主機合成檔案的絕對路徑、指向該路徑的符號連結、ADO 環境與 Docker socket。通過只證明這個 image 與 launcher 的合成測試，不證明正式來源或網路出口已接通。
+容器診斷會比對實際套件版本，完成固定 marker。HTTP 400 須取得假模型已收到請求及送出 400 的固定事實、`Failed(AGENT)` 與回收確認才通過。取消須先等假模型收到請求，再計時取消並確認容器移除，啟動途中取消不算通過。固定合成事實以私有 `_chatpulse/probe` 通知交付，只接受目前 `DockerProbe` 模式的固定 stage，不公開 stderr 或任意 metadata。
+
+canary 模式由假模型強制要求真 adapter 的內建 shell 工具執行讀取。診斷先在 `/tmp` 建立專用目錄與假檔，確認父路徑可遍歷，目錄為 0755、假檔為 0444。私有診斷 subclass 只在 `isolation_control` 正對照以唯讀 bind 掛載這個假檔到相同絕對路徑，須同時讀到 `HOST_READABLE`、`SYMLINK_READABLE` 與 `SYNTHETIC_HOST_SECRET`，且正常隔離判準須拒絕此結果。這是刻意可讀的診斷例外，不是安全 runtime；不掛載真實檔案、目錄或 socket。
+
+正式 `AgentRuntime` 與 `DockerProbe` 仍不提供 host mount 參數或 fallback。`isolation` 再用原 launcher、相同 image 與 UID 1000 執行無掛載反對照，須讀到容器內正對照，並確認主機假檔、符號連結、ADO 環境與 Docker socket 都不可取得。可讀正對照失敗時，整體隔離不能通過。通過只證明這個 image 與 launcher 的合成測試，不證明正式來源或網路出口已接通。
 
 2026-10-20 合成實測，原本 PID 上限 64 會讓真 Codex 的內建 `exec_command` 間歇回傳 EAGAIN。失敗時 `pids.current` 為 64，工具呼叫前後 `pids.events` 的 `max` 從 14 增至 22。cgroup PID 計數包含原生執行緒，因此將上限調整為有限的 128，其餘隔離與資源限制維持原值。canary 結果的 `pids.before_tool` 與 `pids.after_tool` 各保留一筆同步讀取的 `pids.current`、`pids.max`、`pids.events`，不另啟動 shell 量測。`max` 事件增加代表碰到上限；工具失敗仍使診斷失敗，不加入重試。
 

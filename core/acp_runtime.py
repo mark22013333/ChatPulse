@@ -492,6 +492,16 @@ class _Acp:
                     await self.reject_request(message)
                 elif message["method"] == "session/update":
                     self.update(message.get("params"))
+                elif message["method"] == "_chatpulse/probe" and isinstance(self.runtime._launcher, DockerProbe):
+                    fact = message.get("params", {})
+                    mode = self.runtime._launcher.fixture_mode
+                    stages = {"marker": ("request_received",), "canary": ("request_received",),
+                              "cancel": ("request_received",), "http400": ("request_received", "http400_sent")}
+                    if (set(fact) != {"mode", "stage"} or fact.get("mode") != mode or
+                            fact.get("stage") not in stages.get(mode, ())):
+                        raise RuntimeRejected(FailureCode.PROTOCOL)
+                    self.delivery.publish(AgentEvent(self.run.lease.run_id, "probe", json.dumps(fact)))
+                    await self.delivery.finish()
                 elif message["method"].startswith("session/"):
                     raise RuntimeRejected(FailureCode.PROTOCOL)
                 continue

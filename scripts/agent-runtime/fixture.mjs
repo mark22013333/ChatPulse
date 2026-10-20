@@ -2,6 +2,7 @@ import http from 'node:http';
 import { readFileSync } from 'node:fs';
 import { mkdir, writeFile, symlink } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
+import { createInterface } from 'node:readline';
 
 const mode = process.argv[2] ?? 'marker';
 if (mode === 'versions') {
@@ -33,6 +34,7 @@ const recordPids = stage => {
 let requestCount = 0;
 let canaryIssued = false;
 let toolOutput;
+const probe = stage => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: '_chatpulse/probe', params: { mode, stage } }) + '\n');
 const server = http.createServer(async (req, res) => {
   try {
     if (req.method !== 'POST' || req.url !== '/v1/responses') {
@@ -42,13 +44,14 @@ const server = http.createServer(async (req, res) => {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     const body = JSON.parse(Buffer.concat(chunks).toString());
+    probe('request_received');
     if (mode === 'cancel') return;
     requestCount += 1;
     const tools = (body.tools ?? []).map(t => ({ type: t.type, name: t.name }));
     console.error(JSON.stringify({ fixture: 'request', mode, requestCount, tools }));
     if (mode === 'http400') {
       res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: { message: 'CHATPULSE_SYNTHETIC_HTTP400', type: 'invalid_request_error', code: 'synthetic_bad_request' } }));
+      res.end(JSON.stringify({ error: { message: 'CHATPULSE_SYNTHETIC_HTTP400', type: 'invalid_request_error', code: 'synthetic_bad_request' } }), () => probe('http400_sent'));
       return;
     }
     const outputs = (body.input ?? []).filter(item => item.type === 'function_call_output');
@@ -104,6 +107,9 @@ const config = {
 };
 await writeFile(`${root}/home/codex/config.toml`, `web_search = "disabled"\nmodel_provider = "chatpulse_fixture"\nmodel = "gpt-6.1-sol"\n[model_providers.chatpulse_fixture]\nname = "Synthetic"\nbase_url = "http://127.0.0.1:18807/v1"\nenv_key = "CHATPULSE_FIXTURE_TOKEN"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n`);
 const env = { PATH: '/opt/chatpulse-probe/node_modules/.bin:/usr/local/bin:/usr/bin:/bin', HOME: `${root}/home`, CODEX_HOME: `${root}/home/codex`, LANG: 'C.UTF-8', CHATPULSE_FIXTURE_TOKEN: 'synthetic-no-authority', CODEX_PATH: '/opt/chatpulse-probe/node_modules/.bin/codex', CODEX_CONFIG: JSON.stringify(config), MODEL_PROVIDER: 'chatpulse_fixture', INITIAL_AGENT_MODE: 'agent-full-access' };
-const child = spawn(process.execPath, ['/opt/chatpulse-probe/node_modules/@agentclientprotocol/codex-acp/dist/index.js'], { env, cwd: `${root}/workspace`, stdio: 'inherit' });
+const child = spawn(process.execPath, ['/opt/chatpulse-probe/node_modules/@agentclientprotocol/codex-acp/dist/index.js'], { env, cwd: `${root}/workspace`, stdio: ['inherit', 'pipe', 'inherit'] });
+// 兩個程序直接寫 stdout 會交錯破壞 JSON 行，全部由此程序以完整行送出。
+const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
+lines.on('line', line => process.stdout.write(line + '\n'));
 for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => child.kill(signal));
 child.on('exit', code => { server.close(); process.exitCode = code ?? 1; });

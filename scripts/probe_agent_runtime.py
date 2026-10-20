@@ -20,19 +20,92 @@ sys.path.insert(0, str(ROOT))
 
 from core.acp_runtime import AgentRuntime
 from core.agent_runtime import (Cancelled, Completed, CredentialSnapshot, DockerProbe,
-                                Failed, HostFixture, RuntimeRejected, SyntheticScope)
+                                Failed, FailureCode, HostFixture, RuntimeRejected, SyntheticScope)
 
 
 def item(status, detail, **extra):
     return {"status": status, "detail": detail, **extra}
 
 
-def new_runtime(mode="normal", launcher=None, evidence=None):
+def new_runtime(mode="normal", launcher=None, evidence=None, runtime_type=AgentRuntime):
     fixture = ROOT / "tests/fixtures/agent_protocol/child.py"
-    runtime = AgentRuntime(launcher or HostFixture((sys.executable, str(fixture), mode)), evidence=evidence)
+    runtime = runtime_type(launcher or HostFixture((sys.executable, str(fixture), mode)), evidence=evidence)
     runtime.replace_credentials("synthetic-viewer", CredentialSnapshot(
         "synthetic-viewer", "synthetic-subject", 1, time.time() + 120, "synthetic-only-secret"))
     return runtime
+
+
+class _MountedControlRuntime(AgentRuntime):
+    """只掛載診斷剛產生的假檔，不能當作隔離 runtime。"""
+
+    def _docker_command(self, container, *, create=False):
+        command = list(super()._docker_command(container, create=create))
+        path = self._launcher.canary_path
+        index = command.index(self._launcher.image_id)
+        command[index:index] = ["--mount", f"type=bind,source={path},target={path},readonly"]
+        return tuple(command)
+
+
+class _ProbeFacts:
+    def __init__(self, mode):
+        self.mode = mode
+        self.stages = set()
+        self.request_received = asyncio.Event()
+
+    async def emit(self, event):
+        if event.kind == "probe":
+            fact = json.loads(event.text)
+            if fact["mode"] == self.mode:
+                self.stages.add(fact["stage"])
+                if fact["stage"] == "request_received":
+                    self.request_received.set()
+
+
+def _http_failure_valid(result, facts):
+    return (isinstance(result, Failed) and result.code == FailureCode.AGENT and
+            result.cleanup.confirmed and facts.stages == {"request_received", "http400_sent"})
+
+
+def _isolated_canary_valid(result):
+    expected = ("HOST_UNAVAILABLE", "SYMLINK_UNAVAILABLE", "ADO_PAT_ABSENT", "SOCKET_ABSENT", "CHATPULSE_INSIDE_CANARY")
+    forbidden = ("HOST_READABLE", "SYMLINK_READABLE", "ADO_PAT_PRESENT", "SOCKET_PRESENT", "SYNTHETIC_HOST_SECRET")
+    return (isinstance(result, Completed) and result.cleanup.confirmed and
+            all(marker in result.text for marker in expected) and
+            all(marker not in result.text for marker in forbidden))
+
+
+def _mounted_control_valid(result):
+    return (isinstance(result, Completed) and result.cleanup.confirmed and
+            all(marker in result.text for marker in ("HOST_READABLE", "SYMLINK_READABLE", "SYNTHETIC_HOST_SECRET")) and
+            not _isolated_canary_valid(result))
+
+
+def _isolation_valid(control, result):
+    return _mounted_control_valid(control) and _isolated_canary_valid(result)
+
+
+async def _cancel_after_request(app, *, ready_timeout=20):
+    facts = _ProbeFacts("cancel")
+    lease = app.issue("synthetic-viewer", SyntheticScope(), timeout=25)
+    task = asyncio.create_task(app.run(lease, "SYNTHETIC_CANCEL", emit=facts.emit))
+    ready = asyncio.create_task(facts.request_received.wait())
+    try:
+        await asyncio.wait({task, ready}, timeout=ready_timeout, return_when=asyncio.FIRST_COMPLETED)
+        received = facts.request_received.is_set()
+        start = time.monotonic()
+        app.cancel(lease)
+        result = await task
+        elapsed = time.monotonic() - start
+        valid = received and isinstance(result, Cancelled) and result.cleanup.confirmed and elapsed < 3
+        return item("pass" if valid else "failed", "假模型收到請求後取消，確認容器移除", request_received=received,
+                    facts=sorted(facts.stages), outcome=result.state.value, cleanup=result.cleanup.confirmed,
+                    elapsed_seconds=round(elapsed, 3))
+    finally:
+        app.cancel(lease)
+        ready.cancel()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, ready, return_exceptions=True)
 
 
 def endpoint(executable):
@@ -109,27 +182,33 @@ async def probe(args):
                                env={"PATH": "/usr/bin:/bin"}, capture_output=True, timeout=3)
             report["isolation"] = item("unverified", "使用 network none、唯讀、非 root、tmpfs 與資源限制；尚缺內建工具攻擊正反對照")
             app = new_runtime(launcher=replace(launcher, fixture_mode="cancel"))
-            lease = app.issue("synthetic-viewer", SyntheticScope(), timeout=25)
-            task = asyncio.create_task(app.run(lease, "SYNTHETIC_CANCEL"))
-            await asyncio.sleep(1)
-            start = time.monotonic()
-            app.cancel(lease)
-            result = await task
-            elapsed = time.monotonic() - start
-            report["pinned_cancel"] = item("pass" if isinstance(result, Cancelled) and result.cleanup.confirmed and elapsed < 3 else "failed", "固定 image 的取消與容器移除", cleanup=result.cleanup.confirmed, elapsed_seconds=round(elapsed, 3))
+            report["pinned_cancel"] = await _cancel_after_request(app)
             app = new_runtime(launcher=replace(launcher, fixture_mode="http400"))
-            result = await app.run(app.issue("synthetic-viewer", SyntheticScope(), timeout=25), "SYNTHETIC_HTTP_FAILURE")
-            report["pinned_http_failure"] = item("pass" if isinstance(result, Failed) and result.cleanup.confirmed else "failed", "合成模型 HTTP 400 不得變成成功", outcome=result.state.value, synthetic_text=result.text if isinstance(result, Completed) else None)
-            with tempfile.TemporaryDirectory(prefix="chatpulse-pr02-canary-") as directory:
-                canary = Path(directory).resolve() / "secret.txt"
+            facts = _ProbeFacts("http400")
+            result = await app.run(app.issue("synthetic-viewer", SyntheticScope(), timeout=25), "SYNTHETIC_HTTP_FAILURE", emit=facts.emit)
+            report["pinned_http_failure"] = item("pass" if _http_failure_valid(result, facts) else "failed", "確認假模型送出 HTTP 400 且 adapter 回報 agent 失敗", outcome=result.state.value,
+                                                  code=result.code.value if isinstance(result, Failed) else None,
+                                                  cleanup=result.cleanup.confirmed, facts=sorted(facts.stages))
+            with tempfile.TemporaryDirectory(prefix="chatpulse-pr02-canary-", dir="/tmp") as directory:
+                parent = Path(directory).resolve()
+                parent.chmod(0o755)
+                if any(path.stat().st_mode & 0o111 != 0o111 for path in (parent, *parent.parents)):
+                    raise ValueError("合成檔案父路徑無法供容器 UID 遍歷")
+                canary = parent / "secret.txt"
                 canary.write_text("SYNTHETIC_HOST_SECRET")
-                app = new_runtime(launcher=replace(launcher, fixture_mode="canary", canary_path=str(canary)))
+                canary.chmod(0o444)
+                canary_launcher = replace(launcher, fixture_mode="canary", canary_path=str(canary))
+                app = new_runtime(launcher=canary_launcher, runtime_type=_MountedControlRuntime)
+                control = await app.run(app.issue("synthetic-viewer", SyntheticScope(), timeout=25), "SYNTHETIC_MOUNTED_CONTROL")
+                control_valid = _mounted_control_valid(control)
+                report["isolation_control"] = item("pass" if control_valid else "failed", "刻意唯讀掛載假檔的可讀正對照，不是安全 runtime", image_id=args.image_id,
+                                                  outcome=control.state.value, cleanup=control.cleanup.confirmed,
+                                                  code=control.code.value if isinstance(control, Failed) else None,
+                                                  synthetic_text=control.text if isinstance(control, Completed) else None)
+                app = new_runtime(launcher=canary_launcher)
                 result = await app.run(app.issue("synthetic-viewer", SyntheticScope(), timeout=25), "SYNTHETIC_ISOLATION")
                 expected = ("HOST_UNAVAILABLE", "SYMLINK_UNAVAILABLE", "ADO_PAT_ABSENT", "SOCKET_ABSENT", "CHATPULSE_INSIDE_CANARY")
-                forbidden = ("HOST_READABLE", "SYMLINK_READABLE", "ADO_PAT_PRESENT", "SOCKET_PRESENT", "SYNTHETIC_HOST_SECRET")
-                valid = (isinstance(result, Completed) and result.cleanup.confirmed and
-                         all(marker in result.text for marker in expected) and
-                         all(marker not in result.text for marker in forbidden) and
+                valid = (_isolation_valid(control, result) and
                          canary.read_text() == "SYNTHETIC_HOST_SECRET")
                 report["isolation"] = item("pass" if valid else "failed", "同 launcher 真 adapter 內建 shell 工具讀取 canary、符號連結、環境與 socket 正反對照", image_id=args.image_id,
                                            outcome=result.state.value, cleanup=result.cleanup.confirmed,
