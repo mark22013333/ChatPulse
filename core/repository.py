@@ -130,6 +130,7 @@ def get_preferences(viewer_id: int) -> Dict[str, Any]:
         # ADR-0006：草稿頁預選用。只是預選，不會自動送出——
         # code_refs 在 API 契約上仍維持預設空，與 reference_space_ids 一致。
         "default_code_project_id": row["default_code_project_id"],
+        "project_context_opt_in": bool(row["project_context_opt_in"]),
         "default_code_environment": row["default_code_environment"] or None,
         # ADR-0007：Draft Reply 的回覆設定預設值。
         # default_style（摘要章節結構）與 default_reply_tone（回話語氣）
@@ -2382,3 +2383,128 @@ def delete_worklog_draft(viewer_id: int, work_date: str) -> bool:
         (viewer_id, (work_date or "").strip()),
     )
     return cur.rowcount > 0
+
+
+def set_project_context_opt_in(viewer_id: int, enabled: bool) -> dict:
+    ensure_preferences(viewer_id)
+    db.execute("UPDATE preferences SET project_context_opt_in = ?, updated_at = ? WHERE viewer_id = ?",
+               (int(enabled), _now(), viewer_id))
+    return get_preferences(viewer_id)
+
+
+def get_project_profile(viewer_id: int, profile_id: int) -> Optional[dict]:
+    rows = db.query_all(
+        "SELECT p.*, b.binding_id, b.kind, b.label, b.space_id, b.category, "
+        "b.code_project_id, b.environment, b.paths_json FROM project_profiles p "
+        "LEFT JOIN project_source_bindings b ON b.owner_viewer_id = p.owner_viewer_id "
+        "AND b.profile_id = p.id WHERE p.owner_viewer_id = ? AND p.id = ? ORDER BY b.rowid",
+        (viewer_id, profile_id),
+    )
+    if not rows:
+        return None
+    profile = {key: rows[0][key] for key in ("id", "owner_viewer_id", "name", "revision", "created_at", "updated_at")}
+    profile["sources"] = [
+        {"id": r["binding_id"], "kind": r["kind"], "label": r["label"], **(
+            {"space_id": r["space_id"], "category": r["category"]} if r["kind"] == "chat" else
+            {"code_project_id": r["code_project_id"], "environment": r["environment"],
+             "paths": json.loads(r["paths_json"])}
+        )} for r in rows if r["binding_id"] is not None
+    ]
+    return profile
+
+
+def list_project_profiles(viewer_id: int) -> list[dict]:
+    return [get_project_profile(viewer_id, r["id"]) for r in db.query_all(
+        "SELECT id FROM project_profiles WHERE owner_viewer_id = ? ORDER BY name", (viewer_id,))]
+
+
+def save_project_profile(viewer_id: int, name: str, sources: list[dict], *,
+                         profile_id: Optional[int] = None, revision: Optional[int] = None) -> dict:
+    from dataclasses import asdict
+    from .project_context import parse_binding, MAX_SOURCES, GitBinding
+    if not name.strip() or len(name) > 120 or not sources or len(sources) > MAX_SOURCES:
+        raise ValueError("專案名稱或來源數量無效")
+    parsed = [parse_binding(source) for source in sources]
+    if len({b.id for b in parsed}) != len(parsed):
+        raise ValueError("來源識別值不可重複")
+    conn = db.get_connection()
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if profile_id is None:
+            cur = conn.execute("INSERT INTO project_profiles(owner_viewer_id, name, created_at, updated_at) VALUES(?, ?, ?, ?)",
+                               (viewer_id, name.strip(), _now(), _now()))
+            profile_id = cur.lastrowid
+        else:
+            cur = conn.execute("UPDATE project_profiles SET name = ?, revision = revision + 1, updated_at = ? WHERE owner_viewer_id = ? AND id = ? AND revision = ?",
+                               (name.strip(), _now(), viewer_id, profile_id, revision))
+            if cur.rowcount != 1:
+                raise ValueError("專案已更新或不存在，請重新載入")
+            conn.execute("DELETE FROM project_source_bindings WHERE owner_viewer_id = ? AND profile_id = ?", (viewer_id, profile_id))
+        for b in parsed:
+            raw = asdict(b)
+            if isinstance(b, GitBinding):
+                project = get_code_project(viewer_id, b.code_project_id)
+                if not project or not project["enabled"] or b.environment not in project["branches"]:
+                    raise ValueError("Git 登錄不存在、已停用或缺少環境分支")
+            conn.execute("INSERT INTO project_source_bindings(owner_viewer_id, profile_id, binding_id, kind, label, space_id, category, code_project_id, environment, paths_json) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                         (viewer_id, profile_id, b.id, b.kind, b.label, raw.get("space_id"), raw.get("category"),
+                          raw.get("code_project_id"), raw.get("environment"),
+                          json.dumps(raw["paths"]) if b.kind == "git" else None))
+    return get_project_profile(viewer_id, profile_id)
+
+
+def get_owned_draft(viewer_id: int, mention_id: int, draft_id: int) -> Optional[dict]:
+    return db.query_one("SELECT d.* FROM draft_replies d JOIN mentions m ON m.id = d.mention_id WHERE m.viewer_id = ? AND m.id = ? AND d.id = ?",
+                        (viewer_id, mention_id, draft_id))
+
+
+def project_scope_current(viewer_id: int, mention: dict, scope: dict) -> bool:
+    from .project_context import digest, git_fingerprint
+    if scope.get("schema_version") != 1 or scope.get("owner_viewer_id") != viewer_id or (
+        scope.get("mention_id") != mention["id"] or scope.get("message_name") != mention["message_name"]
+        or scope.get("target_space_id") != mention["space_id"]
+        or scope.get("target_thread_name") != mention.get("thread_name")
+        or scope.get("digest") != digest({k: v for k, v in scope.items() if k != "digest"})
+    ):
+        return False
+    profile = get_project_profile(viewer_id, scope["profile_id"])
+    if not profile or profile["revision"] != scope["revision"]:
+        return False
+    for source in scope["sources"]:
+        if source["kind"] == "git":
+            project = get_code_project(viewer_id, source["code_project_id"])
+            if not project or not project["enabled"] or git_fingerprint(project) != source["registration_fingerprint"]:
+                return False
+    return True
+
+
+def create_project_draft(viewer_id: int, mention_id: int, content: str, config: dict) -> dict:
+    scope = config["meta"]["project_scope"]
+    conn = db.get_connection()
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        mention = get_mention(viewer_id, mention_id)
+        if not mention:
+            raise ValueError("Mention 不存在")
+        if not project_scope_current(viewer_id, mention, scope):
+            config = {**config, "project_status": "partial", "partial": True}
+        cur = conn.execute("INSERT INTO draft_replies(mention_id, content_md, created_at, generation_config_json) VALUES(?, ?, ?, ?)",
+                           (mention_id, content, _now(), json.dumps(config, ensure_ascii=False)))
+        if config.get("project_status") != "complete":
+            return {"draft_id": int(cur.lastrowid), "status": "partial"}
+        return {"draft_id": int(cur.lastrowid), "status": "complete"}
+
+
+def admit_project_scope(viewer_id: int, mention_id: int, selection: dict, limit: int,
+                        terms: list[str], max_git: int):
+    from .project_context import make_scope
+    conn = db.get_connection()
+    with conn:
+        conn.execute("BEGIN")
+        mention = get_mention(viewer_id, mention_id)
+        profile = get_project_profile(viewer_id, selection["profile_id"])
+        if not mention or not profile:
+            raise ValueError("Mention 或專案不屬於目前 Viewer")
+        projects = {source["code_project_id"]: get_code_project(viewer_id, source["code_project_id"])
+                    for source in profile["sources"] if source["kind"] == "git"}
+        return make_scope(viewer_id, mention, profile, selection, projects, limit, terms, max_git)

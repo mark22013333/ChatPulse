@@ -525,3 +525,11 @@ def classify_zplanner_error(code: int, message: str = "") -> ChatPulseError:
     return ZPlannerApiError(
         f"ZPlanner 回傳未預期的 code {code}", detail=snippet
     )
+
+
+class ProjectContextStale(ChatPulseError):
+    """來源設定已改變，Viewer 必須重新選擇並產生草稿。"""
+
+    code = "PROJECT_CONTEXT_STALE"
+    http_status = 409
+    default_message = "專案範圍已失效，請重新載入並產生 Draft Reply"

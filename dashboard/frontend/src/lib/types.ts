@@ -21,6 +21,7 @@ export interface AuthResult {
 }
 
 export interface Preferences {
+  project_context_opt_in?: boolean
   pinned_space_ids: string[]
   default_limit: number
   default_style: SummaryStyleValue
@@ -226,6 +227,7 @@ export interface MentionCounts {
 }
 
 export interface Me {
+  features?: { project_context?: boolean }
   viewer: Viewer
   scopes: string[]
   has_identity_scope: boolean
@@ -373,6 +375,7 @@ export interface Mention {
  *   參考 Space、程式碼佐證、合併回覆對象當時沒有存，**補不回來**。
  */
 export interface StoredDraft {
+  scope_state?: 'current' | 'stale' | null
   draft_id: number
   mention_id: number
   content_md: string
@@ -385,6 +388,8 @@ export interface StoredDraft {
     fallback_reason?: string
     /** 完整的產生當下 meta（新版才有）。 */
     meta?: SseMeta
+    project_status?: 'complete' | 'partial'
+    semantic_status?: 'unverified'
   }
   created_at: string
   sent_at: string | null
@@ -573,6 +578,8 @@ export interface DraftCodeRef {
 
 /** SSE `meta` 事件：摘要與 Draft Reply 共用一個型別，欄位各自可選。 */
 export interface SseMeta {
+  project_scope?: InquiryScope
+  semantic_status?: 'unverified'
   type: 'meta'
   space?: string
   space_id?: string
@@ -650,6 +657,8 @@ export interface SseChunk {
 }
 
 export interface SseDone {
+  scope_digest?: string | null
+  project_status?: 'complete' | null
   type: 'done'
   summary_id?: number
   draft_id?: number
@@ -1114,4 +1123,42 @@ export interface WorklogIssueSearchResponse {
   q: string
   count: number
   groups: WorklogIssueSearchGroup[]
+}
+
+
+export type ProjectSource =
+  | { id: string; kind: 'chat'; label: string; space_id: string; category: 'space' | 'pm' }
+  | { id: string; kind: 'git'; label: string; code_project_id: number; environment: CodeEnvironment; paths: string[] }
+
+export interface ProjectProfile {
+  id: number
+  name: string
+  revision: number
+  sources: ProjectSource[]
+}
+
+export interface InquiryScope {
+  schema_version: 1
+  owner_viewer_id: number
+  mention_id: number
+  message_name: string
+  target_space_id: string
+  target_thread_name: string | null
+  profile_id: number
+  profile_name: string
+  revision: number
+  sources: (ProjectSource & {
+    use: 'metadata_only' | 'reply_context'
+    registration_fingerprint?: string
+    resolved_branch?: string
+  })[]
+  limit: number
+  code_terms: string[]
+  digest: string
+}
+
+export interface ProjectChoice {
+  profile: ProjectProfile
+  approvedIds: string[]
+  consent: { spaceId: string; threadName: string | null } | null
 }

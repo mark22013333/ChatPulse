@@ -1403,3 +1403,53 @@ POST／PATCH／verify 都回帶 `verification` 的單筆：
 4. Action Items 萃取：從摘要 Markdown 中抓 `• [負責人] 任務` 這種行，轉為可勾選項目，
    支援「複製為 Markdown」。
 5. 空間清單有 436 個，列表需要虛擬滾動或分頁，並提供名稱搜尋。
+
+## 專案脈絡（選用功能）
+
+伺服器預設關閉。設定 `CHATPULSE_PROJECT_CONTEXT_ENABLED=true` 後，`GET /api/v1/me` 增加可選的 `features.project_context`，偏好增加 `project_context_opt_in`，預設為 false。Viewer 必須先以 `PATCH /api/v1/preferences/project-context` 傳送 `{"enabled":true}`。功能關閉時前端不呼叫專案 API。
+
+- `GET /api/v1/project-profiles` 回傳 `{"profiles":[...]}`，僅含當前 Viewer 的 ProjectProfile。
+- `POST /api/v1/project-profiles` 建立專案，body 為 `name` 與 `sources`。
+- `PUT /api/v1/project-profiles/{id}` 整份替換，必須帶原 `revision`。CAS 衝突或專案不存在回 409，來源錯誤或重複名稱回 4xx，全部回滾。
+- 專案最多 12 筆來源，至少 1 筆。每題最多採用既有 `CODE_MAX_PROJECTS_PER_DRAFT` 筆 Git，超量拒絕，不截斷。
+
+來源是封閉聯集，不接受 owner、repo_path 或任意 URL。
+
+```json
+{
+  "name": "範例專案",
+  "sources": [
+    {"id":"pm","kind":"chat","label":"PM","space_id":"spaces/fake-pm","category":"pm"},
+    {"id":"git","kind":"git","label":"程式碼","code_project_id":1,"environment":"production","paths":["src/main.py"]}
+  ]
+}
+```
+
+Chat 的 category 為 `space|pm`，關聯只使用完整 Space ID。Git 必須是同一 Viewer 的既有啟用登錄，environment 為 `production|uat|dev`，paths 只能是 repo 內相對路徑。綁定中的 Git 登錄不可刪除，必須先更新專案來源。
+
+`POST /api/v1/mentions/{id}/draft/stream` 可帶 `project_selection`。本模式僅支援單一 Mention，拒絕非空的 `merge_mention_ids`、`reference_space_ids` 或 `code_refs`。未提供 project_selection 的既有流程保持相容。
+
+```json
+{
+  "project_selection": {
+    "profile_id": 1,
+    "revision": 1,
+    "sources": [
+      {"binding_id":"pm","use":"metadata_only"},
+      {"binding_id":"git","use":"reply_context"}
+    ],
+    "target_space_id":"spaces/fake-target",
+    "target_thread_name":"spaces/fake-target/threads/fake"
+  },
+  "limit":50,
+  "code_terms":["known_symbol"]
+}
+```
+
+sources 必須完整列出該版本所有 binding，各自只能選 `metadata_only|reply_context`。所有來源預設 metadata_only。確認目標必須與 Mention 的 Space/thread 完全一致，包括無 thread 時的 null。metadata_only 不讀 Chat/Git 內容，也不將來源關聯或內容放入 prompt。本題明選的專案名稱與核准 Git 環境會作為問題範圍提示，仍不保證能從同一 PM Space 自動分離不同專案的對話。讀取資格由 Viewer 本人的 OAuth 與 Google 決定。
+
+SSE meta 增加 `project_scope` 與 `semantic_status:"unverified"`。scope 保存 owner、Mention/message、確切 target、專案名稱與 revision、來源與用途、Git registration fingerprint/resolved branch、limit、terms、schema_version 與 digest。digest 只對應設定，不是授權或事實支持。Git 實際 commit SHA 沿用 code_refs 實讀記錄，不納入登錄設定 fingerprint。新模式 done 增加 `scope_digest` 與 `project_status:"complete"`。EOF、error 或 abort 都不是完整專案草稿。
+
+草稿 generation_config 保存原始 meta、`project_status:"complete|partial"` 與 `semantic_status:"unverified"`。`GET /mentions/{id}/draft` 增加 `scope_state:"current|stale"|null`。還原顯示歷史 snapshot，不以目前專案重建，也不恢復本題來源核准或目標同意。伺服器功能或 Viewer opt-in 關閉、專案修改或 Git 讀取設定變更會使歷史 scope stale；停用時仍可讀取原始 snapshot，但不能送出。重新啟用後，仍須通過專案與 Git 設定的現行性檢查，scope 才會回到 current。實讀欄位只代表已回報的讀取資訊，不表示每個來源都完整支持答案。
+
+專案草稿送出至 `POST /mentions/{id}/reply` 必須同時帶 `draft_id` 與 `scope_digest`。伺服器在任何 Google client 呼叫之前，以持久化草稿驗證 Viewer、Mention、target、完整狀態、digest、專案 revision 與 Git fingerprint。失效、部分草稿、缺 digest、跨 Mention/Viewer 或功能後來關閉，均拒絕，不降級成一般草稿。人工修改文字仍未語意查證。既有未附 scope 的草稿與人工回話保留，送出仍須人工二次確認。

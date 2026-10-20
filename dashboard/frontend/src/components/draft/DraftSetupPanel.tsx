@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import { SpaceList } from '@/components/SpaceList'
+import { ProjectContextPanel } from '@/components/draft/ProjectContextPanel'
 import { CodeRefPicker } from '@/components/draft/CodeRefPicker'
 import { GenerateButton } from '@/components/draft/GenerateButton'
 import { QuickReplySettings } from '@/components/draft/QuickReplySettings'
@@ -16,6 +17,7 @@ import type { Mention } from '@/lib/types'
  * 「模型與生成設定在上、資料來源在下」——與改版前的分組一致，不要重排。
  */
 export function DraftSetupPanel({ mention }: { mention: Mention }) {
+  const projectMode = useDraftStore((s) => Boolean(s.active?.projectChoice))
   const spaces = useSpacesStore((s) => s.items)
   const referenceSearch = useDraftStore((s) => s.active?.referenceSearch ?? '')
   const referenceSpaceIds = useDraftStore(selectReferenceSpaceIds)
@@ -50,13 +52,14 @@ export function DraftSetupPanel({ mention }: { mention: Mention }) {
         所以捲軸必須在這一層。
       */}
       <div className="min-h-0 flex-1 overflow-y-auto">
+        <ProjectContextPanel mention={mention} />
         <ReferenceSpacePicker />
 
         {/* 回覆設定（ADR-0007）。放在供應商之後、資料來源之前，
             維持「模型與生成設定在上、資料來源在下」的既有分組。 */}
         <QuickReplySettings disabled={streaming} />
 
-        <SpaceList
+        {!projectMode ? <SpaceList
           spaces={candidates}
           label="一起當作參考的 Space"
           checkedIds={referenceSpaceIds}
@@ -76,9 +79,8 @@ export function DraftSetupPanel({ mention }: { mention: Mention }) {
             覆寫得掉元件內建的 `flex-1`。
           */
           className="h-64 flex-none"
-        />
-
-        <CodeRefPicker />
+        /> : null}
+        {!projectMode ? <CodeRefPicker /> : null}
       </div>
 
       {/*

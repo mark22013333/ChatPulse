@@ -20,6 +20,10 @@ interface DraftOutputPaneProps {
  * 的位置與順序（規格 §5）。**不要把它們加回來。**
  */
 export function DraftOutputPane({ active, onRequestSend }: DraftOutputPaneProps) {
+  const scope = useDraftStore((s) => s.meta?.project_scope)
+  const status = useDraftStore((s) => s.projectStatus)
+  const references = useDraftStore((s) => s.meta?.reference_spaces)
+  const codeRefs = useDraftStore((s) => s.meta?.code_refs)
   const raw = useDraftStore((s) => s.raw)
   const streaming = useDraftStore((s) => s.streaming)
   const error = useDraftStore((s) => s.error)
@@ -34,6 +38,14 @@ export function DraftOutputPane({ active, onRequestSend }: DraftOutputPaneProps)
 
   return (
     <div className="min-h-0 overflow-y-auto p-5">
+      {scope ? <section aria-label="本次專案範圍" className="mb-4 space-y-1 rounded border p-3 text-xs">
+        <p className="font-semibold">{scope.profile_name} · r{scope.revision} · 未語意查證</p>
+        <p>{status === 'stale' ? '來源設定已失效，請重新產生' : status === 'complete' ? '生成完整，仍須人工確認' : '部分草稿，不可送出'}</p>
+        <p className="break-all">目標 {scope.target_space_id} / {scope.target_thread_name ?? '無討論串'}</p>
+        <p>本次選用 {scope.sources.filter((s) => s.use === 'reply_context').map((s) => s.label).join('、') || '無補充來源'}</p>
+        <p>僅 metadata {scope.sources.filter((s) => s.use === 'metadata_only').map((s) => s.label).join('、') || '無'}</p>
+        <p>已回報實讀 {references?.map((s) => s.space_name).join('、') || '無 Space 回報'}；{codeRefs?.map((s) => s.project_name).join('、') || '無 Git 回報'}。空結果或部分查詢不代表完整支持。</p>
+      </section> : null}
       {error ? (
         <div className="mb-4 flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
           <AlertCircleIcon className="mt-0.5 size-3.5 shrink-0" />

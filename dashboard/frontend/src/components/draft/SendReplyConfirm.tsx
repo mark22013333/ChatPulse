@@ -1,11 +1,9 @@
-import { useMemo } from 'react'
 import { toast } from 'sonner'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { errorMessage } from '@/lib/api'
 import { formatDateTime } from '@/lib/format'
-import { useDraftStore, selectReferenceSpaceIds, selectSending } from '@/store/draft'
+import { useDraftStore, selectSending } from '@/store/draft'
 import { useMentionsStore } from '@/store/mentions'
-import { useSpacesStore } from '@/store/spaces'
 import type { Mention } from '@/lib/types'
 
 interface SendReplyConfirmProps {
@@ -27,16 +25,8 @@ export function SendReplyConfirm({ mention, open, onOpenChange }: SendReplyConfi
   const sending = useDraftStore(selectSending)
   const applyResolved = useMentionsStore((s) => s.applyResolved)
   const applyResolvedMany = useMentionsStore((s) => s.applyResolvedMany)
-  const spaces = useSpacesStore((s) => s.items)
-  const referenceSpaceIds = useDraftStore(selectReferenceSpaceIds)
-
-  const selectedNames = useMemo(
-    () =>
-      referenceSpaceIds
-        .map((id) => spaces.find((space) => space.id === id)?.displayName ?? id)
-        .filter(Boolean),
-    [referenceSpaceIds, spaces],
-  )
+  const selectedNames = meta?.reference_spaces?.map((space) => space.space_name) ?? []
+  const scope = meta?.project_scope
 
   const answering = meta?.answering ?? []
 
@@ -89,6 +79,11 @@ export function SendReplyConfirm({ mention, open, onOpenChange }: SendReplyConfi
           ) : (
             <> 送出後這則 Mention 會自動變成已處理。</>
           )}
+          {scope ? <span className="mt-2 block text-xs">
+            {scope.profile_name} · r{scope.revision} · 未語意查證<br />
+            目標 {scope.target_space_id} / {scope.target_thread_name ?? '無討論串'}<br />
+            本次選用 {scope.sources.filter((source) => source.use === 'reply_context').map((source) => source.label).join('、') || '無補充來源'}
+          </span> : null}
           {selectedNames.length > 0 ? (
             <>
               <br />

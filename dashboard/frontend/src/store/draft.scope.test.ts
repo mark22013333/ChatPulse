@@ -166,3 +166,54 @@ it('送出 A→B→A 仍防止重送，錯誤 ID 不發送', async () => {
   await first
   expect(useDraftStore.getState().replyText).toBe('新 A')
 })
+
+it.each(['reference', 'code', 'terms'])('legacy 草稿手動編輯後更改 %s 保留文字與草稿 ID', async (change) => {
+  let callbacks: sse.SseHandlers = {}
+  vi.spyOn(sse, 'streamSse').mockImplementation(async (_url, _body, handlers) => {
+    callbacks = handlers
+    callbacks.onChunk?.({ type: 'chunk', text: '### ✍️ 建議回話\n產生的回話' })
+    callbacks.onDone?.({ type: 'done', draft_id: 70, reply: '產生的回話' })
+  })
+  const store = useDraftStore.getState()
+  await store.generate(7)
+  store.setReplyText('Viewer 手動編輯的回話')
+  if (change === 'reference') store.toggleReference('spaces/reference')
+  if (change === 'code') store.toggleCodeRef(3, 'production')
+  if (change === 'terms') store.setCodeTerms('known_symbol')
+  expect(useDraftStore.getState().replyText).toBe('Viewer 手動編輯的回話')
+  expect(useDraftStore.getState().draftId).toBe(70)
+  expect(useDraftStore.getState().replyEdited).toBe(true)
+  expect(useDraftStore.getState().active).toMatchObject({
+    referenceSpaceIds: change === 'reference' ? ['spaces/reference'] : [],
+    codeRefs: change === 'code' ? [{ project_id: 3, environment: 'production' }] : [],
+    codeTerms: change === 'terms' ? 'known_symbol' : '',
+  })
+})
+
+it.each(['reference', 'code', 'terms'])('legacy 串流手動編輯後更改 %s 保留操作與後續結果', async (change) => {
+  const pending = deferred()
+  let callbacks: sse.SseHandlers = {}
+  let signal: AbortSignal | undefined
+  vi.spyOn(sse, 'streamSse').mockImplementation((_url, _body, handlers, runSignal) => {
+    callbacks = handlers
+    signal = runSignal
+    return pending.promise
+  })
+  const store = useDraftStore.getState()
+  const run = store.generate(7)
+  callbacks.onChunk?.({ type: 'chunk', text: '### ✍️ 建議回話\n部分回話' })
+  store.setReplyText('Viewer 串流中編輯的回話')
+  if (change === 'reference') store.toggleReference('spaces/reference')
+  if (change === 'code') store.toggleCodeRef(3, 'production')
+  if (change === 'terms') store.setCodeTerms('known_symbol')
+  expect(useDraftStore.getState().replyText).toBe('Viewer 串流中編輯的回話')
+  expect(signal?.aborted).toBe(false)
+  callbacks.onChunk?.({ type: 'chunk', text: '後續內容' })
+  callbacks.onDone?.({ type: 'done', draft_id: 71, reply: 'AI 完整回話' })
+  pending.resolve()
+  await run
+  expect(useDraftStore.getState()).toMatchObject({
+    raw: '### ✍️ 建議回話\n部分回話後續內容',
+    replyText: 'Viewer 串流中編輯的回話', replyEdited: true, draftId: 71, streaming: false,
+  })
+})
