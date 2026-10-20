@@ -1450,6 +1450,6 @@ sources 必須完整列出該版本所有 binding，各自只能選 `metadata_on
 
 SSE meta 增加 `project_scope` 與 `semantic_status:"unverified"`。scope 保存 owner、Mention/message、確切 target、專案名稱與 revision、來源與用途、Git registration fingerprint/resolved branch、limit、terms、schema_version 與 digest。digest 只對應設定，不是授權或事實支持。Git 實際 commit SHA 沿用 code_refs 實讀記錄，不納入登錄設定 fingerprint。新模式 done 增加 `scope_digest` 與 `project_status:"complete"`。EOF、error 或 abort 都不是完整專案草稿。
 
-草稿 generation_config 保存原始 meta、`project_status:"complete|partial"` 與 `semantic_status:"unverified"`。`GET /mentions/{id}/draft` 增加 `scope_state:"current|stale"|null`。還原顯示歷史 snapshot，不以目前專案重建，也不恢復本題來源核准或目標同意。專案修改或 Git 讀取設定變更會使歷史 scope stale。實讀欄位只代表已回報的讀取資訊，不表示每個來源都完整支持答案。
+草稿 generation_config 保存原始 meta、`project_status:"complete|partial"` 與 `semantic_status:"unverified"`。`GET /mentions/{id}/draft` 增加 `scope_state:"current|stale"|null`。還原顯示歷史 snapshot，不以目前專案重建，也不恢復本題來源核准或目標同意。伺服器功能或 Viewer opt-in 關閉、專案修改或 Git 讀取設定變更會使歷史 scope stale；停用時仍可讀取原始 snapshot，但不能送出。重新啟用後，仍須通過專案與 Git 設定的現行性檢查，scope 才會回到 current。實讀欄位只代表已回報的讀取資訊，不表示每個來源都完整支持答案。
 
 專案草稿送出至 `POST /mentions/{id}/reply` 必須同時帶 `draft_id` 與 `scope_digest`。伺服器在任何 Google client 呼叫之前，以持久化草稿驗證 Viewer、Mention、target、完整狀態、digest、專案 revision 與 Git fingerprint。失效、部分草稿、缺 digest、跨 Mention/Viewer 或功能後來關閉，均拒絕，不降級成一般草稿。人工修改文字仍未語意查證。既有未附 scope 的草稿與人工回話保留，送出仍須人工二次確認。

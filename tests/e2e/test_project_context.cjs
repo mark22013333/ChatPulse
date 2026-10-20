@@ -37,6 +37,8 @@ const stored = new Map()
 let stale = false
 let holdNext = false
 let delayed = null
+let holdOptIn = false
+let delayedOptIn = null
 function check(name, passed, actual) {
   receipt.checks.push({ name, passed, actual })
   if (!passed) throw new Error(name)
@@ -75,8 +77,15 @@ async function main() {
       const body = request.postDataJSON()
       receipt.requests.push({ method: request.method(), endpoint, body })
       if (request.method() === 'PATCH' && endpoint === '/preferences/project-context') {
-        preferences.project_context_opt_in = body.enabled
-        return route.fulfill({ json: preferences })
+        const finish = async () => {
+          preferences.project_context_opt_in = body.enabled
+          await route.fulfill({ json: preferences })
+        }
+        if (holdOptIn) {
+          holdOptIn = false
+          return new Promise((resolve) => { delayedOptIn = async () => { await finish(); resolve() } })
+        }
+        return finish()
       }
       if (endpoint === '/project-profiles' && request.method() === 'GET') return route.fulfill({ json: { profiles } })
       if (endpoint === '/project-profiles' && request.method() === 'POST') {
@@ -93,7 +102,7 @@ async function main() {
       if (request.method() === 'GET' && /^\/mentions\/\d+\/draft$/.test(endpoint)) {
         const id = Number(endpoint.split('/')[2])
         return stored.has(id)
-          ? route.fulfill({ json: { ...stored.get(id), scope_state: stale ? 'stale' : 'current' } })
+          ? route.fulfill({ json: { ...stored.get(id), scope_state: stale || !preferences.project_context_opt_in || !replies['/me'].features.project_context ? 'stale' : 'current' } })
           : route.fulfill({ status: 404, json: { error: { code: 'DRAFT_NOT_FOUND', message: '合成草稿不存在' } } })
       }
       if (request.method() === 'POST' && /^\/mentions\/\d+\/draft\/stream$/.test(endpoint)) {
@@ -154,6 +163,8 @@ async function main() {
     await panel.getByLabel('合成專案 相對路徑', { exact: true }).fill('src/main.py')
     await panel.getByRole('button', { name: '保存新專案', exact: true }).click()
     await page.getByRole('option', { name: '甲案 · r1', exact: true }).waitFor({ state: 'attached' })
+    check('建立 profile 不自動選用', await panel.getByLabel('本題專案', { exact: true }).inputValue() === '')
+    await panel.getByLabel('本題專案', { exact: true }).selectOption('3')
     check('保存多來源 profile', profiles.find((p) => p.name === '甲案')?.sources.length === 4, profiles)
     await page.screenshot({ path: path.join(output, '01-profile-saved.png'), fullPage: true, animations: 'disabled' })
     await page.reload()
@@ -166,6 +177,14 @@ async function main() {
     await page.getByRole('region', { name: '本次專案範圍' }).getByText('甲案 · r1 · 未語意查證', { exact: true }).waitFor()
     const generated = receipt.requests.find((r) => r.endpoint === '/mentions/7/draft/stream')
     check('每題核准只有 PM 且無 legacy 來源混帶', generated.body.project_selection.sources.filter((s) => s.use === 'reply_context').length === 1 && !Object.hasOwn(generated.body, 'reference_space_ids') && !Object.hasOwn(generated.body, 'code_refs'), generated.body)
+    await page.getByRole('button', { name: '展開設定', exact: true }).click()
+    await panel.getByText('管理專案來源', { exact: true }).click()
+    await panel.getByLabel('編輯已存專案', { exact: true }).selectOption('2')
+    await panel.getByRole('button', { name: '更新專案來源', exact: true }).click()
+    await page.getByRole('option', { name: '乙案 · r2', exact: true }).waitFor({ state: 'attached' })
+    check('保存另一專案保留本題選擇與完整草稿', await panel.getByLabel('本題專案', { exact: true }).inputValue() === '3'
+      && await page.locator('textarea[placeholder^="建議回話"]').inputValue() === '合成回話 甲案'
+      && await page.getByRole('button', { name: '送出回話', exact: true }).isEnabled())
     await page.getByRole('button', { name: '送出回話', exact: true }).click()
     const dialog = page.getByRole('dialog')
     await dialog.getByText(/甲案 · r1 · 未語意查證/).waitFor()
@@ -183,6 +202,21 @@ async function main() {
     await sendButton.waitFor()
     check('歷史 stale scope 顯示不可送，未恢復當次同意', await sendButton.isDisabled() && await panel.getByLabel('本題專案', { exact: true }).inputValue() === '')
     check('歷史 scope 保留原 snapshot', (await page.getByRole('region', { name: '本次專案範圍' }).innerText()).includes('甲案 · r1'))
+    stale = false
+    for (const gate of ['opt-in', 'feature']) {
+      preferences.project_context_opt_in = gate !== 'opt-in'
+      replies['/me'].features.project_context = gate !== 'feature'
+      const requestsBefore = receipt.requests.length
+      await page.reload()
+      await page.getByRole('region', { name: '本次專案範圍' }).waitFor()
+      check(`重新載入 ${gate} 關閉的草稿保留 snapshot 並禁止送出`, await sendButton.isDisabled()
+        && (await page.getByRole('region', { name: '本次專案範圍' }).innerText()).includes('甲案 · r1'))
+      if (gate === 'feature') check('feature 關閉不讀取 profile API', !receipt.requests.slice(requestsBefore).some((r) => r.endpoint === '/project-profiles'))
+      await page.screenshot({ path: path.join(output, `05-disabled-${gate}.png`), fullPage: true, animations: 'disabled' })
+    }
+    preferences.project_context_opt_in = true
+    replies['/me'].features.project_context = true
+    await page.reload()
     await panel.getByLabel('本題專案', { exact: true }).selectOption('3')
     await sourceChecks.check()
     await panel.getByLabel('確認本題確切目標', { exact: true }).check()
@@ -197,6 +231,26 @@ async function main() {
     await page.evaluate(() => { location.hash = '#/mentions/8' })
     await page.locator('#main').getByText('合成問題 8', { exact: true }).waitFor()
     check('切 Mention 清除本題專案', await panel.getByLabel('本題專案', { exact: true }).inputValue() === '')
+    preferences.project_context_opt_in = false
+    stored.set(8, { draft_id: 108, mention_id: 8, content_md: '乙題還原的一般草稿', generation_config: {}, created_at: '2026-10-20T00:00:00Z', sent_at: null })
+    await page.goto(`${base}/#/mentions/7`)
+    await page.reload()
+    holdOptIn = true
+    await panel.getByRole('checkbox', { name: '啟用我的專案脈絡' }).click()
+    for (let attempt = 0; !delayedOptIn && attempt < 100; attempt++) await page.waitForTimeout(10)
+    check('已攔下延遲偏好 PATCH', Boolean(delayedOptIn))
+    await page.evaluate(() => { location.hash = '#/mentions/8' })
+    const replyInput = page.locator('textarea[placeholder^="建議回話"]')
+    await replyInput.waitFor()
+    await replyInput.fill('乙題保留人工回話')
+    await delayedOptIn()
+    await panel.getByLabel('本題專案', { exact: true }).waitFor()
+    check('甲題晚到啟用回應保留乙題人工草稿', await replyInput.inputValue() === '乙題保留人工回話' && await sendButton.isEnabled())
+    await sendButton.click()
+    await dialog.getByRole('button', { name: '確認送出', exact: true }).waitFor()
+    check('一般草稿確認保留人工文字', (await dialog.innerText()).includes('乙題保留人工回話'))
+    await page.screenshot({ path: path.join(output, '06-late-opt-in-manual.png'), fullPage: true, animations: 'disabled' })
+    await page.keyboard.press('Escape')
     check('零未知與外站請求', receipt.unknown.length === 0, receipt.unknown)
     check('零前端執行錯誤', receipt.errors.length === 0, receipt.errors)
     await page.screenshot({ path: path.join(output, '04-new-mention.png'), fullPage: true, animations: 'disabled' })

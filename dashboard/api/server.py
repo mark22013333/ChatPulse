@@ -3050,8 +3050,10 @@ def get_stored_draft(mention_id: int, viewer: Dict[str, Any] = ViewerDep):
     scope = (config.get("meta") or {}).get("project_scope")
     scope_state = None
     if scope:
-        scope_state = "current" if repo.project_scope_current(
-            viewer_id, repo.get_mention(viewer_id, mention_id), scope
+        scope_state = "current" if (
+            cfg.PROJECT_CONTEXT_ENABLED
+            and repo.get_preferences(viewer_id).get("project_context_opt_in")
+            and repo.project_scope_current(viewer_id, repo.get_mention(viewer_id, mention_id), scope)
         ) else "stale"
     return {
         "scope_state": scope_state,

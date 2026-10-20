@@ -131,6 +131,21 @@ class ProjectContextApiTest(ProjectContextFixture, unittest.TestCase):
         server.reply_to_mention(self.mid, req, self.viewer)
         self.client.send_message.assert_called_once()
 
+    def test_restore_disabled_gates_marks_snapshot_stale(self):
+        self.complete()
+        original = server.get_stored_draft(self.mid, self.viewer)
+        self.assertEqual(original["scope_state"], "current")
+        for gate in ("feature", "opt_in"):
+            with self.subTest(gate=gate):
+                with patch.object(config, "PROJECT_CONTEXT_ENABLED", gate != "feature"):
+                    repo.set_project_context_opt_in(self.a, gate != "opt_in")
+                    stored = server.get_stored_draft(self.mid, self.viewer)
+                    self.assertEqual(stored["scope_state"], "stale")
+                    self.assertEqual(stored["generation_config"], original["generation_config"])
+                    self.assertEqual(stored["content_md"], original["content_md"])
+        repo.set_project_context_opt_in(self.a, True)
+        self.assertEqual(server.get_stored_draft(self.mid, self.viewer)["scope_state"], "current")
+
     def test_git_fingerprint_change_and_limit(self):
         git = repo.create_code_project(self.a, name="假 Git", repo_path="/fake/git", branches={"production": "main"})
         source = {"id": "git", "kind": "git", "label": "假 Git", "code_project_id": git,

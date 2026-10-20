@@ -243,7 +243,7 @@ export const useDraftStore = create<DraftState>((set, get) => {
 
     selectProject: (profile) => updateSources(() => ({
       projectChoice: profile ? { profile, approvedIds: [], consent: null } : null,
-      referenceSpaceIds: [], codeRefs: [],
+      referenceSpaceIds: [], codeRefs: [], codeTerms: '',
     }), true),
     toggleProjectSource: (bindingId) => updateSources((scope) => ({
       projectChoice: scope.projectChoice ? {
@@ -462,6 +462,8 @@ export const useDraftStore = create<DraftState>((set, get) => {
                 fallback_reason: cfg.fallback_reason,
               } satisfies DraftPolishMeta)
 
+        const me = useAuthStore.getState().me
+        const projectAvailable = me?.features?.project_context && me.preferences.project_context_opt_in
         return commit(lease, () => ({
           streaming: false,
           raw: stored.content_md,
@@ -469,7 +471,7 @@ export const useDraftStore = create<DraftState>((set, get) => {
           polish,
           draftId: stored.draft_id,
           projectStatus: meta.project_scope
-            ? (stored.scope_state !== 'current' ? 'stale' : cfg.project_status === 'complete' ? 'complete' : 'partial')
+            ? (!projectAvailable || stored.scope_state !== 'current' ? 'stale' : cfg.project_status === 'complete' ? 'complete' : 'partial')
             : null,
           error: null,
           restored: true,

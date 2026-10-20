@@ -44,7 +44,8 @@ export function ProjectContextPanel({ mention }: { mention: Mention }) {
       const saved = await api.saveProjectProfile({ name, sources, ...(editing ? { revision: editing.revision } : {}) }, editing?.id)
       setProfiles((old) => [...old.filter((profile) => profile.id !== saved.id), saved])
       setEditing(saved)
-      if (useDraftStore.getState().active?.epoch === epoch) selectProject(saved)
+      const active = useDraftStore.getState().active
+      if (editing && active?.epoch === epoch && active?.projectChoice?.profile.id === saved.id) selectProject(saved)
     } catch (err) { setError(errorMessage(err)) }
     finally { setBusy(false) }
   }
@@ -55,10 +56,14 @@ export function ProjectContextPanel({ mention }: { mention: Mention }) {
       <p className="text-muted-foreground">來源只保存關聯。每題明選並確認目標才讀取，草稿未語意查證。</p>
       <label className="flex gap-2">
         <input type="checkbox" checked={optedIn} onChange={async (event) => {
+          const nextOptedIn = event.target.checked
+          const epoch = useDraftStore.getState().active?.epoch
           setBusy(true)
           try {
-            await api.projectOptIn(event.target.checked)
-            selectProject(null)
+            await api.projectOptIn(nextOptedIn)
+            const current = useDraftStore.getState()
+            if ((!nextOptedIn || current.active?.epoch === epoch)
+              && (current.active?.projectChoice || current.meta?.project_scope)) selectProject(null)
             await useAuthStore.getState().refreshMe()
           } catch (err) { setError(errorMessage(err)) }
           finally { setBusy(false) }
@@ -116,7 +121,7 @@ export function ProjectContextPanel({ mention }: { mention: Mention }) {
                 [...old, { id: crypto.randomUUID(), kind: 'git', label: project.name, code_project_id: project.id, environment: env, paths: [] }])}>
                 加入 {project.name} · {ENV_LABELS[env]}
               </Button>))}
-            {sources.map((source) => <div key={source.id} className="space-y-1 rounded border p-2">
+            {sources.map((source) => <div key={`${editing?.id ?? 'new'}-${source.id}`} className="space-y-1 rounded border p-2">
               <p>{source.label}{source.kind === 'git' ? ` · ${ENV_LABELS[source.environment]}` : ''}</p>
               {source.kind === 'chat' ? <label>來源類別
                 <select aria-label={`${source.label} 類別`} value={source.category} onChange={(e) => {

@@ -157,3 +157,17 @@ it.each(['reference', 'code', 'terms'])('僅有歷史專案 scope 時更改 %s �
   if (change === 'terms') store.setCodeTerms('other_symbol')
   expect(useDraftStore.getState()).toMatchObject({ raw: '', replyText: '', draftId: null, meta: null })
 })
+
+it.each(['enter', 'change', 'exit'])('切專案 %s 清除隱藏搜尋詞，實際 request 不帶舊詞', async (transition) => {
+  const stream = vi.spyOn(sse, 'streamSse').mockResolvedValue()
+  const store = useDraftStore.getState()
+  store.activateMention(7)
+  if (transition !== 'enter') store.selectProject(profile)
+  store.setCodeTerms('old_project_symbol')
+  store.selectProject(transition === 'exit' ? null : { ...profile, id: 2, name: '乙案' })
+  if (transition !== 'exit') store.setProjectConsent({ spaceId: 'spaces/q', threadName: 'spaces/q/threads/7' })
+  await store.generate(7)
+  expect(stream).toHaveBeenCalledOnce()
+  expect(stream.mock.calls[0][1]).not.toHaveProperty('code_terms')
+  expect(useDraftStore.getState().active?.codeTerms).toBe('')
+})
