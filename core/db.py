@@ -18,7 +18,7 @@ from . import config as cfg
 
 _local = threading.local()
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS preferences (
     -- 存的一律是**裸值**（`opus`），不是用量表那種帶前綴的識別字
     -- （`claude-cli:opus`）——混進來會組出 `--model claude-cli:opus`。
     default_models_json      TEXT,
+    project_context_opt_in INTEGER NOT NULL DEFAULT 0 CHECK(project_context_opt_in IN (0, 1)),
     updated_at       TEXT NOT NULL
 );
 
@@ -201,6 +202,37 @@ CREATE TABLE IF NOT EXISTS code_project_branches (
     UNIQUE(project_id, environment)
 );
 CREATE INDEX IF NOT EXISTS idx_code_branches_project ON code_project_branches(project_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_code_projects_owner_id ON code_projects(viewer_id, id);
+CREATE TABLE IF NOT EXISTS project_profiles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_viewer_id INTEGER NOT NULL REFERENCES viewers(id) ON DELETE CASCADE,
+    name TEXT NOT NULL CHECK(length(trim(name)) BETWEEN 1 AND 120),
+    revision INTEGER NOT NULL DEFAULT 1 CHECK(revision > 0),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(owner_viewer_id, id),
+    UNIQUE(owner_viewer_id, name)
+);
+CREATE TABLE IF NOT EXISTS project_source_bindings (
+    owner_viewer_id INTEGER NOT NULL,
+    profile_id INTEGER NOT NULL,
+    binding_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('chat', 'git')),
+    label TEXT NOT NULL CHECK(length(trim(label)) BETWEEN 1 AND 120),
+    space_id TEXT,
+    category TEXT,
+    code_project_id INTEGER,
+    environment TEXT,
+    paths_json TEXT,
+    PRIMARY KEY(owner_viewer_id, profile_id, binding_id),
+    FOREIGN KEY(owner_viewer_id, profile_id) REFERENCES project_profiles(owner_viewer_id, id) ON DELETE CASCADE,
+    FOREIGN KEY(owner_viewer_id, code_project_id) REFERENCES code_projects(viewer_id, id) ON DELETE RESTRICT,
+    CHECK((kind = 'chat' AND space_id IS NOT NULL AND category IS NOT NULL AND category IN ('space', 'pm')
+           AND code_project_id IS NULL AND environment IS NULL AND paths_json IS NULL)
+       OR (kind = 'git' AND space_id IS NULL AND category IS NULL AND code_project_id IS NOT NULL
+           AND environment IS NOT NULL AND environment IN ('production', 'uat', 'dev') AND paths_json IS NOT NULL))
+);
 
 -- Persona：Viewer 匯入的表達／思考風格參考（ADR-0007）
 --
@@ -462,6 +494,7 @@ def close_connection() -> None:
 #: 生效，對已經建好的資料表完全不做事——所以新增欄位一定要走這裡，
 #: 否則舊資料庫升級後會在查詢時才炸「no such column」。
 _ADD_COLUMNS = [
+    ("preferences", "project_context_opt_in", "INTEGER NOT NULL DEFAULT 0 CHECK(project_context_opt_in IN (0, 1))"),
     ("preferences", "default_provider", "TEXT"),
     # ADR-0006：草稿頁預選用的純量預設。這兩個是 per-viewer 單值（不是實體），
     # 所以放 preferences 而不是開新表；專案本體在 code_projects。
