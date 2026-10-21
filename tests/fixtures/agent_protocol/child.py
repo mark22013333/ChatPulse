@@ -1,5 +1,6 @@
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
 import time
@@ -10,6 +11,30 @@ if mode == "docker_create_pending":
     if sys.argv[4] == "create":
         time.sleep(60)
     sys.exit(0)
+if mode == "docker_exit":
+    release = Path(sys.argv[2])
+    action = sys.argv[5]
+    if action == "create":
+        print("a" * 64, flush=True)
+        sys.exit(0)
+    if action == "rm":
+        release.touch()
+        pid = int(release.with_suffix(".pid").read_text())
+        deadline = time.monotonic() + 2
+        while True:
+            status = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)],
+                                    capture_output=True, text=True, timeout=2)
+            if status.returncode == 1 or status.stdout.strip().startswith("Z"):
+                sys.exit(0)
+            if status.returncode != 0 or time.monotonic() >= deadline:
+                sys.exit(98)
+    if action == "container":
+        sys.exit(0)
+    if action != "start":
+        sys.exit(2)
+    release.with_suffix(".pid").write_text(str(os.getpid()))
+    mode = "release_exit"
+    sys.argv = [sys.argv[0], mode, str(release), "7"]
 session = os.environ["CHATPULSE_SYNTHETIC_TOKEN"] if mode == "session_secret" else "synthetic-session"
 mcp = None
 
@@ -114,3 +139,18 @@ for line in sys.stdin:
             chunk("LATE_SHOULD_NOT_APPEAR")
         if mode == "nonzero":
             sys.exit(7)
+        if mode == "release_exit":
+            release = Path(sys.argv[2])
+            if len(sys.argv) > 4:
+                sibling = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(60)"],
+                                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                           stderr=subprocess.DEVNULL)
+                release.with_suffix(".sibling").write_text(str(sibling.pid))
+            deadline = time.monotonic() + 5
+            while not release.exists():
+                if time.monotonic() >= deadline:
+                    sys.exit(99)
+                time.sleep(0.005)
+            sys.exit(int(sys.argv[3]))
+        if mode == "linger":
+            time.sleep(60)
