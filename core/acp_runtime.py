@@ -32,6 +32,12 @@ class _Run:
     cancel_requested: bool = False
 
 
+@dataclass(frozen=True)
+class _CleanupResult:
+    receipt: CleanupReceipt
+    observed_exit_code: int | None
+
+
 class _Delivery:
     def __init__(self, emit: EventCallback | None, capacity: int, authorized):
         self.authorized = authorized
@@ -308,10 +314,11 @@ class AgentRuntime:
                     await asyncio.wait_for(creation_work, 0.1)
                 except (Exception, asyncio.CancelledError):
                     pass
-            cleanup = await self._cleanup(process, protocol, container_id or container,
-                                          run.cancel_requested or code is not None,
-                                          container_attempted, container_id is not None)
-            if protocol is not None and protocol.exit_failed:
+            observed = await self._cleanup(process, protocol, container_id or container,
+                                           run.cancel_requested or code is not None,
+                                           container_attempted, container_id is not None)
+            cleanup = observed.receipt
+            if observed.observed_exit_code not in (None, 0):
                 code = code or FailureCode.PROCESS
             if not delivery_clean or not cancellation_clean:
                 cleanup = CleanupReceipt(False, cleanup.containment)
@@ -354,10 +361,11 @@ class AgentRuntime:
                 "no-new-privileges", "--pids-limit", "128", "--memory", "512m",
                 "--cpus", "1", launcher.image_id, launcher.fixture_mode, launcher.canary_path)
 
-    async def _cleanup(self, process, protocol, container, abort, container_attempted=False, container_known=False):
+    async def _cleanup(self, process, protocol, container, abort, container_attempted=False,
+                       container_known=False) -> _CleanupResult:
         containment = "host_fixture" if isinstance(self._launcher, HostFixture) else "docker"
         if process is None and not container_attempted:
-            return CleanupReceipt(True, containment)
+            return _CleanupResult(CleanupReceipt(True, containment), None)
         deadline = time.monotonic() + 2.5
         if protocol is not None and protocol.session is not None and abort:
             try:
@@ -371,8 +379,7 @@ class AgentRuntime:
                 pass
         drains = [asyncio.create_task(discard(reader)) for reader in (process.stdout, process.stderr)] if process else []
         await asyncio.sleep(0.05)
-        if protocol is not None:
-            protocol.exit_failed = process is not None and process.returncode is not None and process.returncode != 0
+        observed_exit_code = process.returncode if process is not None else None
         controllers = []
         if containment == "docker":
             try:
@@ -410,20 +417,25 @@ class AgentRuntime:
         else:
             confirmed = True
         if process is not None:
+            kill_sent = False
             try:
                 os.killpg(process.pid, signal.SIGKILL)
+                kill_sent = True
             except ProcessLookupError:
                 pass
             except OSError:
                 confirmed = False
             try:
-                await asyncio.wait_for(process.wait(), max(0.01, deadline - time.monotonic()))
+                exit_code = await asyncio.wait_for(process.wait(), max(0.01, deadline - time.monotonic()))
+                if containment == "host_fixture" and observed_exit_code is None:
+                    if not (kill_sent and exit_code == -signal.SIGKILL):
+                        observed_exit_code = exit_code
             except (Exception, asyncio.CancelledError):
                 confirmed = False
         for task in drains:
             task.cancel()
         await asyncio.gather(*drains, return_exceptions=True)
-        return CleanupReceipt(confirmed, containment)
+        return _CleanupResult(CleanupReceipt(confirmed, containment), observed_exit_code)
 
 
 class _Acp:
@@ -442,7 +454,6 @@ class _Acp:
         self.parts = []
         self.pending_text = ""
         self.failed_tool = False
-        self.exit_failed = False
 
     async def send(self, message):
         data = json.dumps({"jsonrpc": "2.0", **message}, ensure_ascii=False).encode() + b"\n"
