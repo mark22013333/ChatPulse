@@ -6,6 +6,8 @@ from pathlib import Path
 import sys
 import tempfile
 import shlex
+import signal
+import subprocess
 import time
 from types import SimpleNamespace
 import unittest
@@ -351,3 +353,176 @@ class AcpRuntimeTests(unittest.IsolatedAsyncioTestCase):
         app = runtime("nonzero")
         result = await app.run(app.issue("viewer-a", SyntheticScope()), "合成提示")
         self.assertIsInstance(result, Failed)
+
+
+class AcpExitTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.processes = []
+        self.child = None
+        self.real_killpg = os.killpg
+        spawn = asyncio.create_subprocess_exec
+
+        async def observed_spawn(*args, **kwargs):
+            process = await spawn(*args, **kwargs)
+            self.processes.append(process)
+            if kwargs.get("stdin") == asyncio.subprocess.PIPE:
+                self.child = process
+            return process
+
+        self.spawn_patch = patch("core.acp_runtime.asyncio.create_subprocess_exec", observed_spawn)
+        self.spawn_patch.start()
+        self.addCleanup(self.spawn_patch.stop)
+
+    async def asyncTearDown(self):
+        for process in self.processes:
+            if process.returncode is None:
+                try:
+                    self.real_killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            await asyncio.wait_for(process.wait(), 2)
+
+    def wait_for_process_exit(self, pid):
+        deadline = time.monotonic() + 2
+        while True:
+            status = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)],
+                                    capture_output=True, text=True, timeout=2)
+            if status.returncode == 1 or status.stdout.strip().startswith("Z"):
+                break
+            if status.returncode != 0 or time.monotonic() >= deadline:
+                raise AssertionError("合成子程序未在期限內自然退出")
+
+    def release_before_signal(self, marker, pid, sig):
+        marker.touch()
+        self.wait_for_process_exit(pid)
+        return self.real_killpg(pid, sig)
+
+    async def run_app(self, app, **kwargs):
+        return await asyncio.wait_for(app.run(app.issue("viewer-a", SyntheticScope()),
+                                             "合成提示", **kwargs), 8)
+
+    async def test_natural_exit_after_cleanup_snapshot(self):
+        for exit_code in (0, 7):
+            with self.subTest(exit_code=exit_code), tempfile.TemporaryDirectory() as directory:
+                marker = Path(directory) / "release"
+                app = runtime()
+                app._launcher = HostFixture((sys.executable, str(FIXTURE), "release_exit",
+                                             str(marker), str(exit_code)))
+                with patch("core.acp_runtime.os.killpg", side_effect=lambda pid, sig:
+                           self.release_before_signal(marker, pid, sig)):
+                    result = await self.run_app(app)
+                self.assertEqual(self.child.returncode, exit_code)
+                self.assertTrue(result.cleanup.confirmed)
+                if exit_code:
+                    self.assertIsInstance(result, Failed)
+                    self.assertEqual(result.code, FailureCode.PROCESS)
+                else:
+                    self.assertIsInstance(result, Completed)
+
+    async def test_natural_nonzero_survives_successful_group_kill(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "release"
+            app = runtime()
+            app._launcher = HostFixture((sys.executable, str(FIXTURE), "release_exit",
+                                         str(marker), "7", "sibling"))
+            delivered = []
+
+            def killpg(pid, sig):
+                value = self.release_before_signal(marker, pid, sig)
+                delivered.append(pid)
+                return value
+
+            try:
+                with patch("core.acp_runtime.os.killpg", side_effect=killpg):
+                    result = await self.run_app(app)
+                self.assertEqual(delivered, [self.child.pid])
+                self.assertEqual(self.child.returncode, 7)
+                self.assertTrue(result.cleanup.confirmed)
+                self.assertIsInstance(result, Failed)
+                self.assertEqual(result.code, FailureCode.PROCESS)
+            finally:
+                if self.child is not None:
+                    try:
+                        self.real_killpg(self.child.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                sibling = marker.with_suffix(".sibling")
+                if sibling.exists():
+                    self.wait_for_process_exit(int(sibling.read_text()))
+
+    async def test_lingering_child_killed_by_runtime_still_completes(self):
+        result = await self.run_app(runtime("linger"))
+        self.assertEqual(self.child.returncode, -signal.SIGKILL)
+        self.assertIsInstance(result, Completed)
+        self.assertTrue(result.cleanup.confirmed)
+
+    async def test_observed_external_sigkill_is_not_cleanup_success(self):
+        async def emit(event):
+            self.real_killpg(self.child.pid, signal.SIGKILL)
+            await asyncio.wait_for(self.child.wait(), 2)
+
+        result = await self.run_app(runtime("linger"), emit=emit)
+        self.assertEqual(self.child.returncode, -signal.SIGKILL)
+        self.assertIsInstance(result, Failed)
+        self.assertEqual(result.code, FailureCode.PROCESS)
+        self.assertTrue(result.cleanup.confirmed)
+
+    async def test_docker_attach_exit_before_and_after_removal(self):
+        for exit_before_removal in (True, False):
+            with self.subTest(exit_before_removal=exit_before_removal), tempfile.TemporaryDirectory() as directory:
+                marker = Path(directory) / "release"
+                executable = Path(directory) / "synthetic-docker"
+                executable.write_text("#!/bin/sh\nexec " + shlex.quote(sys.executable) + " " +
+                                      shlex.quote(str(FIXTURE)) + " docker_exit " +
+                                      shlex.quote(str(marker)) + ' "$@"\n')
+                executable.chmod(0o700)
+                app = AgentRuntime(DockerProbe(str(executable), "sha256:" + "a" * 64,
+                                               "unix:///synthetic.sock"))
+                app.replace_credentials("viewer-a", CredentialSnapshot(
+                    "viewer-a", "subject-a", 1, time.time() + 60, "synthetic-secret"))
+
+                async def emit(event):
+                    if exit_before_removal:
+                        marker.touch()
+                        await asyncio.wait_for(self.child.wait(), 2)
+
+                result = await self.run_app(app, emit=emit)
+                self.assertEqual(self.child.returncode, 7)
+                self.assertTrue(result.cleanup.confirmed)
+                if exit_before_removal:
+                    self.assertIsInstance(result, Failed)
+                    self.assertEqual(result.code, FailureCode.PROCESS)
+                else:
+                    self.assertIsInstance(result, Completed)
+
+    async def test_callback_failure_keeps_priority_over_nonzero_exit(self):
+        async def emit(event):
+            await asyncio.wait_for(self.child.wait(), 2)
+            raise ValueError("合成 callback 失敗")
+
+        result = await self.run_app(runtime("nonzero"), emit=emit)
+        self.assertEqual(self.child.returncode, 7)
+        self.assertIsInstance(result, Failed)
+        self.assertEqual(result.code, FailureCode.CALLBACK)
+        self.assertTrue(result.cleanup.confirmed)
+
+    async def test_cancel_keeps_priority_over_nonzero_exit(self):
+        app = runtime("nonzero")
+        lease = app.issue("viewer-a", SyntheticScope())
+
+        async def emit(event):
+            await asyncio.wait_for(self.child.wait(), 2)
+            app.cancel(lease)
+
+        result = await asyncio.wait_for(app.run(lease, "合成提示", emit=emit), 8)
+        self.assertEqual(self.child.returncode, 7)
+        self.assertIsInstance(result, Cancelled)
+        self.assertTrue(result.cleanup.confirmed)
+
+    async def test_unconfirmed_cleanup_does_not_complete(self):
+        with patch("core.acp_runtime.os.killpg", side_effect=PermissionError("合成訊號遭拒")):
+            result = await self.run_app(runtime("linger"))
+        self.assertIsNone(self.child.returncode)
+        self.assertIsInstance(result, Failed)
+        self.assertEqual(result.code, FailureCode.CLEANUP)
+        self.assertFalse(result.cleanup.confirmed)

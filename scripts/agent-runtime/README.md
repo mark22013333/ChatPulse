@@ -52,6 +52,10 @@ CLI 以 JSON 分項回報 `pass`、`failed`、`blocked` 或 `unverified`。有 `
 
 結果以 `Completed`、`Failed` 或 `Cancelled` 區分，每份結果都包含獨立清理收據。`Completed` 只代表代理回合完成，不代表文字已查證、已獲 Viewer 核准或已送出。清理無法確認時，完成候選改為 `Failed`。取消仍保持 `Cancelled`，清理失敗由收據揭露。
 
+主機程序的退出判定會保留強制清理前已觀察到的退出碼，並在 `wait()` 後收取晚到的自然退出碼。因此有效 ACP 回合後自行 `exit(7)` 仍是 `Failed(PROCESS)`。只有 runtime 的 `killpg(SIGKILL)` 成功、此前未觀察到退出，且最終碼為 `-SIGKILL` 時，才將它視為主動回收。正常長駐程序可繼續得到 `Completed`。外部 SIGKILL 與本次 SIGKILL 同時競逐且沒有先前退出證據時，現有訊號無法區分來源。
+
+Docker 只採用呼叫 `rm -f` 前已觀察到的 attach 退出碼。這裡的 `PROCESS` 表示 Docker attach 子程序失敗，不能當作容器內 Agent 的可靠退出碼。`rm -f` 開始後才顯現的非零碼可能由移除造成，因此不據此追加 `PROCESS`。有效 ACP 回合加上清理確認仍可得到 `Completed`，但不證明容器內 Agent 正常退出，也無法排除這段時間內的自然失敗。私有清理結果以 `None` 表示沒有可排除本次主動清理的退出證據，與已觀察到正常退出的 `0` 不同。
+
 ACP1 的 framing、request ID、session ID、核心事件 schema 與輸出預算在邊界驗證。固定 adapter 2.2.2 的 `jetbrains.air` 版本 1 `sessionFailure` 擴充同時用於 `session_info_update` 與結果 `_meta`。嚴重度 `error` 必須失敗，即使 adapter 回 `end_turn` 且先前已有文字。`warning` 不替代模型產出。升級 adapter 時必須重跑這些正反對照。
 
 ## 尚未接通的項目
