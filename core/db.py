@@ -18,7 +18,7 @@ from . import config as cfg
 
 _local = threading.local()
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -127,6 +127,26 @@ CREATE TABLE IF NOT EXISTS draft_replies (
     generation_config_json TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_drafts_mention ON draft_replies(mention_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS reply_reviews (
+    draft_id INTEGER PRIMARY KEY REFERENCES draft_replies(id) ON DELETE CASCADE,
+    revision INTEGER NOT NULL,
+    receipt_id TEXT UNIQUE,
+    text_hash TEXT NOT NULL,
+    scope_digest TEXT NOT NULL,
+    ledger_digest TEXT NOT NULL,
+    policy_version TEXT NOT NULL,
+    expires_at REAL
+);
+CREATE TABLE IF NOT EXISTS reply_dispatches (
+    draft_id INTEGER PRIMARY KEY REFERENCES draft_replies(id) ON DELETE CASCADE,
+    receipt_id TEXT NOT NULL UNIQUE,
+    review_revision INTEGER NOT NULL,
+    text_hash TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('dispatching', 'sent', 'unknown')),
+    result_json TEXT,
+    created_at TEXT NOT NULL
+);
 
 -- 採集器的輪詢水位（每位 Viewer 一列）
 CREATE TABLE IF NOT EXISTS collector_state (

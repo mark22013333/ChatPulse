@@ -52,7 +52,7 @@ class CodeContext:
     project_name: str
     environment: str
     branch: str
-    commit_sha: str  # 短 SHA，讓工程師能自己 git show 驗證模型看到什麼
+    commit_sha: str  # 完整 SHA，避免引用版本因短碼碰撞而變得不明確
     commit_date: str
     terms: Tuple[str, ...]
     hits: Tuple[CodeHit, ...]
@@ -487,6 +487,8 @@ def collect(
             continue
         content = _read_file(repo_path, sha, path)
         lines = content.splitlines()
+        if len(lines) > 400:
+            skipped.append(f"{path}：只列出前 400 行")
         text = "\n".join(f"{i:>5} | {l}" for i, l in enumerate(lines[:400], 1))
         raw_hits.append(
             (
@@ -563,7 +565,7 @@ def collect(
         project_name=project_name,
         environment=environment,
         branch=branch,
-        commit_sha=sha[:7],
+        commit_sha=sha,
         commit_date=commit_date,
         terms=tuple(terms),
         hits=tuple(kept),

@@ -2508,3 +2508,151 @@ def admit_project_scope(viewer_id: int, mention_id: int, selection: dict, limit:
         projects = {source["code_project_id"]: get_code_project(viewer_id, source["code_project_id"])
                     for source in profile["sources"] if source["kind"] == "git"}
         return make_scope(viewer_id, mention, profile, selection, projects, limit, terms, max_git)
+
+
+def _evidence_draft(viewer_id: int, mention_id: int, draft_id: int, scope_digest: str):
+    from .errors import ReplyReviewRequired
+    from .reply_evidence import POLICY_VERSION
+    row = get_owned_draft(viewer_id, mention_id, draft_id)
+    if not row:
+        raise ReplyReviewRequired()
+    config = json.loads(row["generation_config_json"] or "{}")
+    scope = (config.get("meta") or {}).get("project_scope")
+    mention = get_mention(viewer_id, mention_id)
+    if (not cfg.REPLY_EVIDENCE_ENABLED or not cfg.PROJECT_CONTEXT_ENABLED
+        or not get_preferences(viewer_id).get("project_context_opt_in")
+        or config.get("reply_evidence_version") != POLICY_VERSION
+        or not scope or scope.get("digest") != scope_digest
+        or not project_scope_current(viewer_id, mention, scope)):
+        raise ReplyReviewRequired()
+    return row, config, scope
+
+
+def evidence_draft(viewer_id: int, mention_id: int, draft_id: int, scope_digest: str):
+    return _evidence_draft(viewer_id, mention_id, draft_id, scope_digest)
+
+
+def _store_reply_review(conn, draft_id, revision, text, config, assessment, ledger):
+    import time
+    from .reply_evidence import POLICY_VERSION, eligible, fingerprint, text_hash
+    receipt = secrets.token_urlsafe(32) if eligible(assessment) else None
+    expiry = time.time() + 600 if receipt else None
+    config = {**config, "assessment": assessment, "receipt_id": receipt,
+              "review_revision": revision, "source_replay": ledger,
+              "reply_evidence_version": POLICY_VERSION,
+              "project_status": "complete" if assessment["status"] == "evaluated" else "partial",
+              "partial": assessment["status"] != "evaluated"}
+    conn.execute("INSERT INTO reply_reviews(draft_id, revision, receipt_id, text_hash, scope_digest, ledger_digest, policy_version, expires_at) VALUES(?,?,?,?,?,?,?,?) "
+                 "ON CONFLICT(draft_id) DO UPDATE SET revision=excluded.revision, receipt_id=excluded.receipt_id, text_hash=excluded.text_hash, scope_digest=excluded.scope_digest, ledger_digest=excluded.ledger_digest, policy_version=excluded.policy_version, expires_at=excluded.expires_at",
+                 (draft_id, revision, receipt, text_hash(text), config["meta"]["project_scope"]["digest"], fingerprint(ledger), POLICY_VERSION, expiry))
+    conn.execute("UPDATE draft_replies SET content_md=?, generation_config_json=? WHERE id=?",
+                 (text, json.dumps(config, ensure_ascii=False), draft_id))
+    return {"draft_id": draft_id, "text_hash": text_hash(text), "review_revision": revision,
+            "receipt_id": receipt, "assessment": assessment}
+
+
+def create_evidence_draft(viewer_id, mention_id, text, config, assessment, ledger):
+    from .errors import ReplyReviewRequired
+    conn = db.get_connection()
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        mention = get_mention(viewer_id, mention_id)
+        scope = config["meta"]["project_scope"]
+        if (not mention or not cfg.REPLY_EVIDENCE_ENABLED or not cfg.PROJECT_CONTEXT_ENABLED
+            or not get_preferences(viewer_id).get("project_context_opt_in")
+            or not project_scope_current(viewer_id, mention, scope)):
+            raise ReplyReviewRequired()
+        cur = conn.execute("INSERT INTO draft_replies(mention_id,content_md,created_at) VALUES(?,?,?)",
+                           (mention_id, text, _now()))
+        return _store_reply_review(conn, cur.lastrowid, 1, text, config, assessment, ledger)
+
+
+def reserve_reply_review(viewer_id, mention_id, draft_id, scope_digest, text):
+    from .errors import ReplyReviewRequired
+    from .reply_evidence import BlockReason, text_hash, unevaluated
+    conn = db.get_connection()
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row, config, scope = _evidence_draft(viewer_id, mention_id, draft_id, scope_digest)
+        if db.query_one("SELECT state FROM reply_dispatches WHERE draft_id=?", (draft_id,)):
+            raise ReplyReviewRequired("已送出或結果未確定的草稿不能重新發收據")
+        state = db.query_one("SELECT revision FROM reply_reviews WHERE draft_id=?", (draft_id,))
+        if not state:
+            raise ReplyReviewRequired()
+        revision = state["revision"] + 1
+        conn.execute("UPDATE reply_reviews SET revision=?, receipt_id=NULL, expires_at=NULL, text_hash=? WHERE draft_id=?",
+                     (revision, text_hash(text), draft_id))
+        config.update(review_revision=revision, receipt_id=None,
+                      assessment=unevaluated(BlockReason.REVIEW_REQUIRED, text))
+        conn.execute("UPDATE draft_replies SET generation_config_json=? WHERE id=?",
+                     (json.dumps(config, ensure_ascii=False), draft_id))
+        return revision, config, scope
+
+
+def finish_reply_review(viewer_id, mention_id, draft_id, scope_digest, revision, text, config, assessment, ledger):
+    from .errors import ReplyReviewRequired
+    conn = db.get_connection()
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        _evidence_draft(viewer_id, mention_id, draft_id, scope_digest)
+        state = db.query_one("SELECT revision FROM reply_reviews WHERE draft_id=?", (draft_id,))
+        if not state or state["revision"] != revision:
+            raise ReplyReviewRequired("已有較新一輪查核，已捨棄此結果")
+        return _store_reply_review(conn, draft_id, revision, text, config, assessment, ledger)
+
+
+def reply_receipt(viewer_id, mention_id, draft_id, scope_digest, receipt_id, revision, text):
+    import time
+    from .errors import ReplyReviewRequired, ReplyDispatchUnknown
+    from .reply_evidence import POLICY_VERSION, eligible, fingerprint, text_hash
+    row, config, scope = _evidence_draft(viewer_id, mention_id, draft_id, scope_digest)
+    state = db.query_one("SELECT * FROM reply_reviews WHERE draft_id=?", (draft_id,))
+    if (not state or not receipt_id or state["receipt_id"] != receipt_id or state["revision"] != revision
+        or state["text_hash"] != text_hash(text) or state["scope_digest"] != scope_digest
+        or state["policy_version"] != POLICY_VERSION
+        or not eligible(config.get("assessment", {}))
+        or config["assessment"]["text_hash"] != state["text_hash"]
+        or state["ledger_digest"] != fingerprint(config.get("source_replay"))):
+        raise ReplyReviewRequired()
+    attempt = db.query_one("SELECT * FROM reply_dispatches WHERE draft_id=?", (draft_id,))
+    if attempt:
+        if (attempt["receipt_id"] != receipt_id or attempt["review_revision"] != revision
+            or attempt["text_hash"] != text_hash(text)):
+            raise ReplyReviewRequired()
+        if attempt["state"] != "sent":
+            raise ReplyDispatchUnknown()
+        return config, scope, json.loads(attempt["result_json"])
+    if not state["expires_at"] or state["expires_at"] <= time.time():
+        raise ReplyReviewRequired()
+    return config, scope, None
+
+
+def claim_reply_dispatch(viewer_id, mention_id, draft_id, scope_digest, receipt_id, revision, text, ledger):
+    from .errors import ReplyReviewRequired
+    from .reply_evidence import fingerprint, text_hash
+    conn = db.get_connection()
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        config, scope, sent = reply_receipt(viewer_id, mention_id, draft_id, scope_digest, receipt_id, revision, text)
+        if sent is not None:
+            return sent
+        if fingerprint(ledger) != fingerprint(config["source_replay"]):
+            raise ReplyReviewRequired()
+        conn.execute("INSERT INTO reply_dispatches(draft_id,receipt_id,review_revision,text_hash,state,created_at) VALUES(?,?,?,?,?,?)",
+                     (draft_id, receipt_id, revision, text_hash(text), "dispatching", _now()))
+    return None
+
+
+def finish_reply_dispatch(viewer_id, mention_id, draft_id, result):
+    conn = db.get_connection()
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if not get_owned_draft(viewer_id, mention_id, draft_id):
+            raise ValueError("草稿不屬於目前 Viewer")
+        if result is None:
+            conn.execute("UPDATE reply_dispatches SET state='unknown' WHERE draft_id=? AND state='dispatching'", (draft_id,))
+        else:
+            conn.execute("UPDATE reply_dispatches SET state='sent', result_json=? WHERE draft_id=? AND state='dispatching'",
+                         (json.dumps(result, ensure_ascii=False), draft_id))
+            conn.execute("UPDATE draft_replies SET sent_at=? WHERE id=?", (_now(), draft_id))
+            conn.execute("UPDATE mentions SET state='resolved',resolved_at=? WHERE viewer_id=? AND id=?", (_now(), viewer_id, mention_id))

@@ -21,3 +21,6 @@
 以下確認畫面使用合成資料，未呼叫真實 API。
 
 ![專案草稿的送出確認畫面](images/project-context-confirm.png)
+
+
+模型輔助評估的三態來源、改字重查與收據送出，見 [專案回話評估設計](design/reply-evidence-pipeline.md)。

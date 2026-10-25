@@ -11,9 +11,12 @@ import { Input } from '@/components/ui/input'
 export function ProjectContextPanel({ mention }: { mention: Mention }) {
   const enabled = useAuthStore((s) => s.me?.features?.project_context === true)
   const optedIn = useAuthStore((s) => s.me?.preferences.project_context_opt_in === true)
+  const evidenceEnabled = useAuthStore((s) => s.me?.features?.reply_evidence === true)
   const choice = useDraftStore((s) => s.active?.projectChoice)
   const selectProject = useDraftStore((s) => s.selectProject)
   const toggleSource = useDraftStore((s) => s.toggleProjectSource)
+  const setSourceUse = useDraftStore((s) => s.setProjectSourceUse)
+  const setEnvironment = useDraftStore((s) => s.setProjectEnvironment)
   const setConsent = useDraftStore((s) => s.setProjectConsent)
   const spaces = useSpacesStore((s) => s.items)
   const projects = useCodeProjectStore((s) => s.projects)
@@ -53,7 +56,7 @@ export function ProjectContextPanel({ mention }: { mention: Mention }) {
   return (
     <section className="space-y-2 border-b border-border p-3 text-xs" aria-label="專案脈絡">
       <h3 className="font-semibold">專案脈絡</h3>
-      <p className="text-muted-foreground">來源只保存關聯。每題明選並確認目標才讀取，草稿未語意查證。</p>
+      <p className="text-muted-foreground">來源只保存關聯。每題明選並確認目標才讀取，{evidenceEnabled ? '模型輔助評估後仍需你確認。' : '草稿未語意查證。'}</p>
       <label className="flex gap-2">
         <input type="checkbox" checked={optedIn} onChange={async (event) => {
           const nextOptedIn = event.target.checked
@@ -82,17 +85,39 @@ export function ProjectContextPanel({ mention }: { mention: Mention }) {
           </select>
         </label>
         {choice ? <div className="space-y-2">
-          <p>本題來源預設僅 metadata，不讀內容。勾選才納入回話脈絡。</p>
-          {choice.profile.sources.map((source) => <label key={source.id} className="flex items-start gap-2">
-            <input type="checkbox" checked={choice.approvedIds.includes(source.id)} onChange={() => toggleSource(source.id)} />
+          {evidenceEnabled ? <label className="block">本題環境
+            <select aria-label="本題環境" className="mt-1 w-full rounded border bg-background p-1"
+              value={choice.environment ?? ''} onChange={(event) => {
+                const value = event.target.value
+                if (value === '') setEnvironment(null)
+                else if (value === 'production' || value === 'uat' || value === 'dev') setEnvironment(value)
+              }}>
+              <option value="">未知</option>
+              <option value="production">正式環境</option>
+              <option value="uat">UAT</option>
+              <option value="dev">開發環境</option>
+            </select>
+          </label> : null}
+          <p>{evidenceEnabled ? '每筆來源選擇本題用途；私有分析不會寫進對外回話。' : '本題來源預設僅 metadata，不讀內容。勾選才納入回話脈絡。'}</p>
+          {choice.profile.sources.map((source) => <div key={source.id} className="flex items-start gap-2">
+            {evidenceEnabled ? <select aria-label={`${source.label} 用途`} className="rounded border bg-background p-1"
+              value={choice.sourceUses[source.id] ?? 'metadata_only'}
+              onChange={(event) => {
+                const value = event.target.value
+                if (value === 'metadata_only' || value === 'analysis_only' || value === 'reply_context') setSourceUse(source.id, value)
+              }}>
+              <option value="metadata_only">僅顯示來源，不讀內容</option>
+              <option value="analysis_only">僅供私有分析</option>
+              <option value="reply_context">可用於本題回話</option>
+            </select> : <input type="checkbox" checked={choice.sourceUses[source.id] === 'reply_context'} onChange={() => toggleSource(source.id)} />}
             <span>{source.label} · {source.kind === 'chat' ? source.category === 'pm' ? 'PM' : 'Space' : ENV_LABELS[source.environment]}
               <span className="block break-all text-muted-foreground">{source.kind === 'chat' ? source.space_id : source.paths.join('、') || '依關鍵字搜尋'}</span>
             </span>
-          </label>)}
+          </div>)}
           <label className="flex items-start gap-2">
             <input aria-label="確認本題確切目標" type="checkbox" checked={Boolean(choice.consent)} onChange={(event) =>
               setConsent(event.target.checked ? { spaceId: mention.space_id, threadName: mention.thread_name ?? null } : null)} />
-            <span>本題同意將勾選內容用於此目標的 Draft Reply
+            <span>{evidenceEnabled ? '本題同意將「可用於本題回話」的內容提供給此目標的 Draft Reply' : '本題同意將勾選內容用於此目標的 Draft Reply'}
               <code className="block break-all">{mention.space_id} / {mention.thread_name ?? '無討論串'}</code>
             </span>
           </label>

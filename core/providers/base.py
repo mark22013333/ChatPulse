@@ -11,8 +11,24 @@
 """
 
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Callable, Iterator, Optional, Sequence
+
+
+_PENDING_USAGE: ContextVar[Optional[list[Callable[[], None]]]] = ContextVar("chatpulse_pending_usage", default=None)
+
+
+@contextmanager
+def defer_usage_recording():
+    """背景工作不寫用量 DB；只有仍有採用權的 owner 能執行回傳的紀錄。"""
+    pending: list[Callable[[], None]] = []
+    token = _PENDING_USAGE.set(pending)
+    try:
+        yield pending
+    finally:
+        _PENDING_USAGE.reset(token)
 
 
 @dataclass(frozen=True)
@@ -123,12 +139,17 @@ class AIProvider(ABC):
     ) -> None:
         if not self._usage_recorder:
             return
-        try:
-            self._usage_recorder(
-                operation, self.model, prompt_tokens, output_tokens, total_tokens
-            )
-        except Exception:  # 用量記錄失敗不該讓摘要失敗
-            pass
+        recorder, model = self._usage_recorder, self.model
+        def record():
+            try:
+                recorder(operation, model, prompt_tokens, output_tokens, total_tokens)
+            except Exception:  # 用量記錄失敗不該讓摘要失敗
+                pass
+        pending = _PENDING_USAGE.get()
+        if pending is None:
+            record()
+        else:
+            pending.append(record)
 
     def describe(self) -> dict:
         """給 API 與前端用的描述。"""

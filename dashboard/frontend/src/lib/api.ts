@@ -19,6 +19,7 @@ import type {
   PublishResponse,
   ReplyPrompt,
   ReplyResponse,
+  DraftReviewResult,
   ReplyToneConfig,
   SepiaRulesInfo,
   SpacesResponse,
@@ -327,9 +328,11 @@ export const api = {
       method: id ? 'PUT' : 'POST', body: JSON.stringify(body),
     }),
   storedDraft: (id: number) => request<StoredDraft>(`/mentions/${id}/draft`),
+  reviewDraft: (id: number, body: { draft_id: number; text: string; scope_digest: string }) =>
+    post<DraftReviewResult>(`/mentions/${id}/draft/review`, body as unknown as Json),
   sendReply: (
     id: number,
-    body: { text: string; draft_id?: number | null; merge_mention_ids?: number[]; scope_digest?: string },
+    body: { text: string; draft_id?: number | null; merge_mention_ids?: number[]; scope_digest?: string; receipt_id?: string; review_revision?: number },
   ) => post<ReplyResponse>(`/mentions/${id}/reply`, body as unknown as Json),
 
   // ── 參考專案（ADR-0006）────────────────────────────────

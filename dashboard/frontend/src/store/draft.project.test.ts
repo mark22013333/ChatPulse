@@ -46,7 +46,7 @@ it('選專案不自動核准來源，必須確認目標後才可生成', async (
   const store = useDraftStore.getState()
   store.activateMention(7)
   store.selectProject(profile)
-  expect(useDraftStore.getState().active?.projectChoice).toMatchObject({ approvedIds: [], consent: null })
+  expect(useDraftStore.getState().active?.projectChoice).toMatchObject({ sourceUses: {}, consent: null })
   await store.generate(7)
   expect(stream).not.toHaveBeenCalled()
   store.setProjectConsent({ spaceId: 'spaces/q', threadName: 'spaces/q/threads/7' })
