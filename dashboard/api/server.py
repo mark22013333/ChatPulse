@@ -13,6 +13,7 @@ API 契約的單一事實來源是 docs/api-contract.md。
      Google Chat 憑證取自該 Viewer 的 credentials 列，不再是單一全域 client。
 """
 
+import asyncio
 import concurrent.futures as futures
 import dataclasses
 import json
@@ -847,7 +848,7 @@ def get_me(viewer: Dict[str, Any] = ViewerDep):
     stats = state.get("last_run_stats")
     return {
         "viewer": _viewer_public(viewer),
-        "features": {"project_context": cfg.PROJECT_CONTEXT_ENABLED},
+        "features": {"project_context": cfg.PROJECT_CONTEXT_ENABLED, "reply_evidence": cfg.REPLY_EVIDENCE_ENABLED},
         "scopes": scopes,
         "has_identity_scope": identity.has_identity_scope(scopes),
         "preferences": repo.get_preferences(viewer["id"]),
@@ -2645,7 +2646,7 @@ class CodeRefRequest(BaseModel):
 class ProjectSourceChoice(BaseModel):
     model_config = ConfigDict(extra="forbid")
     binding_id: str
-    use: Literal["metadata_only", "reply_context"] = "metadata_only"
+    use: Literal["metadata_only", "analysis_only", "reply_context"] = "metadata_only"
 
 
 class ProjectSelection(BaseModel):
@@ -2655,6 +2656,7 @@ class ProjectSelection(BaseModel):
     sources: List[ProjectSourceChoice]
     target_space_id: str
     target_thread_name: Optional[str] = None
+    environment: Optional[Literal["production", "uat", "dev"]] = None
 
 
 class DraftRequest(BaseModel):
@@ -3055,6 +3057,13 @@ def get_stored_draft(mention_id: int, viewer: Dict[str, Any] = ViewerDep):
             and repo.get_preferences(viewer_id).get("project_context_opt_in")
             and repo.project_scope_current(viewer_id, repo.get_mention(viewer_id, mention_id), scope)
         ) else "stale"
+    if config.get("reply_evidence_version") and config.get("receipt_id"):
+        from core.errors import ReplyReviewRequired, ReplyDispatchUnknown
+        try:
+            repo.reply_receipt(viewer_id, mention_id, row["id"], scope.get("digest") if scope else None,
+                               config["receipt_id"], config.get("review_revision"), row["content_md"])
+        except (ReplyReviewRequired, ReplyDispatchUnknown):
+            config = {**config, "receipt_id": None}
     return {
         "scope_state": scope_state,
         "draft_id": row.get("id"),
@@ -3083,6 +3092,8 @@ def draft_stream(
     approved = None
     if req.project_selection is not None:
         require_project_feature(viewer_id)
+        if not cfg.REPLY_EVIDENCE_ENABLED and any(s.use == "analysis_only" for s in req.project_selection.sources):
+            raise InvalidParameter("私有分析需要啟用回話查證功能")
         if req.merge_mention_ids or req.reference_space_ids or req.code_refs:
             raise InvalidParameter("專案範圍不可混用合併回覆或舊版來源欄位")
         if len(req.code_terms) > cfg.CODE_MAX_TERMS:
@@ -3120,6 +3131,19 @@ def draft_stream(
     # 回覆設定（ADR-0007）也在這裡解析：不合法的 tone、不存在的 Persona／
     # preset、以及「要 Sepia 但規則沒安裝」都要變成 4xx，不是 error 事件。
     reply_options, sepia_enabled, reply_meta = resolve_reply_options(viewer_id, req)
+
+    if approved and cfg.REPLY_EVIDENCE_ENABLED:
+        from .reply_pipeline import ReplyPipeline
+        pipeline = ReplyPipeline(viewer_id, mention, project_scope, get_client(viewer_id),
+                                 get_provider(viewer_id, provider_name, model=req_model))
+        async def evidence_stream():
+            try:
+                async for event in pipeline.prepare(provider_name=provider_name, options=reply_options,
+                                                     reply_meta=reply_meta, sepia_enabled=sepia_enabled):
+                    yield sse(event)
+            finally:
+                pipeline.control.stop()
+        return sse_response(evidence_stream())
 
     def generate() -> Generator[str, None, None]:
         # 放在 try 外面：客戶端中途斷線時 yield 會拋 GeneratorExit，
@@ -3463,10 +3487,39 @@ def draft_stream(
     return sse_response(generate())
 
 
+class DraftReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    draft_id: int = Field(gt=0)
+    text: str = Field(min_length=1, max_length=20_000)
+    scope_digest: str
+
+    @field_validator("text")
+    @classmethod
+    def _check_text(cls, value):
+        if not value.strip():
+            raise ValueError("回話內容不可為空")
+        return value
+
+
+@app.post("/api/v1/mentions/{mention_id}/draft/review")
+def review_draft(mention_id: int, req: DraftReviewRequest, viewer: Dict[str, Any] = ViewerDep):
+    from .reply_pipeline import ReplyPipeline
+    mention = repo.get_mention(viewer["id"], mention_id)
+    if not mention:
+        raise MentionNotFound()
+    _, config, scope = repo.evidence_draft(viewer["id"], mention_id, req.draft_id, req.scope_digest)
+    provider_name, model = resolve_model(viewer["id"], config.get("provider"), config.get("model"))
+    pipeline = ReplyPipeline(viewer["id"], mention, scope, get_client(viewer["id"]),
+                             get_provider(viewer["id"], provider_name, model=model))
+    return asyncio.run(pipeline.review(req.draft_id, req.text, req.scope_digest))
+
+
 class ReplyRequest(BaseModel):
     text: str
     scope_digest: Optional[str] = None
     draft_id: Optional[int] = None
+    receipt_id: Optional[str] = None
+    review_revision: Optional[int] = Field(default=None, gt=0)
     #: 這則回話同時回掉的其他 Mention（草稿的 meta.answering 帶回來的）。
     #: 送出成功後一起標成已處理。
     merge_mention_ids: List[int] = Field(default_factory=list)
@@ -3497,6 +3550,12 @@ def reply_to_mention(
     if not mention:
         raise MentionNotFound()
 
+    from core.errors import ReplyReviewRequired
+    evidence_scope = None
+    latest = repo.latest_draft(mention_id) if cfg.REPLY_EVIDENCE_ENABLED else None
+    latest_config = json.loads(latest.get("generation_config_json") or "{}") if latest else {}
+    if (latest_config.get("meta") or {}).get("project_scope") and not req.draft_id:
+        raise ReplyReviewRequired()
     if req.scope_digest and not req.draft_id:
         raise ProjectContextStale("專案草稿必須指定 draft_id")
     if req.draft_id:
@@ -3505,6 +3564,11 @@ def reply_to_mention(
             raise ProjectContextStale("草稿不屬於目前 Viewer 與 Mention")
         config = json.loads(row.get("generation_config_json") or "{}")
         scope = (config.get("meta") or {}).get("project_scope")
+        if scope and (cfg.REPLY_EVIDENCE_ENABLED or config.get("reply_evidence_version")):
+            if req.merge_mention_ids:
+                raise ReplyReviewRequired()
+            repo.evidence_draft(viewer_id, mention_id, req.draft_id, req.scope_digest)
+            evidence_scope = scope
         if scope:
             if (not cfg.PROJECT_CONTEXT_ENABLED
                 or not repo.get_preferences(viewer_id).get("project_context_opt_in")
@@ -3519,9 +3583,15 @@ def reply_to_mention(
 
     targets = resolve_merge_targets(viewer_id, mention, req.merge_mention_ids)
 
-    res = get_client(viewer_id).send_message(
-        mention["space_id"], req.text, thread_name=mention.get("thread_name")
-    )
+    if evidence_scope:
+        from .reply_pipeline import ReplyPipeline
+        pipeline = ReplyPipeline(viewer_id, mention, evidence_scope, get_client(viewer_id))
+        res = asyncio.run(pipeline.send(req.draft_id, req.text, req.scope_digest,
+                                       req.receipt_id, req.review_revision))
+    else:
+        res = get_client(viewer_id).send_message(
+            mention["space_id"], req.text, thread_name=mention.get("thread_name")
+        )
     if req.draft_id:
         # 帶 viewer_id 驗擁有權：draft_id 來自 request body，不驗的話
         # Viewer A 可以把 Viewer B 的草稿標成已送出

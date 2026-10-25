@@ -5,7 +5,7 @@ import { parseCodeTerms } from '@/lib/codeTerms'
 import { streamSse } from '@/lib/sse'
 import { streamErrorMessage } from '@/lib/aiErrors'
 import { modelRequestField, providerRequestField } from '@/store/providers'
-import type { CodeEnvironment, DraftPolishMeta, Mention, SseMeta, ProjectChoice, ProjectProfile } from '@/lib/types'
+import type { CodeEnvironment, DraftPolishMeta, Mention, SseMeta, ProjectChoice, ProjectProfile, ReplyAssessment, ReviewProgress } from '@/lib/types'
 
 /** 建議回話段落的標題（契約：`### ✍️ 建議回話`）。容忍 emoji 與空白差異。 */
 const REPLY_HEADING = /^#{2,4}\s*.*建議回話.*$/m
@@ -91,6 +91,11 @@ interface DraftState {
   raw: string
   meta: SseMeta | null
   projectStatus: 'complete' | 'partial' | 'stale' | null
+  assessment: ReplyAssessment | null
+  receiptId: string | null
+  reviewRevision: number | null
+  reviewPending: boolean
+  reviewProgress: ReviewProgress['stage'] | null
   draftId: number | null
   error: string | null
   /** 這次潤稿的結果（沒開潤稿時是 null）。UI 用它顯示「Sepia 有沒有生效」。 */
@@ -113,6 +118,8 @@ interface DraftState {
   activateMention: (mentionId: number) => void
   selectProject: (profile: ProjectProfile | null) => void
   toggleProjectSource: (bindingId: string) => void
+  setProjectSourceUse: (bindingId: string, use: 'metadata_only' | 'analysis_only' | 'reply_context') => void
+  setProjectEnvironment: (environment: CodeEnvironment | null) => void
   setProjectConsent: (consent: ProjectChoice['consent']) => void
 
   toggleReference: (spaceId: string) => void
@@ -128,6 +135,7 @@ interface DraftState {
   setCustomPromptId: (promptId: number | null) => void
   setSepiaEnabled: (enabled: boolean | null) => void
   setReplyText: (text: string) => void
+  review: (mentionId: number) => Promise<void>
   /** `mergeIds` 是要「一起回」的其他 Mention（不含 mentionId 自己） */
   generate: (mentionId: number, mergeIds?: number[]) => Promise<void>
   /**
@@ -172,10 +180,12 @@ export const selectSending = (state: DraftState) => state.active !== null && sta
 const EMPTY_OUTPUT = {
   streaming: false, raw: '', meta: null, draftId: null, error: null, projectStatus: null,
   polish: null, restored: false, restoredAt: null, replyText: '', replyEdited: false,
+  assessment: null, receiptId: null, reviewRevision: null, reviewPending: false, reviewProgress: null,
 }
 
 type ContentLease = { epoch: symbol; operationId: symbol }
 let controller: AbortController | null = null
+let reviewRequest: symbol | null = null
 
 export const useDraftStore = create<DraftState>((set, get) => {
   const commit = (lease: ContentLease, update: (state: DraftState) => Partial<DraftState>, finish = false) => {
@@ -203,6 +213,7 @@ export const useDraftStore = create<DraftState>((set, get) => {
     }
     const oldController = controller
     controller = null
+    reviewRequest = null
     set((state) => state.active ? {
       ...EMPTY_OUTPUT,
       active: { ...state.active, ...update(state.active), epoch: Symbol('selection'), operation: null },
@@ -217,6 +228,7 @@ export const useDraftStore = create<DraftState>((set, get) => {
     if (get().active?.mentionId === mentionId) return false
     const oldController = controller
     controller = null
+    reviewRequest = null
     set({ ...EMPTY_OUTPUT, active: {
       mentionId, epoch: Symbol('mention'), referenceSpaceIds: [], codeRefs: [],
       codeTerms: '', referenceSearch: '', operation: null,
@@ -242,16 +254,22 @@ export const useDraftStore = create<DraftState>((set, get) => {
     },
 
     selectProject: (profile) => updateSources(() => ({
-      projectChoice: profile ? { profile, approvedIds: [], consent: null } : null,
+      projectChoice: profile ? { profile, sourceUses: {}, environment: null, consent: null } : null,
       referenceSpaceIds: [], codeRefs: [], codeTerms: '',
     }), true),
     toggleProjectSource: (bindingId) => updateSources((scope) => ({
       projectChoice: scope.projectChoice ? {
         ...scope.projectChoice, consent: null,
-        approvedIds: scope.projectChoice.approvedIds.includes(bindingId)
-          ? scope.projectChoice.approvedIds.filter((id) => id !== bindingId)
-          : [...scope.projectChoice.approvedIds, bindingId],
+        sourceUses: { ...scope.projectChoice.sourceUses, [bindingId]: scope.projectChoice.sourceUses[bindingId] === 'reply_context' ? 'metadata_only' : 'reply_context' },
       } : null,
+    })),
+    setProjectSourceUse: (bindingId, use) => updateSources((scope) => ({
+      projectChoice: scope.projectChoice ? { ...scope.projectChoice, consent: null,
+        sourceUses: { ...scope.projectChoice.sourceUses, [bindingId]: use },
+      } : null,
+    })),
+    setProjectEnvironment: (environment) => updateSources((scope) => ({
+      projectChoice: scope.projectChoice ? { ...scope.projectChoice, environment, consent: null } : null,
     })),
     setProjectConsent: (consent) => updateSources((scope) => ({
       projectChoice: scope.projectChoice ? { ...scope.projectChoice, consent } : null,
@@ -296,7 +314,31 @@ export const useDraftStore = create<DraftState>((set, get) => {
     setCustomPromptId: (customPromptId) => { invalidateProject(); set({ customPromptId }) },
     setSepiaEnabled: (sepiaEnabled) => { invalidateProject(); set({ sepiaEnabled }) },
 
-    setReplyText: (text) => set({ replyText: text, replyEdited: true }),
+    setReplyText: (text) => { reviewRequest = null; set({ replyText: text, replyEdited: true, receiptId: null, reviewPending: false }) },
+
+    review: async (mentionId) => {
+      const state = get()
+      const active = state.active
+      const digest = state.meta?.project_scope?.digest
+      if (!active || active.mentionId !== mentionId || !digest || !state.draftId || state.projectStatus !== 'complete' || !state.replyText.trim()) {
+        throw new Error('請先產生完整的專案草稿')
+      }
+      const epoch = active.epoch
+      const text = state.replyText
+      const requestId = Symbol('review')
+      reviewRequest = requestId
+      set({ reviewPending: true, receiptId: null, error: null })
+      try {
+        const result = await api.reviewDraft(mentionId, { draft_id: state.draftId, text, scope_digest: digest })
+        set((current) => current.active?.epoch === epoch && reviewRequest === requestId && current.replyText === text
+          && current.draftId === result.draft_id && current.meta?.project_scope?.digest === digest
+          ? { assessment: result.assessment, receiptId: result.assessment.status === 'evaluated' ? result.receipt_id : null,
+              reviewRevision: result.review_revision, reviewPending: false } : current)
+      } catch (err) {
+        set((current) => current.active?.epoch === epoch && reviewRequest === requestId
+          ? { error: errorMessage(err), reviewPending: false } : current)
+      } finally { if (reviewRequest === requestId) reviewRequest = null }
+    },
 
     generate: async (mentionId, mergeIds = []) => {
       get().activateMention(mentionId)
@@ -304,6 +346,7 @@ export const useDraftStore = create<DraftState>((set, get) => {
       const { refLimit, refLimitError, toneId, personaId, customPrompt, customPromptId, sepiaEnabled } = state
       if (refLimitError || !Number.isInteger(refLimit) || !state.active) return
       const choice = state.active.projectChoice
+      const evidenceMode = Boolean(choice && useAuthStore.getState().me?.features?.reply_evidence)
       if (choice && (!useAuthStore.getState().me?.features?.project_context
         || !useAuthStore.getState().me?.preferences.project_context_opt_in)) {
         set({ error: '請先啟用專案脈絡' })
@@ -349,8 +392,10 @@ export const useDraftStore = create<DraftState>((set, get) => {
               profile_id: choice.profile.id, revision: choice.profile.revision,
               sources: choice.profile.sources.map((source) => ({
                 binding_id: source.id,
-                use: choice.approvedIds.includes(source.id) ? 'reply_context' : 'metadata_only',
+                use: evidenceMode ? (choice.sourceUses[source.id] ?? 'metadata_only')
+                  : choice.sourceUses[source.id] === 'reply_context' ? 'reply_context' : 'metadata_only',
               })),
+              ...(evidenceMode ? { environment: choice.environment ?? null } : {}),
               target_space_id: choice.consent?.spaceId,
               target_thread_name: choice.consent?.threadName,
             },
@@ -366,8 +411,13 @@ export const useDraftStore = create<DraftState>((set, get) => {
         },
         {
           onMeta: (meta) => { commit(lease, () => ({ meta })) },
+          onReviewProgress: (progress) => {
+            if (progress.mention_id === mentionId) commit(lease, (current) =>
+              current.meta?.project_scope?.digest === progress.scope_digest ? { reviewProgress: progress.stage } : {})
+          },
           onChunk: (chunk) =>
             commit(lease, (state) => {
+              if (evidenceMode) return {}
               const raw = state.raw + (chunk.text ?? '')
               // 使用者還沒動過編輯器時，讓建議回話跟著串流即時更新
               const replyText = state.replyEdited ? state.replyText : splitDraft(raw).reply
@@ -375,12 +425,17 @@ export const useDraftStore = create<DraftState>((set, get) => {
             }),
           onDone: (done) =>
             commit(lease, (state) => ({
+              raw: evidenceMode ? (done.reply ? `### ✍️ 建議回話\n${done.reply}` : '') : state.raw,
               streaming: false,
               draftId: done.draft_id ?? null,
               projectStatus: choice
                 ? (done.project_status === 'complete' && done.scope_digest === state.meta?.project_scope?.digest && done.draft_id ? 'complete' : 'partial')
                 : null,
               polish: done.polish ?? null,
+              assessment: evidenceMode ? done.assessment ?? null : null,
+              receiptId: evidenceMode && !state.replyEdited && done.assessment?.status === 'evaluated' ? done.receipt_id ?? null : null,
+              reviewRevision: evidenceMode ? done.review_revision ?? null : null,
+              reviewProgress: null,
               // `done.reply` 是潤稿後的版本。**必須採用它**，否則開了 Sepia
               // 之後畫面上是未潤稿的內容、資料庫是潤稿後的內容，而使用者
               // 按送出時送的是畫面這一份——那等於 Sepia 完全沒生效，
@@ -390,7 +445,7 @@ export const useDraftStore = create<DraftState>((set, get) => {
               // 也更明確。這與 onChunk 的 replyEdited 判斷是同一條規則。
               replyText: state.replyEdited
                 ? state.replyText
-                : (done.reply ?? splitDraft(state.raw).reply).trim(),
+                : evidenceMode ? done.reply ?? '' : (done.reply ?? splitDraft(state.raw).reply).trim(),
             }), true),
           onError: (event) =>
             commit(lease, (state) => ({
@@ -470,6 +525,10 @@ export const useDraftStore = create<DraftState>((set, get) => {
           meta,
           polish,
           draftId: stored.draft_id,
+          assessment: me?.features?.reply_evidence && meta.project_scope ? cfg.assessment ?? null : null,
+          receiptId: me?.features?.reply_evidence && stored.scope_state === 'current' && cfg.assessment?.status === 'evaluated'
+            ? cfg.receipt_id ?? null : null,
+          reviewRevision: me?.features?.reply_evidence && meta.project_scope ? cfg.review_revision ?? null : null,
           projectStatus: meta.project_scope
             ? (!projectAvailable || stored.scope_state !== 'current' ? 'stale' : cfg.project_status === 'complete' ? 'complete' : 'partial')
             : null,
@@ -487,7 +546,7 @@ export const useDraftStore = create<DraftState>((set, get) => {
     },
 
     send: async (mentionId) => {
-      const { active, replyText, draftId, meta, sendingMentionIds, projectStatus } = get()
+      const { active, replyText, draftId, meta, sendingMentionIds, projectStatus, receiptId, reviewRevision, assessment, reviewPending } = get()
       if (!active || active.mentionId !== mentionId) throw new Error('草稿與 Mention 不一致，請重新確認')
       if (sendingMentionIds.includes(mentionId)) throw new Error('這則 Mention 正在送出')
       if (!replyText.trim()) throw new Error('回話內容不可空白')
@@ -495,9 +554,14 @@ export const useDraftStore = create<DraftState>((set, get) => {
         throw new Error('專案草稿尚未完整產生或已失效，請重新產生')
       }
       if (meta?.project_scope && projectStatus !== 'complete') throw new Error('專案草稿無法送出')
+      const evidenceMode = Boolean(meta?.project_scope && useAuthStore.getState().me?.features?.reply_evidence)
+      if (evidenceMode && (reviewPending || !receiptId || reviewRevision === null || assessment?.status !== 'evaluated')) {
+        throw new Error('請先查核目前的回話，再確認送出')
+      }
       const scopeEpoch = active.epoch
       const body = { text: replyText, draft_id: draftId, merge_mention_ids: answeringIds(meta, mentionId),
-        ...(meta?.project_scope ? { scope_digest: meta.project_scope.digest } : {}), }
+        ...(meta?.project_scope ? { scope_digest: meta.project_scope.digest } : {}),
+        ...(evidenceMode ? { receipt_id: receiptId!, review_revision: reviewRevision! } : {}), }
       set({ sendingMentionIds: [...sendingMentionIds, mentionId], error: null })
       try {
         const result = await api.sendReply(mentionId, body)

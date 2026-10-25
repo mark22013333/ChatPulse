@@ -59,6 +59,22 @@ describe('streamSse', () => {
     expect((events[3] as { summary_id: number }).summary_id).toBe(12)
   })
 
+  it('查核進度按順序交給呼叫端，完成後不再接收進度', async () => {
+    mockStream([
+      'data: {"type":"meta","mention_id":7}\n\n',
+      'data: {"type":"review_progress","stage":"reading","mention_id":7,"scope_digest":"scope","counts":{"reads":1}}\n\n',
+      'data: {"type":"done","draft_id":9}\n\n',
+      'data: {"type":"review_progress","stage":"reviewing","mention_id":7,"scope_digest":"scope","counts":{}}\n\n',
+    ])
+    const events: string[] = []
+    await streamSse('/x', {}, {
+      onMeta: () => events.push('meta'),
+      onReviewProgress: (event) => events.push(event.stage),
+      onDone: () => events.push('done'),
+    }, new AbortController().signal)
+    expect(events).toEqual(['meta', 'reading', 'done'])
+  })
+
   it('一個 chunk 內含多個 frame 也要全部取出', async () => {
     mockStream([
       'data: {"type":"chunk","text":"A"}\n\ndata: {"type":"chunk","text":"B"}\n\ndata: {"type":"chunk","text":"C"}\n\ndata: {"type":"done"}\n\n',

@@ -228,7 +228,7 @@ class ProjectContextApiTest(ProjectContextFixture, unittest.TestCase):
         (root / "src" / "main.py").write_text('def fake_symbol():\n    return "FAKE_CODE_EVIDENCE"\n')
         git("add", "src/main.py")
         git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "假資料")
-        sha = git("rev-parse", "--short", "HEAD")
+        sha = git("rev-parse", "HEAD")
         pid = repo.create_code_project(self.a, name="假原始碼", repo_path=str(root), branches={"production": "main"})
         self.profile = repo.save_project_profile(self.a, "Git 範圍", [{
             "id": "git", "kind": "git", "label": "假 Git", "code_project_id": pid,

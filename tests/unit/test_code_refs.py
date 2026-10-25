@@ -170,7 +170,7 @@ class TestGitReadFailures(unittest.TestCase):
     def test_real_git_hit_and_successful_no_hit(self):
         from core import code_search
         context, skipped = self.collect()
-        self.assertEqual(context.commit_sha, self.sha[:7])
+        self.assertEqual(context.commit_sha, self.sha)
         self.assertEqual(context.hits[0].path, 'demo.py')
         self.assertEqual(skipped, [])
         self.assertEqual(code_search._grep(self.path, self.sha, ['absent_symbol'], []), {})

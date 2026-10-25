@@ -1,0 +1,9 @@
+date	decision	reason	evidence	result
+2026-10-25	採單一 prepare/review/send	原樣文字與來源版本需要共同權威	dashboard/api/reply_pipeline.py	避免 send 階段偷偷改字
+2026-10-25	三態來源分離私有分析與對外內容	讀取許可不等於揭露許可	tests/unit/test_reply_pipeline.py	私有文字不進對外模型輸入或DB
+2026-10-25	模型結果稱 evaluated	結構檢查不能證明語意正確	core/reply_evidence.py	不宣稱 verified 或準確率改善
+2026-10-25	review 開始即遞增 revision	較早而慢到的結果不能覆蓋新文字	tests/unit/test_reply_pipeline.py	CAS 拒絕舊結果
+2026-10-25	來源與模型邊界重新檢查同意	獨立審查重現撤銷後仍執行模型	tests/unit/test_reply_pipeline.py	撤銷後無後續來源模型或用量寫入
+2026-10-25	新模式禁止 OAuth 重送與 redirect	獨立審查以假 adapter 重現 POST 重播	tests/unit/test_reply_transport.py	401及五種redirect各只一次transport
+2026-10-25	sourceUses 為唯一用途狀態	獨立品質審查指出雙狀態同步成本	dashboard/frontend/src/store/draft.ts	刪除 approvedIds
+2026-10-25	以 production dist 搭配假API驗證	必須觀察使用者實際操作	tests/e2e/test_reply_evidence.cjs	13項行為檢查且無外部請求

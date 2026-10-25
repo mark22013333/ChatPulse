@@ -1406,6 +1406,8 @@ POST／PATCH／verify 都回帶 `verification` 的單筆：
 
 ## 專案脈絡（選用功能）
 
+本節描述原專案草稿模式。另啟用 `CHATPULSE_REPLY_EVIDENCE_ENABLED=true` 時，改用下一節的模型輔助評估契約。
+
 伺服器預設關閉。設定 `CHATPULSE_PROJECT_CONTEXT_ENABLED=true` 後，`GET /api/v1/me` 增加可選的 `features.project_context`，偏好增加 `project_context_opt_in`，預設為 false。Viewer 必須先以 `PATCH /api/v1/preferences/project-context` 傳送 `{"enabled":true}`。功能關閉時前端不呼叫專案 API。
 
 - `GET /api/v1/project-profiles` 回傳 `{"profiles":[...]}`，僅含當前 Viewer 的 ProjectProfile。
@@ -1453,3 +1455,53 @@ SSE meta 增加 `project_scope` 與 `semantic_status:"unverified"`。scope 保�
 草稿 generation_config 保存原始 meta、`project_status:"complete|partial"` 與 `semantic_status:"unverified"`。`GET /mentions/{id}/draft` 增加 `scope_state:"current|stale"|null`。還原顯示歷史 snapshot，不以目前專案重建，也不恢復本題來源核准或目標同意。伺服器功能或 Viewer opt-in 關閉、專案修改或 Git 讀取設定變更會使歷史 scope stale；停用時仍可讀取原始 snapshot，但不能送出。重新啟用後，仍須通過專案與 Git 設定的現行性檢查，scope 才會回到 current。實讀欄位只代表已回報的讀取資訊，不表示每個來源都完整支持答案。
 
 專案草稿送出至 `POST /mentions/{id}/reply` 必須同時帶 `draft_id` 與 `scope_digest`。伺服器在任何 Google client 呼叫之前，以持久化草稿驗證 Viewer、Mention、target、完整狀態、digest、專案 revision 與 Git fingerprint。失效、部分草稿、缺 digest、跨 Mention/Viewer 或功能後來關閉，均拒絕，不降級成一般草稿。人工修改文字仍未語意查證。既有未附 scope 的草稿與人工回話保留，送出仍須人工二次確認。
+
+
+## 模型輔助評估與送出收據（選用功能）
+
+`CHATPULSE_REPLY_EVIDENCE_ENABLED` 預設 false。`GET /api/v1/me` 回報 `features.reply_evidence`。此模式仍要求專案脈絡功能及 Viewer opt-in，且請求帶有 `project_selection`。一般草稿沿用原流程。
+
+### 本題來源與環境
+
+`project_selection.environment` 接受 `production`、`uat`、`dev` 或 null，預設 null。來源 `use` 改為三態。
+
+- `metadata_only` 不讀內容，也不進模型輸入。
+- `analysis_only` 僅供私有分析與受限補查，不進對外事實包、回話或評語。
+- `reply_context` 經本題確切目標同意後，可提供給對外事實包與評估。
+
+關閉評估功能時拒絕 `analysis_only`。改環境、來源或目標會撤銷本題同意與收據。預設問題脈絡只讀 Mention 所在討論串；其他 Space 或 PM 必須明選。Git 記錄完整 commit SHA。環境未知不能當作已配對。
+
+### 生成與評估
+
+沿用 `POST /api/v1/mentions/{id}/draft/stream`。SSE 增加 `review_progress`，包含 `stage`、`mention_id`、`scope_digest` 與 `counts`。stage 為 `reading`、`assessing`、`drafting` 或 `reviewing`。前端只顯示進度，不顯示私有推理。最終評估完成後才回傳可編輯文字。
+
+`done` 增加 `assessment`、`receipt_id` 與 `review_revision`。assessment 範例如下。
+
+```json
+{
+  "status":"evaluated", "method":"model_assisted_v1", "text_hash":"sha256",
+  "claims":[{
+    "id":"c1", "text":"UAT 已部署版本 7。", "kind":"status",
+    "relation":"supported", "reference_validity":"valid",
+    "currency":"current", "scope":"match", "reason":"來源回報 UAT 部署完成。",
+    "citations":[{"evidence_id":"e1","locator":"spaces/fake/messages/1","revision":"digest"}]
+  }],
+  "gaps":[], "stop_reason":null
+}
+```
+
+kind 為 `status|cause|recommendation|other_fact`；relation 為 `supported|contradicted|insufficient`；reference_validity 為 `valid|invalid|unresolved`；currency 為 `current|superseded|unknown`；scope 為 `match|mismatch|unknown`。`evaluated` 代表模型完成評估，不代表內容已證實。只有政策允許的評估才核發收據，其他結果的 `receipt_id` 為 null。來源失敗或截斷回 `unevaluated`；圖片及附件內容未納入評估，gaps 明示此限制。
+
+整輪最多 90 秒、12 次來源讀取、3 輪補查及 10 次模型呼叫。模型輸入另有位元組上限。取消或逾時會停止等待、撤銷結果採用權，不保證底層供應商已終止。晚到結果不能寫入草稿或恢復收據。
+
+### 人工改字與重查
+
+`POST /api/v1/mentions/{id}/draft/review` 接受 `{draft_id,text,scope_digest}`。text 保留原樣，長度為 1 至 20,000 個字元，不能全為空白。伺服器重新讀取來源，回傳 `{draft_id,text_hash,review_revision,receipt_id,assessment}`，不替換人工文字。
+
+重查開始時原子遞增 revision 並撤銷舊收據。先開始但較晚完成的重查不能覆蓋較新版本。`GET .../draft` 的 generation_config 保存評估、收據與 revision，過期收據不再回傳。只保存查詢、來源識別與 digest，不保存來源全文或私有分析。
+
+### 二次確認與單次送出
+
+`POST /api/v1/mentions/{id}/reply` 在此模式須帶 `draft_id`、`scope_digest`、`receipt_id`、`review_revision` 與原樣 `text`。收據有效期為 10 分鐘。伺服器核對 Viewer、Mention、確切目標、scope、政策版本、文字 UTF-8 SHA-256、revision 及期限，再重讀來源核對 digest。
+
+改字、來源變動、過期或舊專案草稿沒有收據時回 `REVIEW_REQUIRED`，前端須重新查核及人工確認。送出不會自動改字或換收據。交易內登記單次 attempt；重複成功請求回傳原結果，不再呼叫 Chat。送出結果不明回 `DISPATCH_UNKNOWN`，禁止自動重試。新模式的 Chat POST 停用 transport 自動重送，避免一次確認造成重複訊息。
