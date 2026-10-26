@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import ipaddress
 import json
@@ -77,7 +78,7 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
-def main() -> None:
+async def main() -> None:
     if len(sys.argv) != 1:
         raise SystemExit("此探針不接受網址、token 或任何參數")
     with tempfile.TemporaryDirectory(prefix="ado-offline-") as temp:
@@ -95,7 +96,7 @@ def main() -> None:
                 "FAKE-PAT-ONLY",
                 verify=str(cert_path),
             )
-            bundle = client.read_item_bundle(42)
+            bundle = await client.read_item_bundle(42)
             assert (bundle.item.id, len(bundle.revisions), len(bundle.comments)) == (42, 1, 1)
             assert len(Handler.requests_seen) == 3
             print("PASS：本機 TLS 假服務讀取工單、revisions、comments；憑證驗證開啟")
@@ -106,4 +107,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

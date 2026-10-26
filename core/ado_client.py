@@ -2,21 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import ipaddress
 import json
 import math
 import re
-import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, AsyncIterator, Mapping
 from urllib.parse import quote, urlsplit
 
-import requests
+import httpx
 
 from .errors import ChatPulseError
+from .private_http import private_http_client
 
 
 class AdoReason(StrEnum):
@@ -193,15 +195,17 @@ class AdoItemBundle:
 
 
 @dataclass
-class _Budget:
+class _Operation:
+    client: httpx.AsyncClient
+    endpoint: str
     end: float
     max_bytes: int
     used_bytes: int = 0
 
-    def remaining(self, endpoint: str) -> float:
-        left = self.end - time.monotonic()
+    def remaining(self) -> float:
+        left = self.end - asyncio.get_running_loop().time()
         if left <= 0:
-            raise AdoReadError(AdoReason.TIMEOUT, endpoint=endpoint)
+            raise AdoReadError(AdoReason.TIMEOUT, endpoint=self.endpoint)
         return left
 
 
@@ -277,7 +281,7 @@ class AdoClient:
         *,
         verify: bool | str = True,
         limits: AdoLimits | None = None,
-        session: requests.Session | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         if not isinstance(pat, str) or not pat or any(ord(char) < 33 or ord(char) == 127 for char in pat):
             raise _invalid_setting()
@@ -286,34 +290,45 @@ class AdoClient:
         self._connection = connection
         self._profile = profile
         self._limits = limits or AdoLimits()
-        self._verify = verify
-        self._session = session if session is not None else requests.Session()
-        self._session.trust_env = False
+        self._ca_file = Path(verify) if isinstance(verify, str) else None
+        self._transport = transport
         self._auth = "Basic " + base64.b64encode((":" + pat).encode("utf-8")).decode("ascii")
 
-    def _budget(self) -> _Budget:
-        return _Budget(time.monotonic() + self._limits.deadline_seconds, self._limits.max_bytes)
+    @asynccontextmanager
+    async def _operation(self, endpoint: str) -> AsyncIterator[_Operation]:
+        end = asyncio.get_running_loop().time() + self._limits.deadline_seconds
+        operation = None
+        try:
+            async with private_http_client(
+                end,
+                ca_file=self._ca_file,
+                transport=self._transport,
+                connect_timeout=self._limits.connect_timeout,
+                read_timeout=self._limits.read_timeout,
+            ) as client:
+                operation = _Operation(client, endpoint, end, self._limits.max_bytes)
+                yield operation
+                operation.remaining()
+            operation.remaining()
+        except (TimeoutError, httpx.TimeoutException):
+            raise AdoReadError(AdoReason.TIMEOUT, endpoint=operation.endpoint if operation else endpoint) from None
+        except httpx.HTTPError:
+            raise AdoReadError(AdoReason.UNAVAILABLE, endpoint=operation.endpoint if operation else endpoint) from None
 
     @staticmethod
     def _check_id(item_id: int) -> None:
         if not _positive_int(item_id):
             raise ValueError("ADO 工單 ID 必須是正整數")
 
-    def _get(self, item_id: int, endpoint: str, suffix: str, params: dict[str, Any], budget: _Budget) -> dict[str, Any]:
-        left = budget.remaining(endpoint)
+    async def _get(self, item_id: int, endpoint: str, suffix: str, params: dict[str, Any], operation: _Operation) -> dict[str, Any]:
+        operation.endpoint = endpoint
+        operation.remaining()
         url = f"{self._connection.collection_url}/{quote(self._connection.project, safe='')}/_apis/wit/workItems/{item_id}{suffix}"
-        timeout = (min(self._limits.connect_timeout, left), min(self._limits.read_timeout, left))
-        response = None
-        try:
-            response = self._session.get(
-                url,
-                params=params,
-                headers={"Accept": "application/json", "Authorization": self._auth},
-                timeout=timeout,
-                verify=self._verify,
-                allow_redirects=False,
-                stream=True,
-            )
+        async with operation.client.stream(
+            "GET", url,
+            params=params,
+            headers={"Accept": "application/json", "Accept-Encoding": "identity", "Authorization": self._auth},
+        ) as response:
             status = response.status_code
             reasons = {401: AdoReason.AUTH_REQUIRED, 403: AdoReason.FORBIDDEN, 404: AdoReason.NOT_FOUND}
             if status in reasons:
@@ -323,49 +338,44 @@ class AdoClient:
             content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
             if content_type != "application/json" and not content_type.endswith("+json"):
                 raise AdoReadError(AdoReason.INVALID_RESPONSE, endpoint=endpoint, status=status)
-            chunks = []
-            size = 0
-            for chunk in response.iter_content(chunk_size=16_384):
-                budget.remaining(endpoint)
-                size += len(chunk)
-                if budget.used_bytes + size > budget.max_bytes:
+            if response.headers.get("Content-Encoding", "identity").strip().lower() != "identity":
+                raise AdoReadError(AdoReason.INVALID_RESPONSE, endpoint=endpoint)
+            body = bytearray()
+            async for chunk in response.aiter_raw():
+                operation.remaining()
+                if operation.used_bytes + len(chunk) > operation.max_bytes:
                     raise AdoReadError(AdoReason.PARTIAL, endpoint=endpoint)
-                chunks.append(chunk)
-            budget.used_bytes += size
-            budget.remaining(endpoint)
+                operation.used_bytes += len(chunk)
+                body.extend(chunk)
             try:
-                payload = json.loads(b"".join(chunks), object_pairs_hook=_json_object, parse_constant=_json_constant)
+                payload = json.loads(body, object_pairs_hook=_json_object, parse_constant=_json_constant)
             except (UnicodeDecodeError, ValueError, RecursionError):
                 raise AdoReadError(AdoReason.INVALID_RESPONSE, endpoint=endpoint) from None
+            operation.remaining()
             if not isinstance(payload, dict):
                 raise AdoReadError(AdoReason.INVALID_RESPONSE, endpoint=endpoint)
             return payload
-        except requests.Timeout:
-            raise AdoReadError(AdoReason.TIMEOUT, endpoint=endpoint) from None
-        except requests.RequestException:
-            raise AdoReadError(AdoReason.UNAVAILABLE, endpoint=endpoint) from None
-        finally:
-            if response is not None:
-                response.close()
 
-    def get_work_item(self, item_id: int) -> AdoWorkItem:
+    async def get_work_item(self, item_id: int) -> AdoWorkItem:
         self._check_id(item_id)
-        return self._get_work_item(item_id, self._budget())
+        async with self._operation("work_item") as operation:
+            return await self._get_work_item(item_id, operation)
 
-    def _get_work_item(self, item_id: int, budget: _Budget) -> AdoWorkItem:
-        payload = self._get(item_id, "work_item", "", {"$expand": "relations", "api-version": self._profile.work_items}, budget)
+    async def _get_work_item(self, item_id: int, operation: _Operation) -> AdoWorkItem:
+        payload = await self._get(item_id, "work_item", "", {"$expand": "relations", "api-version": self._profile.work_items}, operation)
         return _work_item(payload, item_id, "work_item")
 
-    def list_revisions(self, item_id: int) -> tuple[AdoRevision, ...]:
+    async def list_revisions(self, item_id: int) -> tuple[AdoRevision, ...]:
         self._check_id(item_id)
-        return self._list_revisions(item_id, self._budget())
+        async with self._operation("revisions") as operation:
+            return await self._list_revisions(item_id, operation)
 
-    def _list_revisions(self, item_id: int, budget: _Budget) -> tuple[AdoRevision, ...]:
+    async def _list_revisions(self, item_id: int, operation: _Operation) -> tuple[AdoRevision, ...]:
         output: list[AdoRevision] = []
         seen_revisions: set[int] = set()
         page_size = self._limits.page_size
         for page in range(self._limits.max_pages):
-            payload = self._get(item_id, "revisions", "/revisions", {"$top": page_size, "$skip": page * page_size, "api-version": self._profile.revisions}, budget)
+            payload = await self._get(item_id, "revisions", "/revisions", {"$top": page_size, "$skip": page * page_size, "api-version": self._profile.revisions}, operation)
             value = payload.get("value")
             count = payload.get("count")
             if type(count) is not int or count < 0 or not isinstance(value, list) or count != len(value) or count > page_size:
@@ -382,11 +392,12 @@ class AdoClient:
                 return tuple(output)
         raise AdoReadError(AdoReason.PARTIAL, endpoint="revisions")
 
-    def list_comments(self, item_id: int) -> tuple[AdoComment, ...]:
+    async def list_comments(self, item_id: int) -> tuple[AdoComment, ...]:
         self._check_id(item_id)
-        return self._list_comments(item_id, self._budget())
+        async with self._operation("comments") as operation:
+            return await self._list_comments(item_id, operation)
 
-    def _list_comments(self, item_id: int, budget: _Budget) -> tuple[AdoComment, ...]:
+    async def _list_comments(self, item_id: int, operation: _Operation) -> tuple[AdoComment, ...]:
         output: list[AdoComment] = []
         seen_comments: set[int] = set()
         seen_tokens: set[str] = set()
@@ -395,7 +406,7 @@ class AdoClient:
             params: dict[str, Any] = {"$top": self._limits.page_size, "api-version": self._profile.comments}
             if token is not None:
                 params["continuationToken"] = token
-            payload = self._get(item_id, "comments", "/comments", params, budget)
+            payload = await self._get(item_id, "comments", "/comments", params, operation)
             comments = payload.get("comments")
             count = payload.get("count")
             if type(count) is not int or count < 0 or not isinstance(comments, list) or count != len(comments) or count > self._limits.page_size:
@@ -424,7 +435,11 @@ class AdoClient:
             token = next_token
         raise AdoReadError(AdoReason.PARTIAL, endpoint="comments")
 
-    def read_item_bundle(self, item_id: int) -> AdoItemBundle:
+    async def read_item_bundle(self, item_id: int) -> AdoItemBundle:
         self._check_id(item_id)
-        budget = self._budget()
-        return AdoItemBundle(self._get_work_item(item_id, budget), self._list_revisions(item_id, budget), self._list_comments(item_id, budget))
+        async with self._operation("work_item") as operation:
+            return AdoItemBundle(
+                await self._get_work_item(item_id, operation),
+                await self._list_revisions(item_id, operation),
+                await self._list_comments(item_id, operation),
+            )
