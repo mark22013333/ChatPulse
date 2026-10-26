@@ -227,7 +227,7 @@ export interface MentionCounts {
 }
 
 export interface Me {
-  features?: { project_context?: boolean }
+  features?: { project_context?: boolean; reply_evidence?: boolean }
   viewer: Viewer
   scopes: string[]
   has_identity_scope: boolean
@@ -390,6 +390,9 @@ export interface StoredDraft {
     meta?: SseMeta
     project_status?: 'complete' | 'partial'
     semantic_status?: 'unverified'
+    assessment?: ReplyAssessment | null
+    receipt_id?: string | null
+    review_revision?: number
   }
   created_at: string
   sent_at: string | null
@@ -656,9 +659,47 @@ export interface SseChunk {
   text: string
 }
 
+export type ReplyAssessment = {
+  status: 'evaluated' | 'unevaluated'
+  method: 'model_assisted_v1'
+  text_hash: string
+  claims: Array<{
+    id: string
+    text: string
+    kind: 'status' | 'cause' | 'recommendation' | 'other_fact'
+    relation: 'supported' | 'contradicted' | 'insufficient'
+    reference_validity: 'valid' | 'invalid' | 'unresolved'
+    currency: 'current' | 'superseded' | 'unknown'
+    scope: 'match' | 'mismatch' | 'unknown'
+    reason: string
+    citations: Array<{ evidence_id: string; locator: string; revision: string }>
+  }>
+  gaps: string[]
+  stop_reason: string | null
+}
+
+export interface ReviewProgress {
+  type: 'review_progress'
+  stage: 'reading' | 'assessing' | 'drafting' | 'reviewing'
+  mention_id: number
+  scope_digest: string
+  counts: Record<string, number>
+}
+
+export interface DraftReviewResult {
+  draft_id: number
+  text_hash: string
+  review_revision: number
+  receipt_id: string | null
+  assessment: ReplyAssessment
+}
+
 export interface SseDone {
+  assessment?: ReplyAssessment | null
+  receipt_id?: string | null
+  review_revision?: number
   scope_digest?: string | null
-  project_status?: 'complete' | null
+  project_status?: 'complete' | 'partial' | null
   type: 'done'
   summary_id?: number
   draft_id?: number
@@ -1148,17 +1189,19 @@ export interface InquiryScope {
   profile_name: string
   revision: number
   sources: (ProjectSource & {
-    use: 'metadata_only' | 'reply_context'
+    use: 'metadata_only' | 'analysis_only' | 'reply_context'
     registration_fingerprint?: string
     resolved_branch?: string
   })[]
   limit: number
   code_terms: string[]
+  environment?: CodeEnvironment | null
   digest: string
 }
 
 export interface ProjectChoice {
   profile: ProjectProfile
-  approvedIds: string[]
+  sourceUses: Record<string, 'metadata_only' | 'analysis_only' | 'reply_context'>
+  environment?: CodeEnvironment | null
   consent: { spaceId: string; threadName: string | null } | null
 }

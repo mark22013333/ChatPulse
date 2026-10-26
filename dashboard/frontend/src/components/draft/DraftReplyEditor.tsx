@@ -1,6 +1,7 @@
 import { MessageSquareQuoteIcon, SendIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
+import { useAuthStore } from '@/store/auth'
 import { useDraftStore, selectSending } from '@/store/draft'
 
 /**
@@ -15,6 +16,14 @@ export function DraftReplyEditor({ onRequestSend }: { onRequestSend: () => void 
   const projectBlocked = useDraftStore((s) => s.projectStatus !== null && s.projectStatus !== 'complete')
   const streaming = useDraftStore((s) => s.streaming)
   const sending = useDraftStore(selectSending)
+  const draftId = useDraftStore((s) => s.draftId)
+  const active = useDraftStore((s) => s.active)
+  const scope = useDraftStore((s) => s.meta?.project_scope)
+  const receiptId = useDraftStore((s) => s.receiptId)
+  const reviewPending = useDraftStore((s) => s.reviewPending)
+  const review = useDraftStore((s) => s.review)
+  const evidenceMode = useAuthStore((s) => s.me?.features?.reply_evidence === true) && Boolean(scope)
+  const needsReview = evidenceMode && !receiptId
 
   return (
     // 與〈脈絡分析〉同一個卡片語法：標題與主要動作都在標頭帶裡。
@@ -26,17 +35,24 @@ export function DraftReplyEditor({ onRequestSend }: { onRequestSend: () => void 
           建議回話
           <span className="text-xs font-normal text-muted-foreground">（可直接編輯）</span>
         </h3>
+        <div className="flex items-center gap-2">
+        {needsReview && draftId && !streaming && !projectBlocked ? <Button size="sm" variant="outline"
+          disabled={reviewPending || !replyText.trim()} onClick={() => { if (active) void review(active.mentionId) }}>
+          {reviewPending ? '查核中…' : '查核目前回話'}
+        </Button> : null}
         <Button
           size="sm"
           onClick={onRequestSend}
           // 三個條件各有理由：串流中送出的是半截草稿；送出中連按會送兩則；
           // 空白內容送出去是一則空訊息。`DraftReplyWorkspace.test.tsx` 各有一條守著。
-          disabled={streaming || sending || projectBlocked || !replyText.trim()}
+          disabled={streaming || sending || projectBlocked || reviewPending || needsReview || !replyText.trim()}
         >
           <SendIcon />
           送出回話
         </Button>
+        </div>
       </div>
+      {needsReview && !streaming && !projectBlocked ? <p className="px-4 pt-2 text-xs text-muted-foreground">請先查核目前的回話，再進行送出確認。</p> : null}
       <div className="p-4">
         <Textarea
           value={replyText}

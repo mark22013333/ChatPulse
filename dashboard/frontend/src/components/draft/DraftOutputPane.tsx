@@ -3,6 +3,7 @@ import { AlertCircleIcon, CompassIcon } from 'lucide-react'
 import { Markdown } from '@/components/Markdown'
 import { DraftReplyEditor } from '@/components/draft/DraftReplyEditor'
 import { formatDateTime } from '@/lib/format'
+import { useAuthStore } from '@/store/auth'
 import { splitDraft, useDraftStore } from '@/store/draft'
 
 interface DraftOutputPaneProps {
@@ -22,6 +23,13 @@ interface DraftOutputPaneProps {
 export function DraftOutputPane({ active, onRequestSend }: DraftOutputPaneProps) {
   const scope = useDraftStore((s) => s.meta?.project_scope)
   const status = useDraftStore((s) => s.projectStatus)
+  const evidenceEnabled = useAuthStore((s) => s.me?.features?.reply_evidence === true)
+  const selectedProject = useDraftStore((s) => Boolean(s.active?.projectChoice))
+  const evidenceMode = evidenceEnabled && (Boolean(scope) || selectedProject)
+  const assessment = useDraftStore((s) => s.assessment)
+  const receiptId = useDraftStore((s) => s.receiptId)
+  const reviewPending = useDraftStore((s) => s.reviewPending)
+  const reviewProgress = useDraftStore((s) => s.reviewProgress)
   const references = useDraftStore((s) => s.meta?.reference_spaces)
   const codeRefs = useDraftStore((s) => s.meta?.code_refs)
   const raw = useDraftStore((s) => s.raw)
@@ -39,12 +47,27 @@ export function DraftOutputPane({ active, onRequestSend }: DraftOutputPaneProps)
   return (
     <div className="min-h-0 overflow-y-auto p-5">
       {scope ? <section aria-label="本次專案範圍" className="mb-4 space-y-1 rounded border p-3 text-xs">
-        <p className="font-semibold">{scope.profile_name} · r{scope.revision} · 未語意查證</p>
+        <p className="font-semibold">{scope.profile_name} · r{scope.revision} · {evidenceEnabled ? '模型輔助評估，仍需確認' : '未語意查證'}</p>
         <p>{status === 'stale' ? '來源設定已失效，請重新產生' : status === 'complete' ? '生成完整，仍須人工確認' : '部分草稿，不可送出'}</p>
         <p className="break-all">目標 {scope.target_space_id} / {scope.target_thread_name ?? '無討論串'}</p>
         <p>本次選用 {scope.sources.filter((s) => s.use === 'reply_context').map((s) => s.label).join('、') || '無補充來源'}</p>
-        <p>僅 metadata {scope.sources.filter((s) => s.use === 'metadata_only').map((s) => s.label).join('、') || '無'}</p>
+        {evidenceEnabled ? <p>僅供私有分析 {scope.sources.filter((s) => s.use === 'analysis_only').map((s) => s.label).join('、') || '無'}</p> : null}
+        <p>僅顯示來源 {scope.sources.filter((s) => s.use === 'metadata_only').map((s) => s.label).join('、') || '無'}</p>
+        {evidenceEnabled ? <p>本題環境 {scope.environment === 'production' ? '正式環境' : scope.environment === 'uat' ? 'UAT' : scope.environment === 'dev' ? '開發環境' : '未知'}</p> : null}
         <p>已回報實讀 {references?.map((s) => s.space_name).join('、') || '無 Space 回報'}；{codeRefs?.map((s) => s.project_name).join('、') || '無 Git 回報'}。空結果或部分查詢不代表完整支持。</p>
+      </section> : null}
+      {evidenceMode && reviewProgress ? <p role="status" className="mb-3 text-xs text-muted-foreground">{({ reading: '讀取已選來源', assessing: '整理證據', drafting: '撰寫回話', reviewing: '評估回話' })[reviewProgress]}…</p> : null}
+      {evidenceMode && (assessment || reviewPending) ? <section aria-label="回話評估" className="mb-4 space-y-2 rounded border p-3 text-xs">
+        <h3 className="font-semibold">模型輔助評估，仍需確認</h3>
+        <p>{reviewPending ? '正在重新查核目前文字。' : receiptId ? '可進入送出確認；請逐項閱讀後再送出。' : '尚無可送出的查核結果，請查核目前回話或重新產生。'}</p>
+        {assessment?.stop_reason ? <p>查核停止：{assessment.stop_reason}</p> : null}
+        {assessment?.claims.map((claim) => <div key={claim.id} className="space-y-1 border-t pt-2">
+          <p>{claim.text}</p>
+          <p className="text-muted-foreground">{claim.relation === 'supported' ? '來源支持' : claim.relation === 'contradicted' ? '來源矛盾' : '支持不足'} · {claim.reference_validity === 'valid' ? '引用有效' : claim.reference_validity === 'invalid' ? '引用無效' : '引用待確認'} · {claim.currency === 'current' ? '來源為目前版本' : claim.currency === 'superseded' ? '來源已有新版' : '時效未知'} · {claim.scope === 'match' ? '範圍相符' : claim.scope === 'mismatch' ? '範圍不符' : '範圍未知'}</p>
+          <p>{claim.reason}</p>
+          {claim.citations.map((citation) => <p key={`${citation.evidence_id}-${citation.locator}`} className="break-all text-muted-foreground">引用：{citation.locator} · {citation.revision}</p>)}
+        </div>)}
+        {assessment?.gaps.length ? <div className="border-t pt-2"><p className="font-medium">仍有缺口</p><ul className="list-disc pl-4">{assessment.gaps.map((gap, index) => <li key={index}>{gap}</li>)}</ul></div> : null}
       </section> : null}
       {error ? (
         <div className="mb-4 flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
@@ -55,11 +78,11 @@ export function DraftOutputPane({ active, onRequestSend }: DraftOutputPaneProps)
 
       {!raw && !streaming && !error ? (
         <p className="py-10 text-center text-xs text-muted-foreground">
-          勾好 Reference Space 之後按「產生 Draft Reply」。草稿永遠只是草稿，一定要你看過、改過、確認後才會送出。
+          {evidenceMode ? '選好專案來源與本題目標後，按「產生 Draft Reply」。' : '勾好 Reference Space 之後按「產生 Draft Reply」。'}草稿永遠只是草稿，一定要你看過、改過、確認後才會送出。
         </p>
       ) : null}
 
-      {raw || streaming ? (
+      {raw || streaming || (evidenceMode && assessment) ? (
         <div className="space-y-4">
           {/*
             還原的草稿要**在內容上方**講清楚它是舊的。
@@ -100,7 +123,7 @@ export function DraftOutputPane({ active, onRequestSend }: DraftOutputPaneProps)
               <span className="font-medium">Sepia 潤稿未採用</span>
               <span className="ml-1">{polish.fallback_reason}</span>
               <span className="ml-1 text-muted-foreground">
-                下面顯示的是未潤稿的版本，內容仍然可以直接送出。
+                {evidenceMode ? '下面顯示的是未潤稿的版本，請先查核再送出。' : '下面顯示的是未潤稿的版本，內容仍然可以直接送出。'}
               </span>
             </div>
           ) : null}
@@ -112,7 +135,7 @@ export function DraftOutputPane({ active, onRequestSend }: DraftOutputPaneProps)
             與摘要工作台的產出卡也對不起來。收進標頭帶之後，這一頁有幾個
             區塊用掃的就數得出來——那正是卡片語法存在的理由。
           */}
-          <section className="overflow-hidden rounded-xl border border-border bg-surface">
+          {!evidenceMode ? <section className="overflow-hidden rounded-xl border border-border bg-surface">
             <div className="flex items-center justify-between gap-2 border-b border-line px-4 py-2">
               <h3 className="flex items-center gap-1.5 text-sm font-semibold">
                 <CompassIcon className="size-4 text-signal" />
@@ -127,7 +150,7 @@ export function DraftOutputPane({ active, onRequestSend }: DraftOutputPaneProps)
               active={active}
               className="p-5"
             />
-          </section>
+          </section> : null}
 
           <DraftReplyEditor onRequestSend={onRequestSend} />
         </div>

@@ -533,3 +533,15 @@ class ProjectContextStale(ChatPulseError):
     code = "PROJECT_CONTEXT_STALE"
     http_status = 409
     default_message = "專案範圍已失效，請重新載入並產生 Draft Reply"
+
+
+class ReplyReviewRequired(ChatPulseError):
+    code = "REVIEW_REQUIRED"
+    http_status = 409
+    default_message = "回話或來源已改變，請重新查核後再確認送出"
+
+
+class ReplyDispatchUnknown(ChatPulseError):
+    code = "DISPATCH_UNKNOWN"
+    http_status = 409
+    default_message = "送出結果尚未確定，請先到原 Space 確認，系統不會自動重送"

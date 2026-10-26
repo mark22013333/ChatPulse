@@ -93,12 +93,15 @@ def make_scope(owner: int, mention: dict, profile: dict, selection: dict,
         selection.get("target_thread_name") != mention.get("thread_name")
     ):
         raise ValueError("請確認本題確切的 Space 與討論串")
+    environment = selection.get("environment")
+    if environment not in (None, "production", "uat", "dev"):
+        raise ValueError("問題環境無效")
     choices = selection.get("sources", [])
     uses = {c["binding_id"]: c["use"] for c in choices}
     bindings = profile["sources"]
     if len(uses) != len(choices) or set(uses) != {b["id"] for b in bindings}:
         raise ValueError("本題來源必須與專案完整對應")
-    if any(use not in ("metadata_only", "reply_context") for use in uses.values()):
+    if any(use not in ("metadata_only", "analysis_only", "reply_context") for use in uses.values()):
         raise ValueError("來源用途無效")
     chats, git_refs, sources = [], [], []
     for raw in bindings:
@@ -106,7 +109,7 @@ def make_scope(owner: int, mention: dict, profile: dict, selection: dict,
         use = uses[binding.id]
         item = {**raw, "use": use}
         if isinstance(binding, ChatBinding):
-            if use == "reply_context":
+            if use in ("analysis_only", "reply_context"):
                 chats.append(binding.space_id)
         else:
             project = projects.get(binding.code_project_id)
@@ -116,7 +119,7 @@ def make_scope(owner: int, mention: dict, profile: dict, selection: dict,
             if not branch:
                 raise ValueError("Git 登錄沒有此環境分支")
             item.update(registration_fingerprint=git_fingerprint(project), resolved_branch=branch)
-            if use == "reply_context":
+            if use in ("analysis_only", "reply_context"):
                 git_refs.append((project, binding.environment, branch, list(binding.paths)))
         sources.append(item)
     if len(git_refs) > max_git:
@@ -125,6 +128,6 @@ def make_scope(owner: int, mention: dict, profile: dict, selection: dict,
                  message_name=mention["message_name"], target_space_id=mention["space_id"],
                  target_thread_name=mention.get("thread_name"), profile_id=profile["id"],
                  profile_name=profile["name"], revision=profile["revision"], sources=sources,
-                 limit=limit, code_terms=terms)
+                 limit=limit, code_terms=terms, environment=environment)
     scope["digest"] = digest(scope)
     return ApprovedSources(json.dumps(scope, ensure_ascii=False), tuple(dict.fromkeys(chats)), tuple(git_refs))

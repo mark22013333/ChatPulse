@@ -1,5 +1,5 @@
 import { ApiError } from './api'
-import type { SseChunk, SseDone, SseError, SseMeta } from './types'
+import type { ReviewProgress, SseChunk, SseDone, SseError, SseMeta } from './types'
 
 /**
  * 串流事件的處理函式。三個型別參數是 meta／chunk／done 各自的形狀。
@@ -20,6 +20,7 @@ export interface SseHandlers<
   onMeta?: (event: M) => void
   onChunk?: (event: C) => void
   onDone?: (event: D) => void
+  onReviewProgress?: (event: ReviewProgress) => void
   onError?: (event: SseError) => void
 }
 
@@ -142,6 +143,9 @@ export async function streamSse<
         return false
       case 'chunk':
         handlers.onChunk?.(event as unknown as C)
+        return false
+      case 'review_progress':
+        handlers.onReviewProgress?.(event as unknown as ReviewProgress)
         return false
       case 'done':
         handlers.onDone?.(event as unknown as D)

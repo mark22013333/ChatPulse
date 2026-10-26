@@ -415,3 +415,5 @@ def ensure_data_dir() -> str:
     return DATA_DIR
 
 PROJECT_CONTEXT_ENABLED = os.environ.get("CHATPULSE_PROJECT_CONTEXT_ENABLED", "").lower() in ("1", "true")
+
+REPLY_EVIDENCE_ENABLED = os.environ.get("CHATPULSE_REPLY_EVIDENCE_ENABLED", "").lower() in ("1", "true")

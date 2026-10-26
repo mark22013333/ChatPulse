@@ -49,7 +49,7 @@ class ProjectContextTest(ProjectContextFixture, unittest.TestCase):
         self.assertEqual(repo.get_project_profile(self.a, self.profile["id"])["sources"], [CHAT])
         self.assertFalse(repo.get_preferences(self.a)["project_context_opt_in"])
         self.assertTrue(repo.set_project_context_opt_in(self.a, True)["project_context_opt_in"])
-        self.assertEqual(db.query_one("SELECT value FROM schema_meta WHERE key='schema_version'")["value"], "10")
+        self.assertEqual(db.query_one("SELECT value FROM schema_meta WHERE key='schema_version'")["value"], str(db.SCHEMA_VERSION))
 
     def test_v9_preferences_upgrade(self):
         conn = db.get_connection()

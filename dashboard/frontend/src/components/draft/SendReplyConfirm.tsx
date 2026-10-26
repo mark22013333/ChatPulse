@@ -3,6 +3,7 @@ import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { errorMessage } from '@/lib/api'
 import { formatDateTime } from '@/lib/format'
 import { useDraftStore, selectSending } from '@/store/draft'
+import { useAuthStore } from '@/store/auth'
 import { useMentionsStore } from '@/store/mentions'
 import type { Mention } from '@/lib/types'
 
@@ -27,6 +28,8 @@ export function SendReplyConfirm({ mention, open, onOpenChange }: SendReplyConfi
   const applyResolvedMany = useMentionsStore((s) => s.applyResolvedMany)
   const selectedNames = meta?.reference_spaces?.map((space) => space.space_name) ?? []
   const scope = meta?.project_scope
+  const evidenceMode = useAuthStore((s) => s.me?.features?.reply_evidence === true) && Boolean(scope)
+  const receiptId = useDraftStore((s) => s.receiptId)
 
   const answering = meta?.answering ?? []
 
@@ -80,7 +83,7 @@ export function SendReplyConfirm({ mention, open, onOpenChange }: SendReplyConfi
             <> 送出後這則 Mention 會自動變成已處理。</>
           )}
           {scope ? <span className="mt-2 block text-xs">
-            {scope.profile_name} · r{scope.revision} · 未語意查證<br />
+            {scope.profile_name} · r{scope.revision} · {evidenceMode ? '模型輔助評估，仍需確認' : '未語意查證'}<br />
             目標 {scope.target_space_id} / {scope.target_thread_name ?? '無討論串'}<br />
             本次選用 {scope.sources.filter((source) => source.use === 'reply_context').map((source) => source.label).join('、') || '無補充來源'}
           </span> : null}
@@ -95,7 +98,7 @@ export function SendReplyConfirm({ mention, open, onOpenChange }: SendReplyConfi
       preview={replyText}
       previewLabel="回話全文預覽"
       confirmLabel="確認送出"
-      pending={sending}
+      pending={sending || (evidenceMode && !receiptId)}
       onConfirm={() => void handleSend()}
     />
   )

@@ -12,6 +12,7 @@ send_message）簽章不變，mcp_app 與 summarizer 不需改動。
 """
 
 import os
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
@@ -112,6 +113,7 @@ class GoogleChatClient:
         self.credentials = credentials or load_legacy_credentials(interactive=interactive)
         self._on_token_refresh = on_token_refresh
         self._session = AuthorizedSession(self.credentials)
+        self._reply_session = AuthorizedSession(self.credentials, max_refresh_attempts=0)
         # 這個 session 會被多個執行緒池共用，預設 10 條的連線池不夠，
         # 理由與數字見 config.CHAT_HTTP_POOL_MAXSIZE
         self._session.mount(
@@ -131,29 +133,35 @@ class GoogleChatClient:
         *,
         params: Optional[Dict[str, Any]] = None,
         json_body: Optional[Dict[str, Any]] = None,
+        single_attempt: bool = False,
+        persist_token: bool = True,
     ) -> Dict[str, Any]:
         url = f"{API_BASE}/{path.lstrip('/')}"
         last_error: Optional[Exception] = None
 
-        for attempt in range(cfg.CHAT_RETRY_MAX_ATTEMPTS):
+        attempts = 1 if single_attempt else cfg.CHAT_RETRY_MAX_ATTEMPTS
+        for attempt in range(attempts):
             try:
-                resp = self._session.request(
-                    method, url, params=params, json=json_body, timeout=60
+                session = self._reply_session if single_attempt else self._session
+                resp = session.request(
+                    method, url, params=params, json=json_body, timeout=60,
+                    allow_redirects=not single_attempt
                 )
             except requests.RequestException as exc:
                 last_error = ChatApiError(f"連線 Google Chat 失敗：{exc}")
-                if attempt < cfg.CHAT_RETRY_MAX_ATTEMPTS - 1:
+                if attempt < attempts - 1:
                     time.sleep(cfg.CHAT_RETRY_BASE_DELAY * (2**attempt))
                     continue
                 raise last_error from exc
 
-            self._persist_refreshed_token()
+            if persist_token:
+                self._persist_refreshed_token()
 
             if resp.status_code == 200:
                 return resp.json() if resp.content else {}
 
             # 8.4：Google Chat 回 429 時採指數退避重試，最多 3 次
-            if resp.status_code == 429 and attempt < cfg.CHAT_RETRY_MAX_ATTEMPTS - 1:
+            if resp.status_code == 429 and attempt < attempts - 1:
                 retry_after = resp.headers.get("Retry-After")
                 delay = (
                     float(retry_after)
@@ -272,6 +280,29 @@ class GoogleChatClient:
     # ------------------------------------------------------------------
     # 訊息
     # ------------------------------------------------------------------
+
+    def read_reply_message(self, message_name: str) -> Dict[str, Any]:
+        """受限查證讀取不重試，也不讓晚到的 worker 寫入更新後的 token。"""
+        result = self._request("GET", message_name, single_attempt=True, persist_token=False)
+        if not isinstance(result, dict):
+            raise ChatApiError("Chat 訊息格式不符")
+        return result
+
+    def read_reply_recent(self, space_id: str, limit: int, *, thread_name: Optional[str] = None) -> List[Dict[str, Any]]:
+        limit = validate_limit(limit)
+        params = {"pageSize": limit, "orderBy": "createTime desc"}
+        if thread_name is not None:
+            if not re.fullmatch(re.escape(space_id) + r"/threads/[^/\s\"]+", thread_name):
+                raise InvalidParameter("查核討論串不屬於指定 Space")
+            params["filter"] = f'thread.name = "{thread_name}"'
+        result = self._request("GET", f"{space_id}/messages", single_attempt=True,
+                               persist_token=False, params=params)
+        if not isinstance(result, dict) or not isinstance(result.get("messages", []), list):
+            raise ChatApiError("Chat 訊息清單格式不符")
+        rows = result.get("messages", [])
+        if len(rows) > limit or (result.get("nextPageToken") and len(rows) < limit):
+            raise ChatApiError("Chat 近期視窗未完整讀取")
+        return list(reversed(rows))
 
     def fetch_recent_messages(
         self, space_id: str, limit: int = cfg.LIMIT_DEFAULT
@@ -414,7 +445,8 @@ class GoogleChatClient:
         return collected
 
     def send_message(
-        self, space_id: str, text: str, thread_name: Optional[str] = None
+        self, space_id: str, text: str, thread_name: Optional[str] = None,
+        *, single_attempt: bool = False
     ) -> Dict[str, Any]:
         """以 Viewer 本人身分送出訊息（ADR-0001）。
 
@@ -427,7 +459,8 @@ class GoogleChatClient:
             # 沒有這個參數的話，Chat 會另開新串而不是回到原串
             params["messageReplyOption"] = "REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD"
         return self._request(
-            "POST", f"{space_id}/messages", params=params or None, json_body=body
+            "POST", f"{space_id}/messages", params=params or None, json_body=body,
+            single_attempt=single_attempt, persist_token=not single_attempt
         )
 
     # ------------------------------------------------------------------
