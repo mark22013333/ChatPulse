@@ -15,6 +15,10 @@ google-api-python-client==2.200.0
 google-auth-oauthlib==1.4.1
 google-auth-httplib2==0.4.2
 requests==2.34.2
+# ADO async transport 的公開 trace 事件依賴這組版本。
+httpx==0.28.1
+httpcore==1.0.9
+certifi==2026.7.22
 # core/crypto.py 用 Fernet 對稱加密存進 credentials 表的 OAuth token
 cryptography==50.0.1
 
