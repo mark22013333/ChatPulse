@@ -21,6 +21,7 @@ httpcore==1.0.9
 certifi==2026.7.22
 # core/crypto.py 用 Fernet 對稱加密存進 credentials 表的 OAuth token
 cryptography==50.0.1
+PyJWT==2.13.0
 
 # --- MCP server（mcp_app）---
 mcp==2.1.1
