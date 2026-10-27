@@ -293,6 +293,22 @@ class ClaudeApiError(ChatPulseError):
     default_message = "Claude 回應非預期內容"
 
 
+class AcpError(ChatPulseError):
+    """本機代理需要檢查登入或 adapter，不能誤報成雲端 API 故障。"""
+
+    code = "ACP_ERROR"
+    http_status = 502
+    default_message = "本機 ACP 未能完成產生內容"
+
+
+class LocalAcpForbidden(ChatPulseError):
+    """主機 AI 帳號的 owner 限制與 Google Space 成員資格不同。"""
+
+    code = "LOCAL_ACP_FORBIDDEN"
+    http_status = 403
+    default_message = "本機 ACP 僅供服務設定的 Viewer 使用"
+
+
 class ChatApiError(ChatPulseError):
     code = "CHAT_API_ERROR"
     http_status = 502

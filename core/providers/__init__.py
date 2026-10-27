@@ -18,12 +18,15 @@ from typing import Dict, List, Optional
 from .. import config as cfg
 from ..errors import InvalidParameter
 from .base import AIProvider, UsageRecorder
+from .acp import ClaudeAcpProvider, CodexAcpProvider
 from .claude_cli import ClaudeCLIProvider
 from .gemini import GeminiProvider
 
 _CLASSES = {
     ClaudeCLIProvider.name: ClaudeCLIProvider,
     GeminiProvider.name: GeminiProvider,
+    CodexAcpProvider.name: CodexAcpProvider,
+    ClaudeAcpProvider.name: ClaudeAcpProvider,
 }
 
 #: 別名 -> 依序嘗試的實作名稱。第一個「現在可用」的雀屏中選。

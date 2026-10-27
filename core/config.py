@@ -56,6 +56,13 @@ CLAUDE_CLI_DISABLED_TOOLS = (
     "EnterPlanMode,ExitPlanMode,SendUserFile,TaskOutput,TaskStop,BashOutput,KillShell"
 )
 
+LOCAL_ACP_VIEWER_ID = os.environ.get("CHATPULSE_LOCAL_ACP_VIEWER_ID", "")
+CODEX_ACP_COMMAND = os.environ.get("CHATPULSE_CODEX_ACP_COMMAND", "")
+CLAUDE_ACP_COMMAND = os.environ.get("CHATPULSE_CLAUDE_ACP_COMMAND", "")
+CODEX_ACP_MODEL = os.environ.get("CHATPULSE_CODEX_ACP_MODEL", "")
+CLAUDE_ACP_MODEL = os.environ.get("CHATPULSE_CLAUDE_ACP_MODEL", "")
+ACP_TIMEOUT = os.environ.get("CHATPULSE_ACP_TIMEOUT", "600")
+
 # --- Gemini API ---
 GEMINI_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
 GEMINI_MODEL = os.environ.get("CHATPULSE_GEMINI_MODEL", "gemini-3.6-flash")
