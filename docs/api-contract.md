@@ -17,7 +17,7 @@
   它出現時才是權威，不要從 `message` 那句中文裡用正則挖數字。
 - `limit` 的**範圍**一律 1~1000，超出回 `400 INVALID_PARAMETER`。**預設值多為 50，但依端點而異**（`/mentions` 是 200——那是「列幾筆 Mention」，與「一個 Space 抓幾則對話」不是同一件事），各端點的預設值見下方各節
 - `style` 只接受 `general` / `technical` / `action_only`
-- `provider` 選填，決定用哪個 AI 供應商。可用值：`claude_cli`／`gemini`
+- `provider` 選填，決定用哪個 AI 供應商。可用值：`claude_cli`／`gemini`／`codex_acp`／`claude_acp`
   兩個實作，加上 `claude`／`auto` 兩個**別名**（別名會挑第一個現在可用的實作）。
   `claude_api` 曾是合法值，已於 2026-09-05 移除，現在傳它會回 `400 INVALID_PARAMETER`。
   省略時依序取：Viewer 的 `default_provider` 偏好 → 伺服器的 `CHATPULSE_AI_PROVIDER` → `claude`。
@@ -145,7 +145,7 @@ scope 含 chat 三項 ＋ `openid`/`userinfo.email`/`userinfo.profile`。
 
 | 規則 | 說明 |
 | :--- | :--- |
-| 鍵 | 必須是**具體實作名**（`claude_cli`／`gemini`）。別名 `claude`／`auto` 會展開成不同實作，存了就對應不回來 → `400 INVALID_PARAMETER` |
+| 鍵 | 必須是**具體實作名**（`claude_cli`／`gemini`／`codex_acp`／`claude_acp`）。別名 `claude`／`auto` 會展開成不同實作，存了就對應不回來 → `400 INVALID_PARAMETER` |
 | 值 | 非空字串；**不驗白名單**（`models` 只是常用值，自訂輸入是這個功能的重點） |
 | 值送 `null`／空字串 | 清除**那一個供應商**的偏好，回到「跟著該供應商的預設走」 |
 | 只送部分鍵 | **merge，不是整份覆寫**——沒帶到的供應商偏好原封不動。前端只會送剛改動的那一個，整份覆寫會把另一個供應商存好的值弄丟 |
@@ -246,6 +246,16 @@ Summary 的時間（`summaries.created_at`，UTC、秒精度、`+00:00` 結尾�
 **`provider` 與 `model` 是伺服器實際使用的值**（別名已展開），前端顯示「用了哪個」時要以此為準，不要用送出前的選擇。
 串流結束時後端會把完整摘要寫入 `summaries`（僅本人可見），`done` 事件帶 `summary_id`：
 `{"type":"done","summary_id":12}`
+
+### 本機 ACP 供應商
+
+`codex_acp` 與 `claude_acp` 沿用 Summary、Draft Reply 既有的 `provider`／`model` 欄位，不新增生成端點。它們使用服務主機已登入的本機 AI 帳號，並非 Google Viewer 個別的訂閱綁定。儀表板在解析具體 provider 後驗證 `CHATPULSE_LOCAL_ACP_VIEWER_ID`；未設定回 `500 CONFIGURATION_ERROR`，不相符回 `403 LOCAL_ACP_FORBIDDEN`。所有 HTTP 生成入口都必須帶入已驗證的 Viewer id，不允許以缺少 id 略過此限制。
+
+ACP 僅分析既有 prompt 中選定的文字脈絡，`supports_vision=false`，不改變送出前確認。每次操作建立獨立 session，不載入前次歷史。`model_id` 未設定時為空字串，表示使用 adapter 預設；用量識別為 `codex-acp:agent-default`／`claude-acp:agent-default`，不能當成代理實際回報的模型名稱。本次不虛構代理未回報的 token 用量。
+
+`502 ACP_ERROR` 表示 adapter 啟動、協定、登入／模型、逾時或未完成產出。中途 EOF、非 `end_turn` 與沒有文字都屬失敗，不以空草稿表示成功；串流中途失敗沿用既有 error 事件與部分草稿處理。錯誤不附代理原始 stderr 或完整請求。
+
+provider 描述沿用下方相同欄位。label 明示「服務主機的本機帳號」，`available` 僅檢查 POSIX 平台及執行檔，不保證已登入或可成功推論。ACP 未加入 `auto` 別名；命令只接受伺服器環境中的 JSON argv，不接受 HTTP 命令設定。
 
 ### `GET /api/v1/providers`
 **不需登入**（登入畫面也可能要顯示「目前沒有可用的 AI 供應商」）。

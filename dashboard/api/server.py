@@ -303,6 +303,8 @@ def get_provider(
     模型名由供應商自己回報，不由這裡猜——換供應商後用量表才不會記到錯的模型上。
     """
     name, model_id = resolve_model(viewer_id, name, model)
+    from core.providers.acp import require_local_acp_owner
+    require_local_acp_owner(viewer_id, name)
 
     def _recorder(
         operation: str, model: str, prompt_t: int, output_t: int, total_t: int

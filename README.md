@@ -83,6 +83,8 @@ export ZPLANNER_APIKEY='zp_...'   # 在 ZPlanner 的 /api/tokens/ 建立，明�
 | `auto` | — | **別名**，依序試 `claude_cli` → `gemini`，挑第一個可用的 |
 | `claude_cli` | 本機裝好並登入 Claude Code | 吃現有訂閱、零額外設定 |
 | `gemini` | `GOOGLE_API_KEY` | 既有選項；免費層每天僅 20 次請求 |
+| `codex_acp` | Codex ACP adapter 與本機 ChatGPT 登入 | 將選定對話交給 Codex 分析 |
+| `claude_acp` | Claude ACP adapter 與本機 Claude 登入 | 將選定對話交給 Claude 分析 |
 
 > Anthropic API 供應商（`claude_api`）已於 2026-09-05 移除。它從未對真實 API 跑過，
 > 留著等於在契約與前端選單裡放一個沒人驗過的選項。要接回來的話，
@@ -101,6 +103,48 @@ export CHATPULSE_AI_PROVIDER=claude_cli          # 伺服器預設
 
 儀表板的下拉選單、CLI 的 `--provider`、MCP 的 `provider` 參數三者接受同一組值。
 Viewer 也可以把選擇存成偏好（`default_provider`）。
+
+### 用本機 ACP 分析對話並產生草稿
+
+此模式使用啟動服務的電腦已登入的 Codex／Claude 帳號。Google Viewer 不是另一份 AI 帳號綁定；儀表板只允許伺服器設定的一位 Viewer 使用。請在受信任的本機服務使用，不對外公開。
+
+1. 安裝要使用的 adapter，並在同一個 OS 帳號完成登入。已安裝者可略過安裝。
+
+   ```bash
+   npm install -g @agentclientprotocol/codex-acp@2.3.0
+   codex login
+   # 改用 Claude 時安裝其 adapter，再執行 claude 完成登入
+   npm install -g @agentclientprotocol/claude-agent-acp@0.26.0
+   claude
+   ```
+
+2. 先以 Google 登入儀表板。在該頁的瀏覽器開發者工具 Console 執行以下指令取得 Viewer id，再設定服務環境並重新啟動。
+
+   ```javascript
+   await fetch('/api/v1/me').then(r => r.json()).then(data => data.viewer.id)
+   ```
+
+   ```bash
+   export CHATPULSE_LOCAL_ACP_VIEWER_ID=1  # 改成上一步取得的 id
+   export CHATPULSE_AI_PROVIDER=codex_acp  # 或 claude_acp；也可在畫面單次選擇
+   ./chatpulse.sh web
+   ```
+
+3. 在原有供應商選單選取「Codex ACP」或「Claude ACP」，模型先保持「跟隨預設」。選擇 Mention、勾選需要補充脈絡的 Reference Space，再產生 Draft Reply。對話與已選專案片段會沿用既有 prompt 交給 AI；閱讀與修改後，仍須人工確認才會送出。
+
+每次生成建立新的 ACP session，不混用其他 Viewer 或前一次分析的歷史。開啟證據評估時會分次呼叫 AI，因此每次都會重新帶入所需脈絡。本機 ACP 目前只分析文字，支援 macOS／Linux，不自動加入 `auto` 候選。`/providers` 找到 adapter 只代表可啟動，登入、額度與模型資格由實際生成確認。
+
+ChatPulse 不保留 ACP session 供下次重用；代理自己的本機 session／rollout 紀錄仍由 CLI 管理。代理以空暫存工作目錄啟動，ACP client 不提供 ChatPulse 的檔案、終端與 MCP 工具；CLI 自身的既有設定仍由主機管理。Claude 停用內建工具與設定載入，Codex 採唯讀並停用常見執行工具；這不等於 OS 沙箱。服務的 API key、`ADO_PAT` 等環境變數不會傳入子程序。
+
+| 設定 | 用途 |
+| --- | --- |
+| `CHATPULSE_LOCAL_ACP_VIEWER_ID` | 允許使用本機 ACP 的 Google Viewer id；未設定時儀表板拒絕執行 |
+| `CHATPULSE_CODEX_ACP_COMMAND` | 選填，伺服器設定的 JSON argv，例如 `["/opt/tools/codex-acp"]` |
+| `CHATPULSE_CLAUDE_ACP_COMMAND` | 選填，Claude adapter 的 JSON argv |
+| `CHATPULSE_CODEX_ACP_MODEL`／`CHATPULSE_CLAUDE_ACP_MODEL` | 選填，未設定就沿用 adapter 預設，也可在畫面選自訂模型 |
+| `CHATPULSE_ACP_TIMEOUT` | 單次操作逾時秒數，預設 600，上限 3600 |
+
+命令設定只由服務擁有者管理，API 請求不能指定執行檔或參數。CLI／MCP 可由本機操作者明選 `codex_acp` 或 `claude_acp`，不經儀表板 Viewer gate。遇到 `ACP_ERROR` 時，先確認同一個 OS 帳號可正常執行並登入 adapter，再檢查模型與額度；原始代理 stderr 不會回傳到瀏覽器。
 
 > ⚠️ **Gemini 免費層 `gemini-3.6-flash` 每天只有 20 次請求**（2026-09-05 實測）。
 > 這是改成可切換供應商的直接原因——見 `SPECIFICATION.md` 的風險 R-4。
